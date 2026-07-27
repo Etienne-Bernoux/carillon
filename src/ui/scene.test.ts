@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { DEFAULT_TUNING, TUNINGS, midiForLength } from '../core/music'
 import type { Bounds, Vec2 } from '../core/types'
 import { buildSurpriseScene, sceneArea } from './scene'
 
@@ -16,6 +17,34 @@ function collect(bounds: Bounds, seed: number): Array<[Vec2, Vec2]> {
   buildSurpriseScene(bounds, seed, (a, b) => bars.push([a, b]))
   return bars
 }
+
+describe('B3 — richesse musicale de la scène d’accueil', () => {
+  function distinctPitches(bounds: Bounds, seed: number, tuning = DEFAULT_TUNING): number {
+    const midis = collect(bounds, seed).map(([a, b]) =>
+      midiForLength(Math.hypot(b.x - a.x, b.y - a.y), tuning, bounds.w),
+    )
+    return new Set(midis).size
+  }
+
+  it('joue au moins 5 hauteurs distinctes sur un téléphone (2 avant l’US2)', () => {
+    for (const seed of [1, 7, 12, 30]) {
+      expect(distinctPitches({ w: 375, h: 740 }, seed)).toBeGreaterThanOrEqual(5)
+      expect(distinctPitches({ w: 320, h: 568 }, seed)).toBeGreaterThanOrEqual(5)
+    }
+  })
+
+  it('joue au moins 8 hauteurs distinctes sur un écran large', () => {
+    for (const seed of [1, 7, 12, 30]) {
+      expect(distinctPitches({ w: 1280, h: 800 }, seed)).toBeGreaterThanOrEqual(8)
+    }
+  })
+
+  it('reste riche quelle que soit la gamme choisie', () => {
+    for (const tuning of TUNINGS) {
+      expect(distinctPitches({ w: 375, h: 740 }, 7, tuning)).toBeGreaterThanOrEqual(5)
+    }
+  })
+})
 
 describe('buildSurpriseScene', () => {
   it('garde chaque extrémité de barre dans la zone de jeu, sur tous les viewports', () => {
@@ -42,7 +71,11 @@ describe('buildSurpriseScene', () => {
     }
   })
 
-  it('fait varier les longueurs, sinon tout l’écran sonnerait la même note', () => {
+  // Ce test mesure des longueurs en pixels, **pas** des hauteurs de note. Son ancien intitulé
+  // (« sinon tout l'écran sonnerait la même note ») promettait une propriété musicale qu'il ne
+  // vérifiait pas : il restait vert alors que la scène ne jouait que 4 hauteurs sur 15 possibles.
+  // La propriété musicale est portée par le bloc B3 ci-dessus, qui passe par le mapping réel.
+  it('fait varier les longueurs au pixel', () => {
     for (const bounds of VIEWPORTS) {
       const lengths = collect(bounds, 3).map(([a, b]) => Math.round(Math.hypot(b.x - a.x, b.y - a.y) / 10))
       expect(new Set(lengths).size).toBeGreaterThanOrEqual(5)

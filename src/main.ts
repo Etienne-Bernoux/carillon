@@ -1,5 +1,15 @@
 import { createAudioEngine } from './audio/engine'
-import { DEFAULT_TUNING, gainForImpact, midiForLength, midiToFreq, panForX } from './core/music'
+import {
+  DEFAULT_TUNING,
+  TUNINGS,
+  gainForImpact,
+  midiForLength,
+  midiToFreq,
+  panForX,
+  retuneBars,
+  tuningById,
+} from './core/music'
+import type { Tuning } from './core/music'
 import { DT, addBar, createWorld, spawnBall, stepWorld } from './core/physics'
 import type { Bar, ImpactEvent, Vec2 } from './core/types'
 import { attachInput } from './ui/input'
@@ -21,6 +31,7 @@ const MAX_STEPS_PER_FRAME = Math.round(MAX_CATCH_UP_SECONDS / DT)
 
 const canvas = document.querySelector<HTMLCanvasElement>('#stage')
 const hint = document.querySelector<HTMLParagraphElement>('#hint')
+const tuningLabel = document.querySelector<HTMLSpanElement>('#tuning-label')
 if (!canvas) throw new Error('Élément #stage introuvable')
 
 const renderer = createRenderer(canvas)
@@ -36,11 +47,20 @@ let sceneSeed = 7
 let interacted = false
 /** Vrai dès que la scène appartient à l'utilisateur : on ne la régénère plus sous ses doigts. */
 let userOwnsScene = false
+let tuning: Tuning = DEFAULT_TUNING
 
 function placeBar(a: Vec2, b: Vec2): Bar | null {
   const length = Math.hypot(b.x - a.x, b.y - a.y)
   if (length < MIN_BAR_LENGTH) return null
-  return addBar(world, a, b, midiForLength(length, DEFAULT_TUNING))
+  return addBar(world, a, b, midiForLength(length, tuning, world.bounds.w))
+}
+
+function applyTuning(next: Tuning): void {
+  tuning = next
+  if (tuningLabel) tuningLabel.textContent = tuning.label
+  // Réaccorder ce qui est déjà posé : sans ça, changer de gamme ne s'entendrait qu'aux barres
+  // suivantes, et la boucle « je change, j'entends » ne se ferme pas.
+  retuneBars(world.bars, tuning, world.bounds.w)
 }
 
 function dropBall(point: Vec2): number {
@@ -128,7 +148,10 @@ attachInput(canvas, {
     draft = {
       a: next.a,
       b: next.b,
-      label: length < MIN_BAR_LENGTH ? '—' : noteName(midiForLength(length, DEFAULT_TUNING)),
+      label:
+        length < MIN_BAR_LENGTH
+          ? '—'
+          : noteName(midiForLength(length, tuning, world.bounds.w)),
     }
   },
 })
@@ -138,6 +161,12 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-control
     void audio.unlock()
     fadeHint()
     switch (button.dataset.control) {
+      case 'tuning': {
+        const index = TUNINGS.findIndex((candidate) => candidate.id === tuning.id)
+        const next = TUNINGS[(index + 1) % TUNINGS.length]
+        if (next) applyTuning(next)
+        break
+      }
       case 'surprise':
         sceneSeed += 1
         userOwnsScene = false
@@ -211,6 +240,7 @@ interface CarillonDebug {
   advance(seconds: number): void
   reset(): void
   setMuted(muted: boolean): void
+  setTuning(id: string): void
   stats(): {
     fps: number
     balls: number
@@ -223,6 +253,10 @@ interface CarillonDebug {
     droppedSteps: number
     /** barres dont une extrémité sort du viewport ; doit rester à 0 */
     barsOutOfBounds: number
+    /** identifiant de la gamme courante */
+    tuning: string
+    /** nombre de hauteurs distinctes présentes sur la scène — mesure la richesse musicale */
+    distinctPitches: number
   }
 }
 
@@ -242,6 +276,7 @@ window.__carillon = {
     clearAll()
   },
   setMuted: (muted) => audio.setMuted(muted),
+  setTuning: (id) => applyTuning(tuningById(id)),
   stats: () => ({
     fps: Math.round(fps),
     balls: world.balls.length,
@@ -250,5 +285,7 @@ window.__carillon = {
     notes: audio.playedCount(),
     droppedSteps,
     barsOutOfBounds: countBarsOutOfBounds(),
+    tuning: tuning.id,
+    distinctPitches: new Set(world.bars.map((bar) => bar.midi)).size,
   }),
 }

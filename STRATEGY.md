@@ -44,8 +44,8 @@ Le plan de chaque US est écrit **au moment de l'attaquer**, pas maintenant.
 
 | US | Titre | Intent |
 |----|-------|--------|
-| **US1** | Le premier rebond | Dessiner des barres, lâcher des billes, une note par impact. Le noyau : physique déterministe + audio + rendu. C'est le moment « ah, ça marche ». |
-| **US2** | Ça sonne juste | Brancher le catalogue de gammes sur l'UI, et surtout **rendre la hauteur relative à la largeur de la scène** : le mapping actuel est en pixels absolus, donc un téléphone ne joue que deux hauteurs (limite mesurée en US1, cf. son plan). Passer de « ça sonne » à « ça joue ». |
+| **US1** ✅ | Le premier rebond | *Livrée.* Dessiner des barres, lâcher des billes, une note par impact. Le noyau : physique déterministe + audio + rendu. |
+| **US2** ✅ | Ça sonne juste | *Livrée.* Hauteur relative à la largeur de la scène (un téléphone ne jouait que 2 hauteurs, il en joue 5+), sélecteur de gamme qui **réaccorde** l'instrument, longueurs stratifiées : 11 hauteurs sur desktop, et 71 impacts par scène au lieu de 16. |
 | **US3** | Le geste agréable | Éditer sans frustration : sélection, déplacement, suppression, undo. Types de barres (mur / trampoline / disparaissante). Tactile + responsive. |
 | **US4** | La scène qui tourne | Émetteurs périodiques, boucle déterministe reproductible, partage par URL, galerie de presets. C'est ce qui transforme un jouet en chose qu'on montre. |
 | **US5** | Le vernis | Glow, traînées, particules d'impact, `prefers-reduced-motion`, mute, budget perf tenu à 200 billes. |
@@ -53,6 +53,11 @@ Le plan de chaque US est écrit **au moment de l'attaquer**, pas maintenant.
 **Ordre non négociable** : US1 avant tout le reste. Si le noyau physique+audio n'est pas
 satisfaisant, aucune quantité de vernis ne sauve le produit — et on préférera revoir US1 plutôt
 qu'empiler US2.
+
+**Ce que les deux premières US ont changé au backlog** : la limite qui a déclenché l'US2 (hauteur en
+pixels absolus) n'était pas dans le plan initial — elle est sortie d'une **capture d'écran de
+téléphone**. C'est le mécanisme attendu : chaque US révèle le vrai contenu de la suivante, et le
+backlog ci-dessus reste une intention, pas un engagement.
 
 ## Décisions techniques (et pourquoi)
 

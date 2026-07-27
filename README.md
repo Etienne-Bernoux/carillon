@@ -13,7 +13,13 @@ pnpm dev
 
 - **Glisser** sur la scène → dessine une barre (le nom de la note s'affiche pendant le tracé).
 - **Cliquer / taper** → lâche une bille.
+- **♪ Gamme** → change de gamme (pentatonique mineure, majeure, dorien, hirajoshi, lydien) et
+  **réaccorde tout l'instrument** : la même scène rejouée sonne autrement.
 - **Scène surprise** → une cascade générée, différente à chaque appui.
+
+La hauteur dépend de la longueur **relative à la largeur de l'écran** : l'instrument garde donc toute
+son étendue sur un téléphone. Et la **couleur d'une barre encode sa note** — deux barres de même
+couleur sonnent la même hauteur, on lit la partition à l'œil.
 
 Le son se déverrouille au premier geste (politique d'autoplay des navigateurs).
 

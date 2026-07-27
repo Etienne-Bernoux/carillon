@@ -349,6 +349,47 @@ async function runControls(browser, url, rec) {
   rec.assert('« Scène surprise » (2e appui) remplit aussi la scène', afterSurprise2 > 0, `bars=${afterSurprise2}`)
   rec.assert('« Scène surprise » : deux appuis donnent des scènes différentes', !shot1.equals(shot2), 'comparaison pixel des deux captures')
 
+  // Sélecteur de gamme : change la gamme, le libellé, ET réaccorde les barres déjà posées.
+  // La couleur d'une barre encode sa classe de hauteur : une comparaison pixel prouve donc que le
+  // réaccordage atteint réellement le rendu, pas seulement l'état interne.
+  const readTuning = () =>
+    page.evaluate(() => ({
+      id: window.__carillon.stats().tuning,
+      pitches: window.__carillon.stats().distinctPitches,
+      label: document.querySelector('#tuning-label')?.textContent ?? '',
+    }))
+
+  const tuningBefore = await readTuning()
+  const beforeTuningShot = await page.screenshot()
+  await page.click('[data-control="tuning"]')
+  await tick(page)
+  const tuningAfter = await readTuning()
+  const afterTuningShot = await page.screenshot()
+
+  console.log(
+    `  [controls] gamme : ${tuningBefore.id} (${tuningBefore.pitches} hauteurs) -> ${tuningAfter.id} (${tuningAfter.pitches} hauteurs)`
+  )
+  rec.assert(
+    'sélecteur de gamme : la gamme courante change',
+    tuningBefore.id !== tuningAfter.id,
+    `avant=${tuningBefore.id} après=${tuningAfter.id}`
+  )
+  rec.assert(
+    'sélecteur de gamme : le libellé suit',
+    tuningBefore.label !== tuningAfter.label,
+    `avant="${tuningBefore.label}" après="${tuningAfter.label}"`
+  )
+  rec.assert(
+    'sélecteur de gamme : les barres déjà posées sont réaccordées (couleur = hauteur)',
+    !beforeTuningShot.equals(afterTuningShot),
+    'comparaison pixel avant/après changement de gamme'
+  )
+  rec.assert(
+    'la scène reste musicalement riche après réaccordage',
+    tuningAfter.pitches >= 8,
+    `hauteurs distinctes=${tuningAfter.pitches}`
+  )
+
   // Bouton son : bascule aria-pressed et le libellé.
   const before = await page.evaluate(() => {
     const btn = document.querySelector('[data-control="mute"]')
