@@ -2,6 +2,8 @@
  * Géométrie → musique. Pur, zéro DOM, déterministe : testable en Vitest.
  */
 
+import type { Bar } from './types'
+
 export interface Tuning {
   readonly id: string
   readonly label: string
@@ -9,13 +11,16 @@ export interface Tuning {
   readonly rootMidi: number
 }
 
+/** Nommée à part pour que `DEFAULT_TUNING` n'ait pas à indexer un tableau (donc pas de `!`). */
+const PENTATONIC_MINOR: Tuning = {
+  id: 'pentatonic-minor',
+  label: 'Pentatonique mineure',
+  scale: [0, 3, 5, 7, 10],
+  rootMidi: 57, // A3
+}
+
 export const TUNINGS: readonly Tuning[] = [
-  {
-    id: 'pentatonic-minor',
-    label: 'Pentatonique mineure',
-    scale: [0, 3, 5, 7, 10],
-    rootMidi: 57, // A3
-  },
+  PENTATONIC_MINOR,
   {
     id: 'pentatonic-major',
     label: 'Pentatonique majeure',
@@ -42,15 +47,36 @@ export const TUNINGS: readonly Tuning[] = [
   },
 ] as const
 
-export const DEFAULT_TUNING: Tuning = TUNINGS[0]!
+export const DEFAULT_TUNING: Tuning = PENTATONIC_MINOR
+
+export function tuningById(id: string): Tuning {
+  return TUNINGS.find((tuning) => tuning.id === id) ?? DEFAULT_TUNING
+}
 
 /** en dessous de ce seuil (px/s), l'impact est trop faible pour déclencher une note */
 export const MIN_IMPACT_SPEED = 40
 
-/** longueur (px) plafonnée à l'aigu : toute barre plus courte sonne comme celle-ci */
-const MIN_LENGTH_PX = 40
-/** longueur (px) plafonnée au grave : toute barre plus longue sonne comme celle-ci */
-const MAX_LENGTH_PX = 700
+/**
+ * Bornes de longueur exprimées en **fraction de la largeur de la scène**, et non en pixels.
+ *
+ * En pixels absolus (40 → 700 px), un téléphone ne jouait que deux hauteurs : ses barres tiennent
+ * toutes dans le bas de la plage. À 1280 px ces ratios valent 38 → 704 px, donc le comportement
+ * desktop d'avant est préservé ; à 375 px ils valent 11 → 206 px, ce qui rend enfin toute
+ * l'étendue atteignable au doigt.
+ */
+export const MIN_LENGTH_RATIO = 0.03
+export const MAX_LENGTH_RATIO = 0.55
+
+/**
+ * Plage de longueurs qui couvre toute l'étendue de l'instrument à cette largeur. Exportée pour que
+ * le générateur de scène échantillonne **l'étendue musicale** et non celle de sa mise en page :
+ * calibrer les longueurs sur le pas d'une rangée faisait saturer un tiers d'entre elles sur la note
+ * la plus grave dès que la scène ne tenait que deux colonnes.
+ */
+export function lengthRangeForWidth(sceneWidth: number): { min: number; max: number } {
+  const width = sceneWidth > 0 ? sceneWidth : 1
+  return { min: width * MIN_LENGTH_RATIO, max: width * MAX_LENGTH_RATIO }
+}
 
 /** nombre de degrés de gamme couverts sur la plage utile, avant repli en octaves (~3 octaves) */
 const SPAN_OCTAVES = 3
@@ -58,31 +84,55 @@ const SPAN_OCTAVES = 3
 /**
  * Barre courte → aigu, barre longue → grave (métaphore du carillon). On construit la liste des
  * degrés MIDI disponibles sur ~3 octaves, triée du plus aigu au plus grave, puis on choisit
- * l'index par interpolation linéaire de la longueur bornée — ce qui garantit monotonie stricte
- * et couverture de tous les degrés sans en sauter.
+ * l'index par interpolation linéaire de la longueur bornée — ce qui garantit monotonie
+ * (décroissante) et couverture de tous les degrés sans en sauter.
+ *
+ * `sceneWidth` rend le résultat **invariant d'échelle** : une barre qui occupe le tiers de l'écran
+ * sonne la même note sur un téléphone et sur un grand écran.
  */
-export function midiForLength(lengthPx: number, tuning: Tuning): number {
-  const degrees = buildDescendingDegrees(tuning)
-  const clamped = Math.min(Math.max(lengthPx, MIN_LENGTH_PX), MAX_LENGTH_PX)
-  const t = (clamped - MIN_LENGTH_PX) / (MAX_LENGTH_PX - MIN_LENGTH_PX)
+export function midiForLength(lengthPx: number, tuning: Tuning, sceneWidth: number): number {
+  const { min, max } = lengthRangeForWidth(sceneWidth)
+  const degrees = descendingDegrees(tuning)
+  const clamped = Math.min(Math.max(lengthPx, min), max)
+  const t = (clamped - min) / (max - min)
   const lastIndex = degrees.length - 1
-  const index = Math.round(t * lastIndex)
-  const clampedIndex = Math.min(Math.max(index, 0), lastIndex)
-  return degrees[clampedIndex]!
+  const index = Math.min(Math.max(Math.round(t * lastIndex), 0), lastIndex)
+  return degrees[index] ?? tuning.rootMidi
 }
 
-function buildDescendingDegrees(tuning: Tuning): number[] {
+/**
+ * Reconstruite à chaque appel, volontairement. Un cache avait été ajouté, clé sur `tuning.id`, alors
+ * que le résultat dépend aussi de `rootMidi` : le jour où l'on change de tonique en gardant l'`id`,
+ * il aurait renvoyé des hauteurs périmées **en silence**. Mesuré : 0,34 µs par appel, soit 20 µs par
+ * seconde au pire (un appel par `pointermove`). Le cache achetait donc un risque de correction contre
+ * rien du tout.
+ */
+function descendingDegrees(tuning: Tuning): readonly number[] {
   const perOctave = tuning.scale.length
-  const totalSteps = perOctave * SPAN_OCTAVES
   const notes: number[] = []
-  for (let i = 0; i < totalSteps; i += 1) {
+  for (let i = 0; i < perOctave * SPAN_OCTAVES; i += 1) {
     const octave = Math.floor(i / perOctave)
-    const degree = tuning.scale[i % perOctave]!
+    const degree = tuning.scale[i % perOctave] ?? 0
     notes.push(tuning.rootMidi + degree + octave * 12)
   }
   // aigu en premier : la note la plus haute correspond à la barre la plus courte
   notes.sort((a, b) => b - a)
   return notes
+}
+
+function barLength(bar: Bar): number {
+  return Math.hypot(bar.b.x - bar.a.x, bar.b.y - bar.a.y)
+}
+
+/**
+ * Réaccorde l'instrument : chaque barre recalcule sa hauteur depuis sa **géométrie**, seule source
+ * de vérité — jamais depuis sa hauteur précédente, qui aurait dérivé à chaque changement de gamme.
+ * Aucune barre n'est déplacée.
+ */
+export function retuneBars(bars: readonly Bar[], tuning: Tuning, sceneWidth: number): void {
+  for (const bar of bars) {
+    bar.midi = midiForLength(barLength(bar), tuning, sceneWidth)
+  }
 }
 
 export function midiToFreq(midi: number): number {
