@@ -92,6 +92,30 @@ Deux gestes pour en sortir :
 Le point 2 est la seule façon de distinguer un test vert d'un test creux. Il coûte trois minutes et
 devrait être systématique sur toute assertion de type « ça a changé » ou « ça diffère ».
 
+## Le test de mutation laisse un résidu que le gate ne voit pas
+
+Le test de mutation est indispensable (cf. section précédente), mais il crée un risque neuf : le code
+neutralisé doit être restauré, et rien ne le garantit. Vécu en US3 — un résidu de la forme :
+
+```ts
+// MUTATION-TEST-TEMPORAIRE : neutralise le déplacement
+void dx
+void dy
+```
+
+a survécu à `pnpm check`. Non par malchance : `void x` est **exactement** l'écriture qui fait taire
+`noUnusedLocals`. Le résidu était donc invisible au seul garde-fou automatique du projet, et les
+captures de preuve archivées ensuite décrivaient un code qui n'existait plus.
+
+Trois règles qui en découlent :
+
+1. **Après tout test de mutation, `git diff` sur le fichier touché doit être vide.** C'est la seule
+   vérification qui ne dépend pas de la forme du résidu.
+2. **Les preuves doivent être postérieures au code.** Comparer les horodatages (`stat -f "%Sm %N"`)
+   avant de clôturer une US coûte une commande et attrape la classe entière de ce défaut.
+3. **Greper les marqueurs** (`MUTATION`, `TEMPORAIRE`, `void d`) avant commit — utile, mais c'est le
+   filet le plus faible des trois, puisqu'il suppose qu'on a pensé à laisser un marqueur.
+
 ## Voir aussi
 
 - `docs/solutions/harnais-de-capture-qui-ment-sur-la-perf.md` — même famille de piège, côté harnais :

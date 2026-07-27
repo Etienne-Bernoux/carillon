@@ -11,8 +11,17 @@ pnpm install
 pnpm dev
 ```
 
-- **Glisser** sur la scène → dessine une barre (le nom de la note s'affiche pendant le tracé).
-- **Cliquer / taper** → lâche une bille.
+- **Glisser** dans le vide → dessine une barre (le nom de la note s'affiche pendant le tracé).
+- **Cliquer / taper** dans le vide → lâche une bille.
+- **Attraper une barre** par son corps → la déplace, sans changer sa note.
+- **Attraper le bout d'une barre** → l'étire : c'est comme ça qu'on **accorde** l'instrument, en
+  entendant la note monter ou descendre.
+- **Taper une barre** → la fait sonner, sans rien modifier.
+- **Lâcher une barre sur un bord de l'écran** → la jette. Elle passe en pointillés rouges avant, pour
+  qu'on le sache.
+- **Annuler** ou `Cmd/Ctrl+Z` → revient sur le dernier geste.
+
+Aucun mode, aucune gomme, aucun outil à sélectionner : le geste se désambiguïse par **où il commence**.
 - **♪ Gamme** → change de gamme (pentatonique mineure, majeure, dorien, hirajoshi, lydien) et
   **réaccorde tout l'instrument** : la même scène rejouée sonne autrement.
 - **Scène surprise** → une cascade générée, différente à chaque appui.
