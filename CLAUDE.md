@@ -74,6 +74,10 @@ Pièges déjà connus (issus des règles cortex, à ne pas réapprendre) :
   vérifier que l'assertion rougit, restaurer. Déjà payé — une comparaison de captures plein cadre
   passait au vert grâce à l'état `:hover` du bouton cliqué
   (`docs/solutions/tester-la-propriete-pas-son-proxy.md`).
+- **Après un test de mutation, `git diff` sur le fichier touché doit être vide**, et les preuves
+  doivent être **postérieures** au code (comparer les horodatages avant de clôturer). Déjà payé : un
+  résidu `void dx` a survécu à `pnpm check`, parce que c'est justement la forme qui fait taire
+  `noUnusedLocals`.
 - **Ce qui vit dans le canvas ne se vérifie pas depuis le DOM.** `scrollWidth` est aveugle aux barres
   qui débordent ou passent derrière le HUD : il faut un compteur exposé par l'app
   (`barsOutOfBounds`, `barsUnderHud`) et l'asserter à 0.

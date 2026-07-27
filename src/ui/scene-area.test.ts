@@ -11,6 +11,9 @@ function fakeRoot(rects: Array<{ top: number; bottom: number }>): ParentNode {
   const elements = rects.map((rect) => ({
     getBoundingClientRect: () => ({ ...rect, width: 200, height: rect.bottom - rect.top }),
   }))
+  // Cast assumé : `measureSceneArea` n'appelle que `querySelectorAll` et lit des rectangles. Typer
+  // fidèlement un `ParentNode` complet demanderait jsdom, soit une dépendance de test pour vérifier
+  // une soustraction. À retirer si un vrai DOM entre un jour dans la suite de tests.
   return { querySelectorAll: () => elements } as unknown as ParentNode
 }
 

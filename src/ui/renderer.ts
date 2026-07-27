@@ -1,3 +1,4 @@
+import type { GrabKind } from '../core/hit-test'
 import { BAR_THICKNESS } from '../core/physics'
 import type { Bounds, ImpactEvent, Vec2, World } from '../core/types'
 import { hueForMidi } from './notation'
@@ -62,9 +63,23 @@ export interface Draft {
   label: string
 }
 
+/** État d'interaction courant : ce que le rendu doit montrer, sans que le monde en sache rien. */
+export interface Interaction {
+  hoveredBarId: number | null
+  hoveredKind: GrabKind | null
+  /** barre qui sera supprimée si l'on relâche maintenant — doit se voir avant le relâchement */
+  pendingDeleteBarId: number | null
+}
+
+export const NO_INTERACTION: Interaction = {
+  hoveredBarId: null,
+  hoveredKind: null,
+  pendingDeleteBarId: null,
+}
+
 export interface Renderer {
   resize(): Bounds
-  draw(world: World, effects: Effects, draft: Draft | null): void
+  draw(world: World, effects: Effects, draft: Draft | null, interaction: Interaction): void
 }
 
 /**
@@ -131,12 +146,17 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
     return bounds
   }
 
-  function drawBars(world: World): void {
+  function drawBars(world: World, interaction: Interaction): void {
     base.lineCap = 'round'
     for (const bar of world.bars) {
       const hue = hueForMidi(bar.midi)
       const sinceHit = (world.time - bar.lastHitAt) * 1000
       const hot = bar.lastHitAt >= 0 && sinceHit < GLOW_MS ? 1 - sinceHit / GLOW_MS : 0
+
+      if (bar.id === interaction.pendingDeleteBarId) {
+        drawPendingDelete(bar)
+        continue
+      }
 
       if (hot > 0) {
         base.strokeStyle = `hsla(${hue}, 100%, 70%, ${0.14 + hot * 0.3})`
@@ -151,7 +171,40 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
       base.strokeStyle = `hsla(0, 0%, 100%, ${0.12 + hot * 0.65})`
       base.lineWidth = 1.6
       strokeBar(bar.a, bar.b)
+
+      if (bar.id === interaction.hoveredBarId) drawGrabHandles(bar, interaction.hoveredKind)
     }
+  }
+
+  /**
+   * Poignées de préhension au survol. Elles ne sont pas décoratives : sans elles, rien n'indique
+   * qu'une extrémité s'attrape pour accorder la barre, et le geste central du produit reste invisible.
+   */
+  function drawGrabHandles(bar: { a: Vec2; b: Vec2 }, kind: GrabKind | null): void {
+    base.strokeStyle = 'rgba(232, 240, 255, 0.55)'
+    base.lineWidth = 1.4
+    strokeBar(bar.a, bar.b)
+
+    for (const [point, own] of [
+      [bar.a, 'endA'],
+      [bar.b, 'endB'],
+    ] as const) {
+      const active = kind === own
+      base.beginPath()
+      base.arc(point.x, point.y, active ? 8 : 5.5, 0, Math.PI * 2)
+      base.fillStyle = active ? 'rgba(255, 255, 255, 0.95)' : 'rgba(232, 240, 255, 0.5)'
+      base.fill()
+    }
+  }
+
+  /** Une suppression doit s'annoncer **avant** le relâchement, sinon elle est vécue comme un accident. */
+  function drawPendingDelete(bar: { a: Vec2; b: Vec2 }): void {
+    base.save()
+    base.setLineDash([7, 6])
+    base.strokeStyle = 'rgba(255, 110, 130, 0.9)'
+    base.lineWidth = BAR_THICKNESS
+    strokeBar(bar.a, bar.b)
+    base.restore()
   }
 
   function strokeBar(a: Vec2, b: Vec2): void {
@@ -264,14 +317,14 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
 
   return {
     resize,
-    draw(world, effects, draft) {
+    draw(world, effects, draft, interaction) {
       recordTrails(world)
       if (backdrop) {
         base.fillStyle = backdrop
         base.fillRect(0, 0, bounds.w, bounds.h)
       }
       drawRipples(effects)
-      drawBars(world)
+      drawBars(world, interaction)
       if (draft) drawDraft(draft)
       drawBalls(world)
     },

@@ -26,12 +26,18 @@
           <span aria-hidden="true">♪</span>&nbsp;<span id="tuning-label">Pentatonique mineure</span>
         </button>
         <button type="button" data-control="surprise">Scène surprise</button>
-        <button type="button" data-control="clear">Tout effacer</button>
+        <button type="button" data-control="undo" title="Annuler le dernier geste (Cmd/Ctrl+Z)">
+          Annuler
+        </button>
+        <button type="button" data-control="clear">Effacer</button>
         <button type="button" data-control="mute" aria-pressed="false">Son activé</button>
       </nav>
 
+      <!-- Volontairement court : cet indice est lu une fois, et chaque ligne qu'il prend est de la
+           hauteur de jeu perdue sur un petit écran. L'édition se découvre par les poignées qui
+           apparaissent au survol d'une barre, pas par du texte. -->
       <p class="hint" id="hint" data-hud>
-        <strong>Glisse</strong> pour dessiner une barre · <strong>Clique</strong> pour lâcher une bille
+        <strong>Glisse</strong> pour dessiner · <strong>Clique</strong> pour lâcher une bille
       </p>
     </div>
 

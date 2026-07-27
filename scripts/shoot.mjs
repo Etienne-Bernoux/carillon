@@ -24,7 +24,7 @@ const ROOT = path.resolve(__dirname, '..')
 const PROOFS_DIR = path.join(ROOT, 'docs', 'proofs')
 const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
-const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize']
+const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch']
 
 const rawArgs = process.argv.slice(2)
 const flags = new Set(rawArgs.filter((a) => a.startsWith('--')))
@@ -132,6 +132,41 @@ async function dragBar(page, from, to, steps = 6) {
   await page.mouse.up()
 }
 
+/** Même geste que `dragBar`, mais avec de vrais événements tactiles (US3, C7). */
+async function dragTouch(page, from, to, steps = 8) {
+  await page.touchscreen.touchStart(from[0], from[1])
+  for (let i = 1; i <= steps; i++) {
+    const x = from[0] + ((to[0] - from[0]) * i) / steps
+    const y = from[1] + ((to[1] - from[1]) * i) / steps
+    await page.touchscreen.touchMove(x, y)
+  }
+  await page.touchscreen.touchEnd()
+}
+
+/**
+ * Zone jouable mesurée depuis le DOM, HUD exclu, avec une marge de sécurité (bord de suppression à
+ * 14 px + rayon de préhension) : calculée à l'exécution plutôt que devinée sur la CSS — la seule
+ * façon de garantir des coordonnées de test réellement vides et loin du HUD, quelle que soit la
+ * mise en page (barre d'outils en haut sur desktop, empilée en bas sous 640 px).
+ */
+async function computePlayArea(page, margin = 40) {
+  return page.evaluate((margin) => {
+    const rects = Array.from(document.querySelectorAll('[data-hud]'))
+      .map((el) => el.getBoundingClientRect())
+      .filter((r) => r.width > 0 && r.height > 0)
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    const middle = vh / 2
+    let top = 0
+    let bottom = vh
+    for (const r of rects) {
+      if ((r.top + r.bottom) / 2 < middle) top = Math.max(top, r.bottom)
+      else bottom = Math.min(bottom, r.top)
+    }
+    return { left: margin, right: vw - margin, top: top + margin, bottom: bottom - margin }
+  }, margin)
+}
+
 async function runSandbox(browser, url, rec) {
   const page = await browser.newPage()
   rec.attachConsoleListeners(page)
@@ -139,32 +174,46 @@ async function runSandbox(browser, url, rec) {
   await page.goto(url, { waitUntil: 'load' })
   await waitForCarillon(page)
 
-  // L'app charge délibérément une scène d'accueil : on compte donc les barres AJOUTÉES,
-  // pas le total, sinon l'assertion casse à chaque évolution de la scène par défaut.
-  const beforeBars = await page.evaluate(() => window.__carillon.stats().bars)
+  // On repart d'une scène vide : depuis l'US3 une barre a un corps ET des extrémités attrapables,
+  // donc glisser ou cliquer sur la scène d'accueil par-dessus une barre existante ne dessine plus
+  // rien ou joue sa note au lieu de lâcher une bille — l'app fait ce qu'il faut, mais rend les
+  // coordonnées de ce scénario ambiguës. Une scène vide élimine l'ambiguïté à la source.
+  await page.evaluate(() => window.__carillon.reset())
+  await tick(page)
+  const empty = await page.evaluate(() => window.__carillon.stats())
+  rec.assert('scène vide après reset()', empty.bars === 0 && empty.balls === 0, `bars=${empty.bars} balls=${empty.balls}`)
+
+  // Zone jouable mesurée depuis le DOM (HUD exclu), découpée en 4 bandes : la première pour les
+  // billes, les 3 suivantes pour les barres — aucun chevauchement possible entre gestes.
+  const area = await computePlayArea(page, 40)
+  const w = area.right - area.left
+  const h = area.bottom - area.top
+  const bandH = h / 4
+  const dropY = area.top + bandH * 0.5
+  const barTop = (i) => area.top + bandH * (i + 1) + bandH * 0.15
+  const barDy = bandH * 0.5
 
   // Glisser à la souris pour dessiner 3 barres à des angles différents —
   // on prouve le vrai chemin d'entrée, pas seulement l'API de debug.
-  await dragBar(page, [200, 260], [520, 320])
-  await dragBar(page, [250, 480], [680, 430])
-  await dragBar(page, [650, 180], [920, 560])
+  await dragBar(page, [area.left + w * 0.05, barTop(0)], [area.left + w * 0.45, barTop(0) + barDy])
+  await dragBar(page, [area.left + w * 0.3, barTop(1)], [area.left + w * 0.85, barTop(1) + barDy])
+  await dragBar(page, [area.left + w * 0.55, barTop(2)], [area.left + w * 0.95, barTop(2) + barDy])
   await tick(page)
 
   await rec.shot(page, 'bars-drawn')
   const afterBars = await page.evaluate(() => window.__carillon.stats())
   rec.assert(
     '3 barres ajoutées à la souris',
-    afterBars.bars - beforeBars === 3,
-    `avant=${beforeBars} après=${afterBars.bars}`,
+    afterBars.bars === 3,
+    `bars=${afterBars.bars}`,
   )
 
-  // 5 clics pour lâcher 5 billes (vrai geste souris). y=140 : sous la barre d'outils
-  // (haut-droite, ~14-90px à 1280×800) pour ne pas y cliquer par accident — un clic sur
-  // "Tout effacer" ou "Scène surprise" au lieu du canvas ferait échouer l'assertion
-  // pour la mauvaise raison (bouton actionné, pas bille non lâchée).
+  // 5 clics pour lâcher 5 billes (vrai geste souris), dans la bande réservée aux billes — à
+  // distance garantie des 3 barres (bandes distinctes), donc chaque clic tombe forcément dans le
+  // vide et déclenche `drop-ball`, jamais `tap-bar`.
   const beforeClicksBalls = (await page.evaluate(() => window.__carillon.stats())).balls
   for (let i = 0; i < 5; i++) {
-    await page.mouse.click(150 + i * 180, 140)
+    await page.mouse.click(area.left + w * (0.08 + i * 0.2), dropY)
   }
   await tick(page)
 
@@ -524,12 +573,265 @@ async function runResize(browser, url, rec) {
   await page.close()
 }
 
+/** Lit la géométrie exacte d'une barre via `window.__carillon.bars()` (id, extrémités, midi). */
+async function findBar(page, id) {
+  return page.evaluate((id) => window.__carillon.bars().find((b) => b.id === id) ?? null, id)
+}
+
+function barLength(bar) {
+  return Math.hypot(bar.bx - bar.ax, bar.by - bar.ay)
+}
+
+/**
+ * US3, C6 — le geste agréable à la souris. Une scène vide, une barre de longueur connue posée via
+ * l'API de debug (le point de départ n'est pas ce qu'on teste), puis quatre gestes souris réels :
+ * déplacer, étirer, supprimer, annuler.
+ *
+ * `window.__carillon.bars()` expose la géométrie exacte (extrémités, midi) : les assertions
+ * comparent donc la position/longueur/note **avant/après** directement, sans passer par une
+ * heuristique de couleur — `stats()` seul (compteurs) n'aurait pas suffi.
+ */
+async function runEdit(browser, url, rec) {
+  const page = await browser.newPage()
+  rec.attachConsoleListeners(page)
+  await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await page.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(page)
+
+  await page.evaluate(() => window.__carillon.reset())
+  await tick(page)
+  const empty = await page.evaluate(() => window.__carillon.stats())
+  rec.assert('scène vide après reset()', empty.bars === 0, `bars=${empty.bars}`)
+
+  // 3 bandes horizontales mesurées depuis le DOM (HUD exclu) : une par geste testé, pour qu'aucun
+  // glisser ne puisse accidentellement attraper la barre d'un autre test.
+  const area = await computePlayArea(page, 60)
+  const w = area.right - area.left
+  const h = area.bottom - area.top
+  const bandH = h / 3
+  const rowY = (i) => area.top + bandH * i + bandH * 0.5
+  const EPS = 0.5
+
+  // --- Déplacer -------------------------------------------------------------
+  const y0 = rowY(0)
+  const bar1 = { ax: area.left + w * 0.2, ay: y0, bx: area.left + w * 0.2 + 300, by: y0 }
+  const bar1Id = await page.evaluate((b) => window.__carillon.addBar(b.ax, b.ay, b.bx, b.by), bar1)
+  rec.assert('barre de test posée (déplacer)', bar1Id !== -1, `id=${bar1Id}`)
+
+  const before1 = await findBar(page, bar1Id)
+  const center1 = [(bar1.ax + bar1.bx) / 2, y0]
+  const dx = 140
+  const dy = 60
+  // Glisser depuis le corps (milieu, à 150 px de chaque extrémité — largement hors du rayon de
+  // préhension de 14 px à la souris) : c'est ce qui distingue un déplacement d'un étirement.
+  await dragBar(page, center1, [center1[0] + dx, center1[1] + dy])
+  await tick(page)
+  await rec.shot(page, 'moved')
+
+  const after1 = await findBar(page, bar1Id)
+  rec.assert(
+    'déplacer : les deux extrémités ont bougé exactement de (dx, dy)',
+    Math.abs(after1.ax - before1.ax - dx) < EPS &&
+      Math.abs(after1.ay - before1.ay - dy) < EPS &&
+      Math.abs(after1.bx - before1.bx - dx) < EPS &&
+      Math.abs(after1.by - before1.by - dy) < EPS,
+    `avant a=(${before1.ax},${before1.ay}) b=(${before1.bx},${before1.by}) ` +
+      `après a=(${after1.ax},${after1.ay}) b=(${after1.bx},${after1.by})`,
+  )
+  rec.assert(
+    'déplacer : la longueur est inchangée',
+    Math.abs(barLength(after1) - barLength(before1)) < EPS,
+    `avant=${barLength(before1).toFixed(1)} après=${barLength(after1).toFixed(1)}`,
+  )
+  rec.assert(
+    'déplacer : la note (midi) est inchangée',
+    after1.midi === before1.midi,
+    `avant=${before1.midi} après=${after1.midi}`,
+  )
+
+  // --- Étirer -----------------------------------------------------------------
+  const y1 = rowY(1)
+  const bar2 = { ax: area.left + w * 0.15, ay: y1, bx: area.left + w * 0.15 + 300, by: y1 }
+  const bar2Id = await page.evaluate((b) => window.__carillon.addBar(b.ax, b.ay, b.bx, b.by), bar2)
+  rec.assert('barre de test posée (étirer)', bar2Id !== -1, `id=${bar2Id}`)
+
+  const before2 = await findBar(page, bar2Id)
+  const stretchDx = 120
+  // Glisser depuis l'extrémité A (distance 0, dans le rayon de préhension de 14 px) vers la
+  // gauche : la barre s'allonge de 300 à 420 px, la note doit suivre.
+  await dragBar(page, [bar2.ax, y1], [bar2.ax - stretchDx, y1])
+  await tick(page)
+  await rec.shot(page, 'stretched')
+
+  const after2 = await findBar(page, bar2Id)
+  rec.assert(
+    'étirer : l\'extrémité B (non attrapée) ne bouge pas',
+    after2.bx === before2.bx && after2.by === before2.by,
+    `avant b=(${before2.bx},${before2.by}) après b=(${after2.bx},${after2.by})`,
+  )
+  rec.assert(
+    'étirer : la longueur augmente exactement de la distance parcourue',
+    Math.abs(barLength(after2) - (barLength(before2) + stretchDx)) < EPS,
+    `avant=${barLength(before2).toFixed(1)} après=${barLength(after2).toFixed(1)} attendu=${(barLength(before2) + stretchDx).toFixed(1)}`,
+  )
+  rec.assert(
+    'étirer : la note change avec la nouvelle longueur',
+    after2.midi !== before2.midi,
+    `avant=${before2.midi} après=${after2.midi}`,
+  )
+
+  // --- Supprimer ----------------------------------------------------------------
+  const y2 = rowY(2)
+  const bar3 = { ax: area.left + w * 0.3, ay: y2, bx: area.left + w * 0.3 + 300, by: y2 }
+  const bar3Id = await page.evaluate((b) => window.__carillon.addBar(b.ax, b.ay, b.bx, b.by), bar3)
+  rec.assert('barre de test posée (supprimer)', bar3Id !== -1, `id=${bar3Id}`)
+
+  const beforeDelete = await page.evaluate(() => window.__carillon.stats())
+  const center3 = [(bar3.ax + bar3.bx) / 2, y2]
+  // Glisser depuis le corps jusqu'à 8 px du bord GAUCHE DE L'ÉCRAN (pas de la zone jouable) :
+  // la bande de suppression de 14 px se mesure depuis les bords réels du viewport.
+  await dragBar(page, center3, [8, y2])
+  await tick(page)
+  await rec.shot(page, 'deleted')
+
+  const afterDelete = await page.evaluate(() => window.__carillon.stats())
+  rec.assert(
+    'supprimer : relâcher au bord retire exactement la barre',
+    afterDelete.bars === beforeDelete.bars - 1,
+    `avant=${beforeDelete.bars} après=${afterDelete.bars}`,
+  )
+
+  // --- Annuler --------------------------------------------------------------------
+  const beforeUndo = await page.evaluate(() => window.__carillon.stats())
+  await page.click('[data-control="undo"]')
+  await tick(page)
+  await rec.shot(page, 'undone')
+  const afterUndo = await page.evaluate(() => window.__carillon.stats())
+
+  rec.assert(
+    'annuler : restaure la barre supprimée',
+    afterUndo.bars === beforeUndo.bars + 1,
+    `avant=${beforeUndo.bars} après=${afterUndo.bars}`,
+  )
+  rec.assert(
+    'annuler : dépile un geste',
+    afterUndo.undoDepth === beforeUndo.undoDepth - 1,
+    `avant=${beforeUndo.undoDepth} après=${afterUndo.undoDepth}`,
+  )
+  rec.assert('aucune barre hors champ après édition', afterUndo.barsOutOfBounds === 0, `barsOutOfBounds=${afterUndo.barsOutOfBounds}`)
+  rec.assert('aucune barre derrière le HUD après édition', afterUndo.barsUnderHud === 0, `barsUnderHud=${afterUndo.barsUnderHud}`)
+
+  await page.close()
+}
+
+/**
+ * US3, C7 — les mêmes gestes, au doigt. Viewport téléphone, `hasTouch`/`isMobile`, et de vrais
+ * événements tactiles (`page.touchscreen`) plutôt qu'une émulation de souris : c'est le seul moyen
+ * d'exercer le rayon de préhension généreux (`TOUCH_RADII`, 18/24 px) qui est le point du critère.
+ * Assertions sur la géométrie exacte (`bars()`), comme pour `edit`.
+ */
+async function runTouch(browser, url, rec) {
+  const page = await browser.newPage()
+  rec.attachConsoleListeners(page)
+  await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, hasTouch: true, isMobile: true })
+  await page.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(page)
+
+  await page.evaluate(() => window.__carillon.reset())
+  await tick(page)
+  const empty = await page.evaluate(() => window.__carillon.stats())
+  rec.assert('scène vide après reset()', empty.bars === 0, `bars=${empty.bars}`)
+
+  const area = await computePlayArea(page, 50)
+  const w = area.right - area.left
+  const y = area.top + (area.bottom - area.top) * 0.5
+  const EPS = 0.5
+
+  // --- Dessiner au doigt ------------------------------------------------------
+  // Bar centrée (35 % depuis la gauche, pas 15 %) : l'étirement qui suit tire l'extrémité A vers
+  // la gauche de 80 px, il faut donc de la marge des deux côtés de la bande de suppression (14 px)
+  // — y compris dans le cas dégradé où le déplacement n'aurait pas bougé la barre.
+  const from = [area.left + w * 0.35, y]
+  const to = [area.left + w * 0.35 + Math.min(160, w * 0.6), y]
+  await dragTouch(page, from, to)
+  await tick(page)
+  await rec.shot(page, 'drawn')
+
+  const afterDraw = await page.evaluate(() => window.__carillon.stats())
+  rec.assert('dessiner au doigt crée une barre', afterDraw.bars === 1, `bars=${afterDraw.bars}`)
+
+  const barId = (await page.evaluate(() => window.__carillon.bars())).at(-1).id
+  const before1 = await findBar(page, barId)
+  const center = [(before1.ax + before1.bx) / 2, (before1.ay + before1.by) / 2]
+
+  // --- Déplacer au doigt --------------------------------------------------------
+  // 40, pas 70 : l'app borne elle-même le déplacement du corps à la zone de jeu (marge latérale
+  // ~23 px à 390 px de large, cf. `sceneArea`), distincte de la bande de suppression (14 px) — un
+  // delta trop grand viendrait buter contre ce bord et fausserait l'assertion de delta exact.
+  const mdx = 40
+  const mdy = 40
+  // Corps : le milieu est à `(barB[0]-barA[0])/2` de chaque extrémité, largement au-delà du rayon
+  // de préhension d'extrémité au doigt (24 px).
+  await dragTouch(page, center, [center[0] + mdx, center[1] + mdy])
+  await tick(page)
+  await rec.shot(page, 'moved')
+
+  const after1 = await findBar(page, barId)
+  rec.assert(
+    'déplacer au doigt : les deux extrémités ont bougé exactement de (dx, dy)',
+    Math.abs(after1.ax - before1.ax - mdx) < EPS &&
+      Math.abs(after1.ay - before1.ay - mdy) < EPS &&
+      Math.abs(after1.bx - before1.bx - mdx) < EPS &&
+      Math.abs(after1.by - before1.by - mdy) < EPS,
+    `avant a=(${before1.ax},${before1.ay}) b=(${before1.bx},${before1.by}) ` +
+      `après a=(${after1.ax},${after1.ay}) b=(${after1.bx},${after1.by})`,
+  )
+  rec.assert(
+    'déplacer au doigt : la note (midi) est inchangée',
+    after1.midi === before1.midi,
+    `avant=${before1.midi} après=${after1.midi}`,
+  )
+
+  // --- Étirer au doigt ----------------------------------------------------------
+  const stretchDx = 80
+  // On étire l'extrémité A (distance 0, dans le rayon de préhension de 24 px au doigt) : B ne
+  // bouge pas, la longueur augmente exactement de `stretchDx`, la note change.
+  await dragTouch(page, [after1.ax, after1.ay], [after1.ax - stretchDx, after1.ay])
+  await tick(page)
+  await rec.shot(page, 'stretched')
+
+  const after2 = await findBar(page, barId)
+  rec.assert(
+    'étirer au doigt : l\'extrémité B (non attrapée) ne bouge pas',
+    after2.bx === after1.bx && after2.by === after1.by,
+    `avant b=(${after1.bx},${after1.by}) après b=(${after2.bx},${after2.by})`,
+  )
+  rec.assert(
+    'étirer au doigt : la longueur augmente exactement de la distance parcourue',
+    Math.abs(barLength(after2) - (barLength(after1) + stretchDx)) < EPS,
+    `avant=${barLength(after1).toFixed(1)} après=${barLength(after2).toFixed(1)}`,
+  )
+  rec.assert(
+    'étirer au doigt : la note change avec la nouvelle longueur',
+    after2.midi !== after1.midi,
+    `avant=${after1.midi} après=${after2.midi}`,
+  )
+
+  const final = await page.evaluate(() => window.__carillon.stats())
+  rec.assert('aucune barre hors champ au doigt', final.barsOutOfBounds === 0, `barsOutOfBounds=${final.barsOutOfBounds}`)
+  rec.assert('aucune barre derrière le HUD au doigt', final.barsUnderHud === 0, `barsUnderHud=${final.barsUnderHud}`)
+
+  await page.close()
+}
+
 const SCENARIOS = {
   sandbox: runSandbox,
   stress: runStress,
   mobile: runMobile,
   controls: runControls,
   resize: runResize,
+  edit: runEdit,
+  touch: runTouch,
 }
 
 // --- Mode --smoke : auto-vérification du harnais sur une fixture ----------
