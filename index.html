@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta
+      name="description"
+      content="Carillon — un bac à sable où la physique fait la musique : dessine des barres, lâche des billes, chaque rebond joue une note."
+    />
+    <title>Carillon — la physique fait la musique</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='11' r='6' fill='%237dd3fc'/%3E%3Crect x='4' y='22' width='24' height='4' rx='2' fill='%23f0abfc'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="/src/ui/style.css" />
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+
+    <div class="overlay">
+      <header class="brand">
+        <h1>Carillon</h1>
+        <p class="tagline">la physique fait la musique</p>
+      </header>
+
+      <nav class="toolbar" aria-label="Contrôles">
+        <button type="button" data-control="surprise">Scène surprise</button>
+        <button type="button" data-control="clear">Tout effacer</button>
+        <button type="button" data-control="mute" aria-pressed="false">Son activé</button>
+      </nav>
+
+      <p class="hint" id="hint">
+        <strong>Glisse</strong> pour dessiner une barre · <strong>Clique</strong> pour lâcher une bille
+      </p>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

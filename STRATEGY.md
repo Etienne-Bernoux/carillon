@@ -45,7 +45,7 @@ Le plan de chaque US est écrit **au moment de l'attaquer**, pas maintenant.
 | US | Titre | Intent |
 |----|-------|--------|
 | **US1** | Le premier rebond | Dessiner des barres, lâcher des billes, une note par impact. Le noyau : physique déterministe + audio + rendu. C'est le moment « ah, ça marche ». |
-| **US2** | Ça sonne juste | Gammes et tonalités, hauteur dérivée de la géométrie de la barre, enveloppe de note propre (zéro clic), polyphonie bornée, réverb. Passer de « ça bipe » à « ça joue ». |
+| **US2** | Ça sonne juste | Brancher le catalogue de gammes sur l'UI, et surtout **rendre la hauteur relative à la largeur de la scène** : le mapping actuel est en pixels absolus, donc un téléphone ne joue que deux hauteurs (limite mesurée en US1, cf. son plan). Passer de « ça sonne » à « ça joue ». |
 | **US3** | Le geste agréable | Éditer sans frustration : sélection, déplacement, suppression, undo. Types de barres (mur / trampoline / disparaissante). Tactile + responsive. |
 | **US4** | La scène qui tourne | Émetteurs périodiques, boucle déterministe reproductible, partage par URL, galerie de presets. C'est ce qui transforme un jouet en chose qu'on montre. |
 | **US5** | Le vernis | Glow, traînées, particules d'impact, `prefers-reduced-motion`, mute, budget perf tenu à 200 billes. |
