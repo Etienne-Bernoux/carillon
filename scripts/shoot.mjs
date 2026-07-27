@@ -191,6 +191,7 @@ async function runSandbox(browser, url, rec) {
     `notes=${finalStats.notes} / impacts=${finalStats.impacts}`,
   )
   rec.assert('aucune barre hors champ', finalStats.barsOutOfBounds === 0, `barsOutOfBounds=${finalStats.barsOutOfBounds}`)
+  rec.assert('aucune barre derrière le HUD', finalStats.barsUnderHud === 0, `barsUnderHud=${finalStats.barsUnderHud}`)
   rec.assert('aucun pas de simulation abandonné', finalStats.droppedSteps === 0, `droppedSteps=${finalStats.droppedSteps}`)
 
   await page.close()
@@ -310,10 +311,41 @@ async function runMobile(browser, url, rec) {
 
   const stats = await page.evaluate(() => window.__carillon.stats())
   rec.assert('aucune barre hors champ', stats.barsOutOfBounds === 0, `barsOutOfBounds=${stats.barsOutOfBounds}`)
+  // Le chevauchement du HUD se joue dans le canvas : `scrollWidth` ci-dessus est aveugle à ça.
+  rec.assert('aucune barre derrière le HUD', stats.barsUnderHud === 0, `barsUnderHud=${stats.barsUnderHud}`)
+  rec.assert(
+    'la scène reste musicalement riche sur téléphone',
+    stats.distinctPitches >= 5,
+    `hauteurs=${stats.distinctPitches}`
+  )
   rec.assert('aucun pas de simulation abandonné', stats.droppedSteps === 0, `droppedSteps=${stats.droppedSteps}`)
 
   await rec.shot(page, 'mobile')
   await page.close()
+}
+
+/**
+ * Capture cadrée sur la **seule zone de jeu**, HUD exclu.
+ *
+ * Piège payé : comparer deux captures plein cadre pour prouver qu'un clic a changé la scène ne prouve
+ * rien du tout. Le bouton cliqué reste survolé, et `.toolbar button:hover` change sa couleur avec une
+ * transition de 140 ms — les deux captures diffèrent donc même si l'action n'a rien fait. Une
+ * assertion qui ne peut pas échouer est pire qu'absente.
+ */
+async function playAreaShot(page) {
+  const clip = await page.evaluate(() => {
+    const rects = [...document.querySelectorAll('[data-hud]')].map((el) => el.getBoundingClientRect())
+    const middle = window.innerHeight / 2
+    let top = 0
+    let bottom = window.innerHeight
+    for (const rect of rects) {
+      if (rect.width <= 0 || rect.height <= 0) continue
+      if ((rect.top + rect.bottom) / 2 < middle) top = Math.max(top, rect.bottom)
+      else bottom = Math.min(bottom, rect.top)
+    }
+    return { x: 0, y: Math.ceil(top) + 2, width: window.innerWidth, height: Math.max(1, Math.floor(bottom) - Math.ceil(top) - 4) }
+  })
+  return page.screenshot({ clip })
 }
 
 async function runControls(browser, url, rec) {
@@ -334,7 +366,7 @@ async function runControls(browser, url, rec) {
   await page.click('[data-control="surprise"]')
   await tick(page)
   const afterSurprise1 = await page.evaluate(() => window.__carillon.stats().bars)
-  const shot1 = await page.screenshot()
+  const shot1 = await playAreaShot(page)
   rec.assert('« Scène surprise » remplit la scène', afterSurprise1 > 0, `bars=${afterSurprise1}`)
 
   // Deuxième appui successif → une scène différente. L'API de debug n'expose pas la géométrie
@@ -344,7 +376,7 @@ async function runControls(browser, url, rec) {
   await page.click('[data-control="surprise"]')
   await tick(page)
   const afterSurprise2 = await page.evaluate(() => window.__carillon.stats().bars)
-  const shot2 = await page.screenshot()
+  const shot2 = await playAreaShot(page)
   console.log(`  [controls] scène 1 : bars=${afterSurprise1} — scène 2 : bars=${afterSurprise2}`)
   rec.assert('« Scène surprise » (2e appui) remplit aussi la scène', afterSurprise2 > 0, `bars=${afterSurprise2}`)
   rec.assert('« Scène surprise » : deux appuis donnent des scènes différentes', !shot1.equals(shot2), 'comparaison pixel des deux captures')
@@ -360,11 +392,11 @@ async function runControls(browser, url, rec) {
     }))
 
   const tuningBefore = await readTuning()
-  const beforeTuningShot = await page.screenshot()
+  const beforeTuningShot = await playAreaShot(page)
   await page.click('[data-control="tuning"]')
   await tick(page)
   const tuningAfter = await readTuning()
-  const afterTuningShot = await page.screenshot()
+  const afterTuningShot = await playAreaShot(page)
 
   console.log(
     `  [controls] gamme : ${tuningBefore.id} (${tuningBefore.pitches} hauteurs) -> ${tuningAfter.id} (${tuningAfter.pitches} hauteurs)`
@@ -388,6 +420,29 @@ async function runControls(browser, url, rec) {
     'la scène reste musicalement riche après réaccordage',
     tuningAfter.pitches >= 8,
     `hauteurs distinctes=${tuningAfter.pitches}`
+  )
+
+  // Un seul clic ne prouve pas le cycle : un modulo cassé pourrait faire du ping-pong entre deux
+  // gammes et passer inaperçu. On fait le tour complet et on doit revenir au point de départ.
+  const seen = [tuningBefore.id, tuningAfter.id]
+  for (let i = 0; i < 8; i++) {
+    await page.click('[data-control="tuning"]')
+    await tick(page)
+    const step = await readTuning()
+    if (step.id === tuningBefore.id) break
+    seen.push(step.id)
+  }
+  const back = await readTuning()
+  console.log(`  [controls] cycle de gammes : ${seen.join(' -> ')} -> ${back.id}`)
+  rec.assert(
+    'le cycle de gammes revient à son point de départ',
+    back.id === tuningBefore.id,
+    `départ=${tuningBefore.id} arrivée=${back.id}`
+  )
+  rec.assert(
+    'le cycle traverse les 5 gammes du catalogue',
+    new Set(seen).size === 5,
+    `gammes vues=${new Set(seen).size} (${[...new Set(seen)].join(', ')})`
   )
 
   // Bouton son : bascule aria-pressed et le libellé.
@@ -424,11 +479,13 @@ async function runResize(browser, url, rec) {
   await waitForCarillon(page)
   await tick(page)
 
-  async function assertAfterResize(width, height) {
+  async function assertAfterResize(width, height, minPitches) {
     await page.setViewport({ width, height })
     await tick(page)
     const stats = await page.evaluate(() => window.__carillon.stats())
-    console.log(`  [resize] ${width}x${height} → bars=${stats.bars} barsOutOfBounds=${stats.barsOutOfBounds}`)
+    console.log(
+      `  [resize] ${width}x${height} → bars=${stats.bars} hauteurs=${stats.distinctPitches} horsChamp=${stats.barsOutOfBounds} sousHud=${stats.barsUnderHud}`
+    )
     rec.assert(
       `scène non vide après passage à ${width}x${height}`,
       stats.bars > 0,
@@ -439,12 +496,29 @@ async function runResize(browser, url, rec) {
       stats.barsOutOfBounds === 0,
       `barsOutOfBounds=${stats.barsOutOfBounds}`
     )
+    // Le chevauchement du HUD ne se voit pas depuis le DOM : il se joue dans le canvas. Sans ce
+    // compteur, une rangée de barres passant derrière les boutons restait invisible aux assertions.
+    rec.assert(
+      `aucune barre derrière le HUD à ${width}x${height}`,
+      stats.barsUnderHud === 0,
+      `barsUnderHud=${stats.barsUnderHud}`
+    )
+    // La richesse musicale se dégradait entre 600 et 999 px sans que rien ne le signale : les seuils
+    // n'avaient été posés que sur les largeurs déjà regardées.
+    rec.assert(
+      `au moins ${minPitches} hauteurs distinctes à ${width}x${height}`,
+      stats.distinctPitches >= minPitches,
+      `hauteurs=${stats.distinctPitches}`
+    )
   }
 
   // C'est le chemin exact d'une rotation de téléphone ou d'un redimensionnement de fenêtre :
   // le ResizeObserver du canvas doit reconstruire la scène dans les nouvelles bornes.
-  await assertAfterResize(900, 600)
-  await assertAfterResize(375, 740)
+  await assertAfterResize(900, 600, 8)
+  await assertAfterResize(375, 740, 5)
+  // Téléphone en paysage : la hauteur fond mais le HUD garde sa taille. C'est le viewport où les
+  // barres passaient derrière le titre et les boutons.
+  await assertAfterResize(844, 390, 5)
 
   await rec.shot(page, 'resize')
   await page.close()

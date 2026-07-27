@@ -16,12 +16,12 @@
     <canvas id="stage"></canvas>
 
     <div class="overlay">
-      <header class="brand">
+      <header class="brand" data-hud>
         <h1>Carillon</h1>
         <p class="tagline">la physique fait la musique</p>
       </header>
 
-      <nav class="toolbar" aria-label="Contrôles">
+      <nav class="toolbar" aria-label="Contrôles" data-hud>
         <button type="button" data-control="tuning" aria-label="Changer de gamme">
           <span aria-hidden="true">♪</span>&nbsp;<span id="tuning-label">Pentatonique mineure</span>
         </button>
@@ -30,7 +30,7 @@
         <button type="button" data-control="mute" aria-pressed="false">Son activé</button>
       </nav>
 
-      <p class="hint" id="hint">
+      <p class="hint" id="hint" data-hud>
         <strong>Glisse</strong> pour dessiner une barre · <strong>Clique</strong> pour lâcher une bille
       </p>
     </div>

@@ -64,6 +64,34 @@ l'étendue, puis on mélange) plutôt qu'en tirant chaque longueur indépendamme
 une propriété *par construction* et non *en moyenne*. Avec 9 barres sur un téléphone, le tirage
 indépendant donnait 3 hauteurs sur les graines malchanceuses.
 
+## Le piège se rejoue dans la preuve du correctif
+
+Ironie mesurée : la preuve navigateur écrite pour valider ce correctif était **elle-même** un proxy
+creux. Pour montrer qu'un changement de gamme réaccorde les barres, elle comparait deux captures
+d'écran plein cadre :
+
+```js
+const avant = await page.screenshot()
+await page.click('[data-control="tuning"]')
+const apres = await page.screenshot()
+rec.assert('les barres sont réaccordées', !avant.equals(apres))
+```
+
+Sauf que le clic laisse le bouton **survolé**, et `.toolbar button:hover` change sa couleur avec une
+transition de 140 ms. Les deux captures diffèrent donc *toujours*, réaccordage ou pas. Une assertion
+qui ne peut pas échouer est pire qu'absente : elle occupe la place d'un contrôle.
+
+Deux gestes pour en sortir :
+
+1. **Cadrer la capture sur ce qu'on prétend observer** — ici la seule zone de jeu, HUD exclu
+   (`page.screenshot({ clip })`). Tout ce qui reste dans le cadre est une source de faux positif.
+2. **Prouver que la preuve peut échouer** — test de mutation : neutraliser volontairement le
+   comportement (`retuneBars` mis hors service), relancer, vérifier que l'assertion **rougit**, puis
+   restaurer. Sans cette étape, on ne sait pas si l'assertion contraint quoi que ce soit.
+
+Le point 2 est la seule façon de distinguer un test vert d'un test creux. Il coûte trois minutes et
+devrait être systématique sur toute assertion de type « ça a changé » ou « ça diffère ».
+
 ## Voir aussi
 
 - `docs/solutions/harnais-de-capture-qui-ment-sur-la-perf.md` — même famille de piège, côté harnais :

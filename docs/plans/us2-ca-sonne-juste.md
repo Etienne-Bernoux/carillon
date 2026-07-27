@@ -68,6 +68,36 @@ Le défaut de fond venait d'un **test qui mesurait un proxy** (« les longueurs 
 la propriété annoncée (« les hauteurs varient »). Capitalisé dans
 `docs/solutions/tester-la-propriete-pas-son-proxy.md`.
 
+## Suites de la revue
+
+Revue faite par un agent qui n'avait pas écrit le code. Chaque point vérifié contre le code avant
+d'être traité.
+
+| Point | Défaut réel | Correctif |
+|---|---|---|
+| **Bloquant** : la preuve pixel de B6 était vide | les deux captures étaient plein cadre, donc elles différaient par l'état `:hover` du bouton cliqué (transition CSS de 140 ms) — l'assertion passait au vert même si le réaccordage ne faisait rien. La faute qui a créé cette US, réintroduite dans sa propre preuve | captures **cadrées sur la seule zone de jeu**, HUD exclu ; et **test de mutation** : réaccordage neutralisé → l'assertion rougit bien |
+| Strates désaccordées du mapping | les longueurs étaient stratifiées sur le pas de rangée, le mapping sur la largeur d'écran : pour toute largeur de 200 à 999 px, un tiers des longueurs dépassait le plafond et saturait sur **la même** note grave. 6 hauteurs sur 15 à 375, 768 et 999 px — juste par coïncidence arithmétique à 1280 px | les longueurs sont désormais tirées sur `lengthRangeForWidth`, c'est-à-dire l'étendue **de l'instrument**. Résultat : 8 hauteurs sur téléphone, 9 à 900 px, 13 sur desktop |
+| Seuils calés sur ce qui avait été regardé | B3 ne testait que 320/375/1280 et sautait 768 et 1024, où l'assertion aurait échoué | B3 balaie **tous** les viewports, plus un test dédié anti-saturation (≤ 25 % des barres sur la note la plus grave) |
+| Cache de degrés | clé sur `tuning.id` alors que le résultat dépend aussi de `rootMidi` : changer de tonique en US3 aurait renvoyé des hauteurs périmées **en silence**, pour un gain mesuré à 20 µs/s | cache supprimé |
+| Libellé de gamme en dur dans le HTML | l'UI pouvait annoncer une gamme que l'instrument ne joue pas | le libellé est écrit depuis l'état au démarrage |
+| Cycle de gammes non exercé | un seul clic était testé : un modulo cassé faisant du ping-pong entre deux gammes passait | le harnais fait le tour complet et vérifie le retour au départ **et** le passage par les 5 gammes |
+| Tests qui re-codent ou re-exécutent | les bornes étaient re-écrites en littéraux (changer un ratio laissait tout vert) ; B5 comparait à `midiForLength(...)`, donc les deux côtés dérivaient ensemble | les tests lisent les constantes exportées ; B5 attend `[91, 76, 62]`, dérivé à la main |
+| README faux | « deux barres de même couleur sonnent la même hauteur » : la teinte encode la **classe** de hauteur, donc deux barres à l'octave partagent la même couleur | formulation corrigée |
+| Code mort | `barLength` exporté sans consommateur externe, `Math.max(120, …)` qui poussait la géométrie hors canvas sous ~136 px de large | export retiré, plancher supprimé |
+
+### Défaut trouvé par ma propre vérification, hors revue
+
+En sondant un **téléphone en paysage** (844 × 390) — viewport qu'aucun scénario ne couvrait — la
+rangée haute de barres passait derrière le titre et les boutons. Cause : la marge haute valait
+`min(130, hauteur × 0,18)`, donc elle **rétrécissait** quand l'écran était bas, alors que le HUD garde
+sa taille. Et une marge basse en dur ne peut pas être juste, puisque la barre d'outils change de côté
+selon la largeur.
+
+Correctif structurel : la zone jouable est **mesurée sur le DOM** (`src/ui/scene-area.ts`) et passée
+au générateur, qui ne devine plus rien. Garde permanent associé : `stats().barsUnderHud`, compté par
+une intersection segment/rectangle exacte et asserté à 0 dans trois scénarios — parce que ce défaut
+vit **dans le canvas**, là où `scrollWidth` est aveugle.
+
 ## Risques
 
 - **Casser le desktop en corrigeant le mobile.** Mitigation : B4 verrouille la plage à 1280 px ; les

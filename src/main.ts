@@ -16,6 +16,7 @@ import { attachInput } from './ui/input'
 import { noteName } from './ui/notation'
 import { createEffects, createRenderer } from './ui/renderer'
 import { buildSurpriseScene } from './ui/scene'
+import { measureSceneArea, segmentIntersectsRect } from './ui/scene-area'
 import type { Draft } from './ui/renderer'
 
 const MIN_BAR_LENGTH = 24
@@ -101,6 +102,23 @@ function clearAll(): void {
   impactsTotal = 0
 }
 
+/**
+ * Barres qui passent derrière un élément de HUD. Sans ce compteur, le chevauchement constaté sur un
+ * téléphone en paysage n'était visible que sur une capture regardée à l'œil : aucune assertion ne
+ * pouvait l'attraper, puisqu'il se joue à l'intérieur du canvas.
+ */
+function countBarsUnderHud(): number {
+  const hudRects = Array.from(document.querySelectorAll<HTMLElement>('[data-hud]'))
+    .map((element) => element.getBoundingClientRect())
+    .filter((rect) => rect.width > 0 && rect.height > 0)
+
+  let count = 0
+  for (const bar of world.bars) {
+    if (hudRects.some((rect) => segmentIntersectsRect(bar.a, bar.b, rect))) count++
+  }
+  return count
+}
+
 function countBarsOutOfBounds(): number {
   let count = 0
   for (const bar of world.bars) {
@@ -116,9 +134,14 @@ function countBarsOutOfBounds(): number {
 
 function loadSurprise(): void {
   clearAll()
-  buildSurpriseScene(world.bounds, sceneSeed, (a, b) => {
-    placeBar(a, b)
-  })
+  buildSurpriseScene(
+    world.bounds,
+    sceneSeed,
+    (a, b) => {
+      placeBar(a, b)
+    },
+    measureSceneArea(world.bounds),
+  )
 }
 
 function fadeHint(): void {
@@ -230,6 +253,9 @@ function frame(now: number): void {
   requestAnimationFrame(frame)
 }
 
+// Le libellé de gamme est écrit depuis l'état, jamais laissé au littéral HTML : sinon l'UI pourrait
+// annoncer une gamme que l'instrument ne joue pas, et rien ne le signalerait.
+applyTuning(DEFAULT_TUNING)
 loadSurprise()
 requestAnimationFrame(frame)
 
@@ -253,6 +279,8 @@ interface CarillonDebug {
     droppedSteps: number
     /** barres dont une extrémité sort du viewport ; doit rester à 0 */
     barsOutOfBounds: number
+    /** barres qui passent derrière un élément de HUD ; doit rester à 0 */
+    barsUnderHud: number
     /** identifiant de la gamme courante */
     tuning: string
     /** nombre de hauteurs distinctes présentes sur la scène — mesure la richesse musicale */
@@ -285,6 +313,7 @@ window.__carillon = {
     notes: audio.playedCount(),
     droppedSteps,
     barsOutOfBounds: countBarsOutOfBounds(),
+    barsUnderHud: countBarsUnderHud(),
     tuning: tuning.id,
     distinctPitches: new Set(world.bars.map((bar) => bar.midi)).size,
   }),

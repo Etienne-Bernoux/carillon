@@ -64,13 +64,22 @@ export const MIN_IMPACT_SPEED = 40
  * desktop d'avant est préservé ; à 375 px ils valent 11 → 206 px, ce qui rend enfin toute
  * l'étendue atteignable au doigt.
  */
-const MIN_LENGTH_RATIO = 0.03
-const MAX_LENGTH_RATIO = 0.55
+export const MIN_LENGTH_RATIO = 0.03
+export const MAX_LENGTH_RATIO = 0.55
+
+/**
+ * Plage de longueurs qui couvre toute l'étendue de l'instrument à cette largeur. Exportée pour que
+ * le générateur de scène échantillonne **l'étendue musicale** et non celle de sa mise en page :
+ * calibrer les longueurs sur le pas d'une rangée faisait saturer un tiers d'entre elles sur la note
+ * la plus grave dès que la scène ne tenait que deux colonnes.
+ */
+export function lengthRangeForWidth(sceneWidth: number): { min: number; max: number } {
+  const width = sceneWidth > 0 ? sceneWidth : 1
+  return { min: width * MIN_LENGTH_RATIO, max: width * MAX_LENGTH_RATIO }
+}
 
 /** nombre de degrés de gamme couverts sur la plage utile, avant repli en octaves (~3 octaves) */
 const SPAN_OCTAVES = 3
-
-const degreeCache = new Map<string, readonly number[]>()
 
 /**
  * Barre courte → aigu, barre longue → grave (métaphore du carillon). On construit la liste des
@@ -82,25 +91,23 @@ const degreeCache = new Map<string, readonly number[]>()
  * sonne la même note sur un téléphone et sur un grand écran.
  */
 export function midiForLength(lengthPx: number, tuning: Tuning, sceneWidth: number): number {
-  const width = sceneWidth > 0 ? sceneWidth : 1
-  const minLength = width * MIN_LENGTH_RATIO
-  const maxLength = width * MAX_LENGTH_RATIO
+  const { min, max } = lengthRangeForWidth(sceneWidth)
   const degrees = descendingDegrees(tuning)
-  const clamped = Math.min(Math.max(lengthPx, minLength), maxLength)
-  const t = (clamped - minLength) / (maxLength - minLength)
+  const clamped = Math.min(Math.max(lengthPx, min), max)
+  const t = (clamped - min) / (max - min)
   const lastIndex = degrees.length - 1
   const index = Math.min(Math.max(Math.round(t * lastIndex), 0), lastIndex)
   return degrees[index] ?? tuning.rootMidi
 }
 
 /**
- * Mémoïsé par gamme : la liste était reconstruite et retriée à **chaque** appel, donc à chaque
- * mouvement de pointeur pendant le tracé d'une barre.
+ * Reconstruite à chaque appel, volontairement. Un cache avait été ajouté, clé sur `tuning.id`, alors
+ * que le résultat dépend aussi de `rootMidi` : le jour où l'on change de tonique en gardant l'`id`,
+ * il aurait renvoyé des hauteurs périmées **en silence**. Mesuré : 0,34 µs par appel, soit 20 µs par
+ * seconde au pire (un appel par `pointermove`). Le cache achetait donc un risque de correction contre
+ * rien du tout.
  */
 function descendingDegrees(tuning: Tuning): readonly number[] {
-  const cached = degreeCache.get(tuning.id)
-  if (cached) return cached
-
   const perOctave = tuning.scale.length
   const notes: number[] = []
   for (let i = 0; i < perOctave * SPAN_OCTAVES; i += 1) {
@@ -110,11 +117,10 @@ function descendingDegrees(tuning: Tuning): readonly number[] {
   }
   // aigu en premier : la note la plus haute correspond à la barre la plus courte
   notes.sort((a, b) => b - a)
-  degreeCache.set(tuning.id, notes)
   return notes
 }
 
-export function barLength(bar: Bar): number {
+function barLength(bar: Bar): number {
   return Math.hypot(bar.b.x - bar.a.x, bar.b.y - bar.a.y)
 }
 

@@ -18,8 +18,8 @@ pnpm dev
 - **Scène surprise** → une cascade générée, différente à chaque appui.
 
 La hauteur dépend de la longueur **relative à la largeur de l'écran** : l'instrument garde donc toute
-son étendue sur un téléphone. Et la **couleur d'une barre encode sa note** — deux barres de même
-couleur sonnent la même hauteur, on lit la partition à l'œil.
+son étendue sur un téléphone. La **couleur d'une barre encode sa classe de hauteur** — deux barres de
+même couleur jouent la même note, éventuellement à l'octave près.
 
 Le son se déverrouille au premier geste (politique d'autoplay des navigateurs).
 

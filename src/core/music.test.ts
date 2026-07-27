@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest'
 import type { Bar } from './types'
 import {
   DEFAULT_TUNING,
+  MAX_LENGTH_RATIO,
   MIN_IMPACT_SPEED,
+  MIN_LENGTH_RATIO,
   TUNINGS,
-  barLength,
   gainForImpact,
   midiForLength,
   midiToFreq,
@@ -26,8 +27,10 @@ describe('TUNINGS', () => {
 describe('midiForLength', () => {
   /** Largeur de référence : les bornes relatives y valent 38,4 → 704 px, la plage historique. */
   const DESKTOP = 1280
-  const MIN = DESKTOP * 0.03
-  const MAX = DESKTOP * 0.55
+  // Bornes lues depuis les constantes exportées, pas re-codées en littéraux : sinon changer un ratio
+  // de conception laissait tous les tests verts, les deux côtés saturant de façon cohérente.
+  const MIN = DESKTOP * MIN_LENGTH_RATIO
+  const MAX = DESKTOP * MAX_LENGTH_RATIO
   const lengths = Array.from({ length: Math.round(MAX - MIN) + 1 }, (_, i) => MIN + i)
 
   for (const tuning of TUNINGS) {
@@ -144,8 +147,17 @@ describe('B5 — retuneBars', () => {
     for (const [index, bar] of list.entries()) {
       expect(bar.a).toEqual(before[index]!.a)
       expect(bar.b).toEqual(before[index]!.b)
-      expect(bar.midi).toBe(midiForLength(barLength(bar), DEFAULT_TUNING, 1280))
     }
+
+    // Hauteurs attendues **en dur**, dérivées à la main. Les recalculer avec `midiForLength`
+    // prouverait seulement que `retuneBars` appelle `midiForLength`, jamais que le résultat est
+    // juste : les deux côtés de l'égalité dériveraient ensemble.
+    //
+    // Pentatonique mineure, tonique La3 (57), 3 octaves ⇒ degrés décroissants
+    // [91, 88, 86, 84, 81, 79, 76, 74, 72, 69, 67, 64, 62, 60, 57]. À 1280 px de large, les bornes
+    // valent 38,4 → 704 px, donc : 60 px → indice 0 (Si5) · 300 px → indice 6 (Mi5) ·
+    // 600 px → indice 12 (Ré4).
+    expect(list.map((bar) => bar.midi)).toEqual([91, 76, 62])
   })
 
   it('repart de la géométrie, donc ne dérive pas quand on réaccorde en boucle', () => {

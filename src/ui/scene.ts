@@ -1,3 +1,4 @@
+import { lengthRangeForWidth } from '../core/music'
 import { createRng } from '../core/rng'
 import type { Bounds, Vec2 } from '../core/types'
 
@@ -10,10 +11,6 @@ export const BOTTOM_INSET = 170
 export const ROWS = 6
 /** Demi-longueur minimale d'une barre : en dessous, une bille de 16 px de diamètre la manque. */
 const MIN_HALF = 18
-/** Longueur minimale d'une barre, en fraction du pas de la rangée. */
-const LENGTH_MIN_FACTOR = 0.3
-/** Étendue de la plage de longueurs, en fraction du pas : la barre la plus longue vaut ~1,8 pas. */
-const LENGTH_SPREAD = 1.5
 
 export interface SceneArea {
   left: number
@@ -48,10 +45,19 @@ export function sceneArea(bounds: Bounds): SceneArea {
  *
  * Entièrement déterministe : une même graine redonne la même scène.
  */
-export function buildSurpriseScene(bounds: Bounds, seed: number, place: PlaceBar): void {
+export function buildSurpriseScene(
+  bounds: Bounds,
+  seed: number,
+  place: PlaceBar,
+  /**
+   * Rectangle jouable. Par défaut l'heuristique `sceneArea`, mais l'application passe la zone
+   * **mesurée sur le DOM** : aucune marge en dur ne peut savoir où est le HUD, qui change de place
+   * selon la largeur et ne rétrécit pas quand l'écran est bas (cf. `scene-area.ts`).
+   */
+  area: SceneArea = sceneArea(bounds),
+): void {
   const rng = createRng(seed)
-  const area = sceneArea(bounds)
-  const usable = Math.max(120, area.right - area.left)
+  const usable = area.right - area.left
   const rowGap = (area.bottom - area.top) / ROWS
   const perRow = Math.max(2, Math.round(bounds.w / 400))
   const slot = usable / perRow
@@ -68,11 +74,15 @@ export function buildSurpriseScene(bounds: Bounds, seed: number, place: PlaceBar
     }
   }
 
-  const factors = stratifiedLengthFactors(slots.length, rng)
+  // Les longueurs cibles sont tirées sur l'étendue **de l'instrument** à cette largeur, pas sur le pas
+  // de la rangée. Calibrer sur le pas semblait naturel mais désaccordait les deux échelles : dès que
+  // la scène ne tenait que deux colonnes (toute largeur de 200 à 999 px), un tiers des longueurs
+  // dépassait le plafond du mapping et saturait sur la **même** note grave — 6 hauteurs sur 15.
+  const targets = stratifiedLengths(slots.length, lengthRangeForWidth(bounds.w), rng)
 
   for (const [k, spot] of slots.entries()) {
     const y = area.top + rowGap * (spot.row + 0.5)
-    const desiredHalf = (slot * (factors[k] ?? 1)) / 2
+    const desiredHalf = (targets[k] ?? slot) / 2
     const slope = ((spot.row + spot.index) % 2 === 0 ? 1 : -1) * (0.18 + rng() * 0.34)
 
     // Place disponible d'abord, longueur ensuite : on **borne** la longueur au minimum jouable au
@@ -102,23 +112,30 @@ export function buildSurpriseScene(bounds: Bounds, seed: number, place: PlaceBar
 }
 
 /**
- * Longueurs **stratifiées** puis mélangées, au lieu de tirages indépendants.
+ * Longueurs **stratifiées** sur la plage donnée, puis mélangées, au lieu de tirages indépendants.
  *
- * En tirage libre, la richesse musicale d'une scène dépendait de la chance : sur un téléphone (9
- * barres seulement), certaines graines ne produisaient que 3 hauteurs distinctes. La stratification
- * garantit que la scène parcourt toute l'étendue de l'instrument — c'est une propriété qu'on veut
- * *par construction*, pas en moyenne. Le mélange évite que la scène se lise comme une rampe
- * monotone de la plus courte à la plus longue.
+ * En tirage libre, la richesse musicale dépendait de la chance : sur un téléphone (9 barres), des
+ * graines malchanceuses ne donnaient que 3 hauteurs distinctes. La stratification garantit que la
+ * scène parcourt l'étendue **par construction**, pas en moyenne. Le mélange évite que la scène se
+ * lise comme une rampe monotone de la plus courte à la plus longue.
+ *
+ * Le cas `count <= 1` n'est pas atteignable depuis l'appelant actuel (au moins 9 emplacements), mais
+ * il est traité ici parce que la division par `count - 1` rendrait la fonction fausse pour un
+ * appelant futur : c'est le contrat de la fonction, pas une branche défensive gratuite.
  */
-function stratifiedLengthFactors(count: number, rng: () => number): number[] {
-  const factors = Array.from({ length: count }, (_, i) =>
-    count <= 1 ? LENGTH_MIN_FACTOR : LENGTH_MIN_FACTOR + (LENGTH_SPREAD * i) / (count - 1),
+function stratifiedLengths(
+  count: number,
+  range: { min: number; max: number },
+  rng: () => number,
+): number[] {
+  const lengths = Array.from({ length: count }, (_, i) =>
+    count <= 1 ? range.max : range.min + ((range.max - range.min) * i) / (count - 1),
   )
-  for (let i = factors.length - 1; i > 0; i--) {
+  for (let i = lengths.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1))
-    const swap = factors[i] ?? LENGTH_MIN_FACTOR
-    factors[i] = factors[j] ?? LENGTH_MIN_FACTOR
-    factors[j] = swap
+    const swap = lengths[i] ?? range.min
+    lengths[i] = lengths[j] ?? range.min
+    lengths[j] = swap
   }
-  return factors
+  return lengths
 }

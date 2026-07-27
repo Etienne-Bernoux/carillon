@@ -26,16 +26,37 @@ describe('B3 — richesse musicale de la scène d’accueil', () => {
     return new Set(midis).size
   }
 
-  it('joue au moins 5 hauteurs distinctes sur un téléphone (2 avant l’US2)', () => {
-    for (const seed of [1, 7, 12, 30]) {
-      expect(distinctPitches({ w: 375, h: 740 }, seed)).toBeGreaterThanOrEqual(5)
-      expect(distinctPitches({ w: 320, h: 568 }, seed)).toBeGreaterThanOrEqual(5)
+  // Les seuils portent sur **tous** les viewports, pas seulement ceux qui avaient été mesurés :
+  // caler un seuil sur les deux largeurs qu'on a regardées laisse un trou pour toutes les autres.
+  // C'est ce trou qui cachait 6 hauteurs sur 15 entre 600 et 999 px de large.
+  it('joue au moins 5 hauteurs distinctes partout, y compris sur un téléphone (2 avant l’US2)', () => {
+    for (const bounds of VIEWPORTS) {
+      for (const seed of [1, 7, 12, 30]) {
+        const pitches = distinctPitches(bounds, seed)
+        expect(pitches, `${bounds.w}x${bounds.h} graine ${seed}`).toBeGreaterThanOrEqual(5)
+      }
     }
   })
 
-  it('joue au moins 8 hauteurs distinctes sur un écran large', () => {
-    for (const seed of [1, 7, 12, 30]) {
-      expect(distinctPitches({ w: 1280, h: 800 }, seed)).toBeGreaterThanOrEqual(8)
+  it('joue au moins 8 hauteurs distinctes dès qu’il y a la place (≥ 600 px)', () => {
+    for (const bounds of VIEWPORTS.filter((v) => v.w >= 600)) {
+      for (const seed of [1, 7, 12, 30]) {
+        const pitches = distinctPitches(bounds, seed)
+        expect(pitches, `${bounds.w}x${bounds.h} graine ${seed}`).toBeGreaterThanOrEqual(8)
+      }
+    }
+  })
+
+  it('n’écrase pas plusieurs strates sur la note la plus grave', () => {
+    // Symptôme du désaccord entre l'échelle des longueurs et celle du mapping : les longueurs les
+    // plus grandes saturaient toutes sur le même degré, gaspillant un tiers de l'étendue.
+    for (const bounds of VIEWPORTS) {
+      const midis = collect(bounds, 7).map(([a, b]) =>
+        midiForLength(Math.hypot(b.x - a.x, b.y - a.y), DEFAULT_TUNING, bounds.w),
+      )
+      const lowest = Math.min(...midis)
+      const saturated = midis.filter((midi) => midi === lowest).length
+      expect(saturated / midis.length, `${bounds.w}px`).toBeLessThanOrEqual(0.25)
     }
   })
 

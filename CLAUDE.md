@@ -70,6 +70,15 @@ Pièges déjà connus (issus des règles cortex, à ne pas réapprendre) :
   in-page ensuite, et se rappeler qu'une mesure in-page ne voit **pas** la rastérisation.
 - Dans cet environnement, le lancement de Chrome exige de désactiver le sandbox de l'outil Bash.
   Ce n'est pas un défaut du code : ne pas « corriger » le harnais pour ça.
+- **Toute assertion « ça a changé » se valide par un test de mutation** : neutraliser le comportement,
+  vérifier que l'assertion rougit, restaurer. Déjà payé — une comparaison de captures plein cadre
+  passait au vert grâce à l'état `:hover` du bouton cliqué
+  (`docs/solutions/tester-la-propriete-pas-son-proxy.md`).
+- **Ce qui vit dans le canvas ne se vérifie pas depuis le DOM.** `scrollWidth` est aveugle aux barres
+  qui débordent ou passent derrière le HUD : il faut un compteur exposé par l'app
+  (`barsOutOfBounds`, `barsUnderHud`) et l'asserter à 0.
+- **Un seuil de test se pose sur le domaine, pas sur les cas déjà regardés.** Deux largeurs vérifiées
+  laissaient un trou sur toutes les autres : la richesse musicale y valait 40 % de sa valeur desktop.
 
 Une US n'est close qu'après avoir **regardé** les captures. Le jeu accepté est archivé dans
 `docs/proofs/us<N>/` ; `docs/proofs/<scénario>/` ne contient que l'état courant, écrasé à chaque run.
