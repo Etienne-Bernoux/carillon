@@ -37,7 +37,11 @@ qu'on vient d'apprendre. C'est tout l'intérêt du compound : chaque tour rend l
 
 Une US n'est « done » que si **tout** est vrai :
 
-1. `pnpm check` vert (typecheck + lint + tests unitaires).
+1. `pnpm check` vert = **typecheck strict + tests unitaires**. Pas de linter : `strict`,
+   `noUnusedLocals`, `noUncheckedIndexedAccess` et `exactOptionalPropertyTypes` couvrent déjà
+   l'essentiel, et une dépendance de plus demanderait sa justification (§7). Cette ligne doit
+   décrire ce que `check` fait **réellement** — une DoD qui promet plus que la commande est un
+   contrôle qui ment.
 2. Les critères d'acceptation du plan sont cochés un par un, chacun avec sa preuve.
 3. **Preuve visuelle** : au moins un screenshot du chemin nominal dans `docs/proofs/us<N>/`.
 4. **Responsive vérifié** : viewport ~375px, zéro débordement horizontal (`scrollWidth <= innerWidth`),
@@ -58,6 +62,17 @@ Pièges déjà connus (issus des règles cortex, à ne pas réapprendre) :
 - **Exercer les deux chemins** quand ils existent (temps réel *et* rattrapage).
 - Grid CSS : `minmax(0, 1fr)` pour éviter le blowout au min-content.
 - Booster une constante pour exercer un chemin lent → **revert avant commit**, systématiquement.
+- **Un flag de navigateur dans le harnais est une hypothèse de perf.** `--use-gl=swiftshader`,
+  `--disable-gpu` et compagnie forcent le rendu logiciel et invalident toute assertion de fps
+  (déjà payé : facteur 6 sur les fps mesurés, cf.
+  `docs/solutions/harnais-de-capture-qui-ment-sur-la-perf.md`).
+- **Avant d'optimiser, bissecter la dépense** : coût du noyau pur en Vitest d'abord, coût du dessin
+  in-page ensuite, et se rappeler qu'une mesure in-page ne voit **pas** la rastérisation.
+- Dans cet environnement, le lancement de Chrome exige de désactiver le sandbox de l'outil Bash.
+  Ce n'est pas un défaut du code : ne pas « corriger » le harnais pour ça.
+
+Une US n'est close qu'après avoir **regardé** les captures. Le jeu accepté est archivé dans
+`docs/proofs/us<N>/` ; `docs/proofs/<scénario>/` ne contient que l'état courant, écrasé à chaque run.
 
 Le cœur simulation/audio est **pur et déterministe** (seed explicite, pas de `Math.random()` caché,
 pas de `Date.now()` dans la boucle) → testable en Vitest sans navigateur. C'est ce qui rend la

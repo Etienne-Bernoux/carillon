@@ -1,6 +1,16 @@
 node_modules/
+.pnpm-store/
 dist/
 .DS_Store
 *.log
 .vite/
 coverage/
+
+# Sorties brutes du harnais : écrasées à chaque `pnpm shoot`, donc non versionnées.
+# Le jeu de captures *accepté* d'une US vit dans docs/proofs/us<N>/, qui est versionné.
+docs/proofs/sandbox/
+docs/proofs/stress/
+docs/proofs/mobile/
+docs/proofs/controls/
+docs/proofs/resize/
+docs/proofs/smoke/
