@@ -1,4 +1,4 @@
-# CLAUDE.md — fullAuto
+# CLAUDE.md — carillon
 
 > Projet **autonome** : Etienne a délégué la construction de bout en bout (choix du produit inclus).
 > Ce fichier décrit **ma méthode de travail** ici. Il prime sur la posture pédago de
