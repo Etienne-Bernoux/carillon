@@ -1,0 +1,23 @@
+{
+  "name": "carillon",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Bac à sable musical physique : on dessine, on lâche des billes, chaque rebond joue une note.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "check": "pnpm typecheck && pnpm test",
+    "shoot": "node scripts/shoot.mjs"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^24.10.0",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.0",
+    "vitest": "^3.2.4"
+  }
+}

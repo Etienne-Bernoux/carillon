@@ -1,0 +1,65 @@
+# STRATEGY.md — Carillon
+
+## Le produit
+
+**Carillon** — un bac à sable où la **physique fait la musique**.
+
+On dessine des barres sur une toile, on lâche des billes. La gravité fait le reste : chaque
+collision joue une note et allume une onde de lumière. Une scène qui semblait aléatoire finit par
+tourner en boucle et devenir un motif. On déplace une barre d'un degré, la mélodie change.
+
+**Pourquoi c'est fun** : la boucle est *dessiner → écouter → ajuster*, avec moins d'une seconde
+entre le geste et la récompense. On ne compose pas, on **découvre** — c'est un instrument qu'on
+accorde par la géométrie. Le retour est double, visuel **et** sonore, donc chaque essai est lisible
+même sans oreille musicale.
+
+**Pourquoi c'est visuel** : tout est à l'écran en permanence — trajectoires, traînées, impacts,
+ondes. Aucun état caché, aucun menu à explorer pour comprendre.
+
+## Non-duplication
+
+Le voisinage (`~/Perso/projets/`) couvre déjà : simulation émergente serveur (`neural-garden`,
+Rust), arcade (`space-breakout`), pédagogie enfants (`loto-histoire`, `apprendre-heure`,
+`math-learner`), idle game (`croisade`). **Rien n'utilise l'audio comme matière première.**
+Carillon prend cet angle : la Web Audio API est le cœur du produit, pas un habillage.
+
+## Ce que ça n'est pas (non-buts)
+
+- Pas de backend, pas de compte, pas de persistance serveur. Tout est local + URL.
+- Pas un DAW : pas de piste, pas de partition, pas de MIDI. La géométrie **est** la partition.
+- Pas d'export audio/vidéo (le partage se fait par URL de scène).
+- Pas de dépendance runtime : canvas 2D + Web Audio natifs.
+
+## Critères de succès
+
+1. **10 secondes** : un nouvel arrivant lâche une bille et entend une note sans lire de mode d'emploi.
+2. **On veut recommencer** : on modifie une barre juste pour entendre ce que ça change.
+3. **60 fps** avec 200 billes actives sur un laptop, sans crachotement audio.
+4. **Tactile** : jouable au doigt sur un viewport 375px, zéro débordement horizontal.
+
+## Backlog
+
+Une US = une boucle compound complète (plan → work → verify → review → compound → commit).
+Le plan de chaque US est écrit **au moment de l'attaquer**, pas maintenant.
+
+| US | Titre | Intent |
+|----|-------|--------|
+| **US1** | Le premier rebond | Dessiner des barres, lâcher des billes, une note par impact. Le noyau : physique déterministe + audio + rendu. C'est le moment « ah, ça marche ». |
+| **US2** | Ça sonne juste | Gammes et tonalités, hauteur dérivée de la géométrie de la barre, enveloppe de note propre (zéro clic), polyphonie bornée, réverb. Passer de « ça bipe » à « ça joue ». |
+| **US3** | Le geste agréable | Éditer sans frustration : sélection, déplacement, suppression, undo. Types de barres (mur / trampoline / disparaissante). Tactile + responsive. |
+| **US4** | La scène qui tourne | Émetteurs périodiques, boucle déterministe reproductible, partage par URL, galerie de presets. C'est ce qui transforme un jouet en chose qu'on montre. |
+| **US5** | Le vernis | Glow, traînées, particules d'impact, `prefers-reduced-motion`, mute, budget perf tenu à 200 billes. |
+
+**Ordre non négociable** : US1 avant tout le reste. Si le noyau physique+audio n'est pas
+satisfaisant, aucune quantité de vernis ne sauve le produit — et on préférera revoir US1 plutôt
+qu'empiler US2.
+
+## Décisions techniques (et pourquoi)
+
+| Décision | Raison | Alternative écartée |
+|---|---|---|
+| Vite + TypeScript, zéro framework UI | l'UI est un panneau de contrôles ; un framework coûterait plus qu'il n'apporte | Svelte (déjà utilisé sur `croisade`, mais inutile ici) |
+| Canvas 2D | 200 billes + traînées passent largement ; le code reste lisible | WebGL — à garder si le budget perf casse en US5 |
+| Pas step-fixe → **oui**, pas fixe à 1/120 s avec accumulateur | la physique doit être reproductible pour tester et pour partager une scène par URL | intégration au `deltaTime` brut : non déterministe |
+| Collisions cercle/segment analytiques | ~50 segments × 200 billes tient sans broadphase ; simple et exact | moteur physique tiers (matter.js) : dépendance runtime, overkill |
+| Seed explicite, RNG maison | déterminisme = testabilité + reproductibilité d'une scène partagée | `Math.random()` |
