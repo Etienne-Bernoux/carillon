@@ -14,6 +14,8 @@ import { DT, addBar, createWorld, spawnBall, stepWorld } from './core/physics'
 import type { Bar, Emitter, ImpactEvent, Vec2 } from './core/types'
 import { MAX_BALLS, addEmitter, removeEmitter, runEmitters } from './core/emitter'
 import { createHistory } from './core/history'
+import { decodeScene, encodeScene, fromShared, toShared } from './core/share'
+import type { SharedScene } from './core/share'
 import { hitTestWorld } from './core/hit-test'
 import { attachInput } from './ui/input'
 import type { Gesture } from './ui/input'
@@ -67,6 +69,8 @@ let interacted = false
 /** Vrai dès que la scène appartient à l'utilisateur : on ne la régénère plus sous ses doigts. */
 let userOwnsScene = false
 let tuning: Tuning = DEFAULT_TUNING
+/** Ordre **figé** : l'index de gamme voyage dans l'URL, le réordonner casserait les liens existants. */
+const TUNING_IDS = TUNINGS.map((candidate) => candidate.id)
 let interaction: Interaction = { ...NO_INTERACTION }
 let dragArea: SceneArea | null = null
 /**
@@ -188,6 +192,145 @@ function loadSurprise(): void {
     },
     measureSceneArea(world.bounds),
   )
+}
+
+/** Préfixe du fragment d'URL qui porte une scène. */
+const SHARE_KEY = '#s='
+
+/**
+ * Repères du partage : **x rapporté à la largeur du viewport, y à la hauteur de la zone de jeu**.
+ *
+ * Deux essais avant celui-ci. Rapporter x à `area.left` faisait déborder le contenu de la différence
+ * de marge entre deux écrans, et l'écrêtage qui suivait raccourcissait des barres. Rapporter *y* à la
+ * largeur préservait les notes exactement — mais une scène de bureau s'ouvrait sur téléphone en un
+ * bandeau écrasé dans le tiers haut, avec deux tiers d'écran vide : fidèle et laid.
+ *
+ * L'arbitrage est donc assumé : **la scène remplit l'écran du destinataire**, et la note des barres
+ * les plus diagonales peut se décaler d'un degré. C'est imperceptible pour qui n'a pas l'original sous
+ * les yeux, alors qu'un lien qui s'ouvre en bandeau minuscule ressemble à un produit cassé.
+ */
+function shareOrigin(): { x: number; y: number; width: number; height: number } {
+  const area = measureSceneArea(world.bounds)
+  return { x: 0, y: area.top, width: world.bounds.w, height: Math.max(1, area.bottom - area.top) }
+}
+
+function sharedScene(): SharedScene {
+  const origin = shareOrigin()
+  return {
+    tuningId: tuning.id,
+    bars: world.bars.map((bar) => ({
+      mx: toShared((bar.a.x + bar.b.x) / 2, origin.x, origin.width),
+      my: toShared((bar.a.y + bar.b.y) / 2, origin.y, origin.height),
+      // La longueur est rapportée à la largeur : c'est elle qui porte la note.
+      len: Math.hypot(bar.b.x - bar.a.x, bar.b.y - bar.a.y) / origin.width,
+      angle: Math.atan2(bar.b.y - bar.a.y, bar.b.x - bar.a.x),
+    })),
+    emitters: world.emitters.map((emitter) => ({
+      x: toShared(emitter.pos.x, origin.x, origin.width),
+      y: toShared(emitter.pos.y, origin.y, origin.height),
+      period: emitter.period,
+    })),
+  }
+}
+
+function applyShared(shared: SharedScene): void {
+  clearAll()
+  applyTuning(tuningById(shared.tuningId))
+
+  const area = measureSceneArea(world.bounds)
+  const origin = shareOrigin()
+  // Sur un écran proportionnellement plus court, une barre peut tomber sous la zone : on la borne
+  // plutôt que de la laisser passer derrière le HUD. Seules les barres qui ne rentrent pas voient
+  // leur note bouger — compromis assumé, et documenté au plan.
+  const place = (fx: number, fy: number): Vec2 => ({
+    x: Math.max(0, Math.min(world.bounds.w, fromShared(fx, origin.x, origin.width))),
+    y: Math.max(area.top, Math.min(area.bottom, fromShared(fy, origin.y, origin.height))),
+  })
+
+  for (const bar of shared.bars) {
+    // On repositionne le **milieu** puis on redessine la barre avec sa longueur (fraction de la
+    // largeur) et son angle : la scène remplit l'écran du destinataire sans qu'aucune barre soit
+    // déformée, donc sans qu'aucune note ne change.
+    const mid = place(bar.mx, bar.my)
+    const half = (bar.len * origin.width) / 2
+    const dx = Math.cos(bar.angle) * half
+    const dy = Math.sin(bar.angle) * half
+    const [a, b] = fitInside({ x: mid.x - dx, y: mid.y - dy }, { x: mid.x + dx, y: mid.y + dy }, area)
+    // Une barre courte sur grand écran devient plus courte que le minimum jouable sur un téléphone.
+    // On l'allonge autour de son milieu au lieu de la refuser : perdre des barres d'un lien reçu est
+    // pire qu'une note un peu plus aiguë sur les plus petites.
+    placeBar(...atLeastPlayable(a, b))
+  }
+  for (const emitter of shared.emitters) {
+    addEmitter(world, place(emitter.x, emitter.y), { period: emitter.period })
+  }
+  // La scène vient de quelqu'un d'autre : on ne la régénère pas au redimensionnement.
+  userOwnsScene = true
+}
+
+/**
+ * Fait rentrer un segment dans la zone en le **translatant**, pas en le raccourcissant : raccourcir
+ * changerait sa note. Redessiner une barre depuis son milieu peut envoyer ses extrémités hors zone —
+ * deux barres passaient derrière le HUD en paysage — alors qu'un simple décalage suffit presque
+ * toujours. On ne borne un axe que si la barre y est plus grande que la zone, cas où aucune position
+ * ne satisfait la contrainte (même raisonnement que le déplacement à la main, US3).
+ */
+function fitInside(a: Vec2, b: Vec2, area: SceneArea): [Vec2, Vec2] {
+  const dx = clampDelta(0, Math.min(a.x, b.x), Math.max(a.x, b.x), area.left, area.right)
+  const dy = clampDelta(0, Math.min(a.y, b.y), Math.max(a.y, b.y), area.top, area.bottom)
+  return [
+    { x: a.x + dx, y: a.y + dy },
+    { x: b.x + dx, y: b.y + dy },
+  ]
+}
+
+/** Étire un segment autour de son milieu jusqu'à la longueur minimale jouable, s'il est trop court. */
+function atLeastPlayable(a: Vec2, b: Vec2): [Vec2, Vec2] {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const length = Math.hypot(dx, dy)
+  if (length >= MIN_BAR_LENGTH) return [a, b]
+
+  const midX = (a.x + b.x) / 2
+  const midY = (a.y + b.y) / 2
+  // Marge de 2 % : étirer à exactement le minimum laissait l'arrondi flottant repasser sous le seuil,
+  // et `placeBar` refusait la barre — une barre perdue à chaque ouverture de lien sur petit écran.
+  const half = (MIN_BAR_LENGTH * 1.02) / 2
+  const ux = length < 1e-6 ? 1 : dx / length
+  const uy = length < 1e-6 ? 0 : dy / length
+  return [
+    { x: midX - ux * half, y: midY - uy * half },
+    { x: midX + ux * half, y: midY + uy * half },
+  ]
+}
+
+function shareLink(): string {
+  return `${location.origin}${location.pathname}${SHARE_KEY}${encodeScene(sharedScene(), TUNING_IDS)}`
+}
+
+/** Scène portée par l'URL, ou `null`. Un lien illisible rend `null`, jamais une erreur. */
+function sceneFromUrl(): SharedScene | null {
+  const hash = location.hash
+  if (!hash.startsWith(SHARE_KEY)) return null
+  return decodeScene(hash.slice(SHARE_KEY.length), TUNING_IDS)
+}
+
+let announceTimer: ReturnType<typeof setTimeout> | null = null
+const hintTemplate = hint?.innerHTML ?? ''
+
+/**
+ * Message éphémère, affiché dans la pastille d'astuce plutôt que dans un élément dédié : elle est déjà
+ * la zone que l'œil regarde après une action, et l'ajouter ailleurs mangerait de la hauteur de jeu.
+ */
+function announce(text: string): void {
+  if (!hint) return
+  hint.textContent = text
+  hint.removeAttribute('data-faded')
+  if (announceTimer !== null) clearTimeout(announceTimer)
+  announceTimer = setTimeout(() => {
+    hint.innerHTML = hintTemplate
+    if (interacted) hint.setAttribute('data-faded', 'true')
+  }, 2200)
 }
 
 function fadeHint(): void {
@@ -468,6 +611,20 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-control
         }
         break
       }
+      case 'share': {
+        const link = shareLink()
+        // `window.history` explicitement : `history` désigne ici l'historique d'annulation du produit.
+        // Et `replaceState` plutôt que `pushState` : sinon chaque partage ajoute une entrée et le
+        // bouton « retour » du navigateur devient inutilisable.
+        window.history.replaceState(null, '', link)
+        void navigator.clipboard?.writeText(link).then(
+          () => announce('Lien copié'),
+          // Le presse-papiers peut être refusé (permission, contexte non sécurisé) : l'URL est à jour
+          // dans la barre d'adresse de toute façon, donc le partage reste possible.
+          () => announce('Lien dans la barre d’adresse'),
+        )
+        break
+      }
       case 'undo':
         undo()
         break
@@ -544,7 +701,9 @@ function frame(now: number): void {
 // Le libellé de gamme est écrit depuis l'état, jamais laissé au littéral HTML : sinon l'UI pourrait
 // annoncer une gamme que l'instrument ne joue pas, et rien ne le signalerait.
 applyTuning(DEFAULT_TUNING)
-loadSurprise()
+const linked = sceneFromUrl()
+if (linked) applyShared(linked)
+else loadSurprise()
 requestAnimationFrame(frame)
 
 interface CarillonDebug {
@@ -558,6 +717,8 @@ interface CarillonDebug {
   undo(): void
   /** Géométrie des barres : sans elle, toute assertion sur un déplacement passerait par des pixels. */
   bars(): Array<{ id: number; ax: number; ay: number; bx: number; by: number; midi: number }>
+  shareLink(): string
+  loadShared(code: string): boolean
   addEmitter(x: number, y: number, period?: number): number
   emitters(): Array<{ id: number; x: number; y: number; period: number }>
   stats(): {
@@ -605,6 +766,13 @@ window.__carillon = {
   setMuted: (muted) => audio.setMuted(muted),
   setTuning: (id) => applyTuning(tuningById(id)),
   undo,
+  shareLink,
+  loadShared: (code) => {
+    const shared = decodeScene(code, TUNING_IDS)
+    if (!shared) return false
+    applyShared(shared)
+    return true
+  },
   addEmitter: (x, y, period) =>
     addEmitter(world, { x, y }, period === undefined ? {} : { period }).id,
   emitters: () =>

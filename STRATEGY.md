@@ -48,7 +48,7 @@ Le plan de chaque US est écrit **au moment de l'attaquer**, pas maintenant.
 | **US2** ✅ | Ça sonne juste | *Livrée.* Hauteur relative à la largeur de la scène (un téléphone ne jouait que 2 hauteurs, il en joue 5+), sélecteur de gamme qui **réaccorde** l'instrument, longueurs stratifiées : 11 hauteurs sur desktop, et 71 impacts par scène au lieu de 16. |
 | **US3** | Le geste agréable | Éditer sans frustration : sélection, déplacement, suppression, undo. Types de barres (mur / trampoline / disparaissante). Tactile + responsive. |
 | **US4** ✅ | La scène qui tourne | *Livrée.* Sources périodiques posées à l'appui long, déplaçables et jetables comme des barres, émission déterministe, plafond de billes. La scène d'accueil joue **19 impacts en 3,2 s sans aucun geste**. |
-| **US5** | Le lien qu'on envoie | Encoder la scène dans l'URL : sources, barres, gamme. C'était dans le lot de l'US4 au départ ; scindé parce qu'un lien vers une scène inerte n'a aucun intérêt. Le déterminisme du noyau, tenu depuis l'US1, est ce qui le rend possible. |
+| **US5** ✅ | Le lien qu'on envoie | *Livrée.* La scène **est** l'URL — 161 caractères pour la scène d'accueil, aucun serveur. Le format encode milieu, longueur et angle : un lien ouvert sur un autre écran remplit la page **et** rejoue les mêmes notes. |
 | **US6** | Le vernis | Glow, particules d'impact, `prefers-reduced-motion`, densité du HUD sur petit écran (il mange 44 % d'un 320×568). |
 
 **Ordre non négociable** : US1 avant tout le reste. Si le noyau physique+audio n'est pas
