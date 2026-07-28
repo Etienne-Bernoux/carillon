@@ -1,4 +1,4 @@
-import type { Bar, Vec2 } from './types'
+import type { Bar, Emitter, Vec2 } from './types'
 
 /** Ce qu'on a attrapé sur une barre : son corps, ou l'une de ses deux extrémités. */
 export type GrabKind = 'body' | 'endA' | 'endB'
@@ -10,17 +10,30 @@ export interface BarHit {
   distance: number
 }
 
+export interface EmitterHit {
+  emitter: Emitter
+  distance: number
+}
+
+/**
+ * Ce que le pointeur attrape. Généralisé en US4 : une entité qu'on ne pourrait ni déplacer ni jeter
+ * réintroduirait exactement la frustration que l'US3 a corrigée pour les barres.
+ */
+export type Grab = ({ target: 'bar' } & BarHit) | ({ target: 'emitter' } & EmitterHit)
+
 export interface HitRadii {
   /** rayon de préhension du corps */
   body: number
   /** rayon de préhension d'une extrémité */
   endpoint: number
+  /** rayon de préhension d'une source */
+  emitter: number
 }
 
 /** Souris : précise. */
-export const MOUSE_RADII: HitRadii = { body: 12, endpoint: 14 }
-/** Doigt : généreux, sinon rien n'est attrapable au pouce. */
-export const TOUCH_RADII: HitRadii = { body: 18, endpoint: 24 }
+export const MOUSE_RADII: HitRadii = { body: 12, endpoint: 14, emitter: 18 }
+/** Doigt : généreux, sinon rien n'est attrapable au pouce — la source est la plus petite cible. */
+export const TOUCH_RADII: HitRadii = { body: 18, endpoint: 24, emitter: 26 }
 
 function distanceToSegment(point: Vec2, a: Vec2, b: Vec2): number {
   const abx = b.x - a.x
@@ -41,6 +54,8 @@ function distanceToSegment(point: Vec2, a: Vec2, b: Vec2): number {
  * nettement plus lointain.
  */
 const ENDPOINT_BIAS = 10
+/** Même logique de biais pour une source : petite cible ronde, on aide le doigt à la viser. */
+const EMITTER_BIAS = 10
 
 /**
  * Barre visée par un point de préhension, et **par quoi** on l'attrape.
@@ -49,6 +64,11 @@ const ENDPOINT_BIAS = 10
  * échelle de distance, l'extrémité bénéficiant de `ENDPOINT_BIAS`. Le parcours suit l'ordre des
  * `id` avec une comparaison stricte, donc deux barres superposées donnent toujours le même résultat.
  */
+/** Score de comparaison d'une préhension : plus petit gagne. Une seule définition, pas deux. */
+function grabScore(hit: BarHit): number {
+  return hit.distance - (hit.kind === 'body' ? 0 : ENDPOINT_BIAS)
+}
+
 export function hitTestBars(
   bars: readonly Bar[],
   point: Vec2,
@@ -80,4 +100,35 @@ export function hitTestBars(
   }
 
   return best
+}
+
+/**
+ * Ce que le pointeur attrape dans le monde : barre ou source.
+ *
+ * Tous les candidats sont ramenés à un **score** unique (distance moins un biais selon la nature de
+ * la cible), pour la même raison qu'en US3 : un arbitrage par catégorie — « toute source bat toute
+ * barre » — ferait gagner une cible nettement plus lointaine, et on éditerait autre chose que ce
+ * qu'on vise.
+ */
+export function hitTestWorld(
+  bars: readonly Bar[],
+  emitters: readonly Emitter[],
+  point: Vec2,
+  radii: HitRadii = MOUSE_RADII,
+): Grab | null {
+  const bar = hitTestBars(bars, point, radii)
+  const barScore = bar ? grabScore(bar) : Number.POSITIVE_INFINITY
+
+  let emitterHit: EmitterHit | null = null
+  for (const emitter of emitters) {
+    const distance = Math.hypot(point.x - emitter.pos.x, point.y - emitter.pos.y)
+    if (distance <= radii.emitter && (!emitterHit || distance < emitterHit.distance)) {
+      emitterHit = { emitter, distance }
+    }
+  }
+
+  if (emitterHit && emitterHit.distance - EMITTER_BIAS < barScore) {
+    return { target: 'emitter', ...emitterHit }
+  }
+  return bar ? { target: 'bar', ...bar } : null
 }

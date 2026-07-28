@@ -32,6 +32,24 @@ export interface Bar {
   lastHitAt: number
 }
 
+/**
+ * Source qui lâche une bille à intervalle régulier. C'est ce qui fait qu'une scène joue toute seule
+ * au lieu de mourir dès que les billes sont sorties.
+ */
+export interface Emitter {
+  readonly id: number
+  pos: Vec2
+  /** secondes de simulation entre deux billes */
+  period: number
+  /**
+   * Temps de simulation du prochain lâcher. On stocke une échéance, pas un compteur de frames ni un
+   * `Date.now()` : c'est ce qui garde l'émission reproductible à graine égale.
+   */
+  nextAt: number
+  /** teinte des billes émises ; le rendu s'en sert, la physique l'ignore */
+  readonly hue: number
+}
+
 export interface ImpactEvent {
   barId: number
   ballId: number
@@ -52,6 +70,7 @@ export interface Bounds {
 export interface World {
   balls: Ball[]
   bars: Bar[]
+  emitters: Emitter[]
   /** px/s² */
   gravity: Vec2
   bounds: Bounds
@@ -59,4 +78,5 @@ export interface World {
   time: number
   nextBallId: number
   nextBarId: number
+  nextEmitterId: number
 }

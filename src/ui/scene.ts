@@ -2,7 +2,23 @@ import { lengthRangeForWidth } from '../core/music'
 import { createRng } from '../core/rng'
 import type { Bounds, Vec2 } from '../core/types'
 
-export type PlaceBar = (a: Vec2, b: Vec2) => void
+type PlaceBar = (a: Vec2, b: Vec2) => void
+type PlaceEmitter = (pos: Vec2) => void
+
+/**
+ * Récepteur de la scène générée. Un objet plutôt que des paramètres positionnels : la signature
+ * portait déjà quatre arguments, et un cinquième optionnel derrière un autre optionnel est une
+ * invitation aux erreurs d'appel.
+ */
+export interface SceneSink {
+  bar: PlaceBar
+  /**
+   * Obligatoire, et pas optionnel : une scène d'accueil sans source est une scène **morte**, et
+   * c'est la régression la plus silencieuse que ce produit puisse avoir. Un champ optionnel la
+   * rendait possible par simple oubli.
+   */
+  emitter: PlaceEmitter
+}
 
 /** Zone occupée par le titre en haut, à laisser libre pour ne pas dessiner sous le HUD. */
 export const TOP_INSET = 130
@@ -48,7 +64,7 @@ export function sceneArea(bounds: Bounds): SceneArea {
 export function buildSurpriseScene(
   bounds: Bounds,
   seed: number,
-  place: PlaceBar,
+  sink: SceneSink,
   /**
    * Rectangle jouable. Par défaut l'heuristique `sceneArea`, mais l'application passe la zone
    * **mesurée sur le DOM** : aucune marge en dur ne peut savoir où est le HUD, qui change de place
@@ -80,6 +96,15 @@ export function buildSurpriseScene(
   // dépassait le plafond du mapping et saturait sur la **même** note grave — 6 hauteurs sur 15.
   const targets = stratifiedLengths(slots.length, lengthRangeForWidth(bounds.w), rng)
 
+  // Une ou deux sources au-dessus de la première rangée : c'est ce qui fait que la scène d'accueil
+  // joue toute seule au lieu d'attendre un clic. Deux dès qu'il y a la place, pour que le motif ne
+  // soit pas une simple répétition.
+  const sourceY = area.top + rowGap * 0.35
+  const sourceCount = bounds.w >= 700 ? 2 : 1
+  for (let i = 0; i < sourceCount; i++) {
+    sink.emitter({ x: area.left + (usable * (i + 1)) / (sourceCount + 1), y: sourceY })
+  }
+
   for (const [k, spot] of slots.entries()) {
     const y = area.top + rowGap * (spot.row + 0.5)
     const desiredHalf = (targets[k] ?? slot) / 2
@@ -107,7 +132,7 @@ export function buildSurpriseScene(
     const maxRise = Math.min(y - area.top, area.bottom - y)
     const rise = Math.max(-maxRise, Math.min(maxRise, slope * half))
 
-    place({ x: cx - half, y: y - rise }, { x: cx + half, y: y + rise })
+    sink.bar({ x: cx - half, y: y - rise }, { x: cx + half, y: y + rise })
   }
 }
 

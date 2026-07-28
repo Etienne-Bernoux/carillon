@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { MOUSE_RADII, TOUCH_RADII, hitTestBars } from './hit-test'
-import type { Bar } from './types'
+import { MOUSE_RADII, TOUCH_RADII, hitTestBars, hitTestWorld } from './hit-test'
+import type { Bar, Emitter } from './types'
 
 function bar(id: number, ax: number, ay: number, bx: number, by: number, midi = 60): Bar {
   return { id, a: { x: ax, y: ay }, b: { x: bx, y: by }, restitution: 0.8, midi, lastHitAt: -1 }
@@ -93,5 +93,44 @@ describe('C1 — hitTestBars', () => {
   it('privilégie toujours l’extrémité quand on vise vraiment le bout', () => {
     const long = bar(1, 100, 300, 500, 300)
     expect(hitTestBars([long], { x: 498, y: 300 })?.kind).toBe('endB')
+  })
+})
+
+describe('D4 — préhension générique (barres et sources)', () => {
+  const horizontal = bar(0, 100, 200, 500, 200)
+
+  function emitter(id: number, x: number, y: number): Emitter {
+    return { id, pos: { x, y }, period: 0.9, nextAt: 0.9, hue: 200 }
+  }
+
+  it('ne touche rien loin de tout', () => {
+    expect(hitTestWorld([horizontal], [emitter(0, 800, 600)], { x: 300, y: 500 })).toBeNull()
+  })
+
+  it('attrape une source quand on la vise', () => {
+    const grab = hitTestWorld([horizontal], [emitter(0, 800, 600)], { x: 804, y: 603 })
+    expect(grab?.target).toBe('emitter')
+  })
+
+  it('attrape la barre quand aucune source n’est à portée', () => {
+    const grab = hitTestWorld([horizontal], [emitter(0, 800, 600)], { x: 300, y: 202 })
+    expect(grab?.target).toBe('bar')
+    expect(grab?.target === 'bar' && grab.kind).toBe('body')
+  })
+
+  it('préfère la source au corps d’une barre quand elle est posée dessus', () => {
+    // Cas réel : on pose une source sur une barre. Viser la source doit l'attraper, pas la barre.
+    const grab = hitTestWorld([horizontal], [emitter(0, 300, 200)], { x: 302, y: 201 })
+    expect(grab?.target).toBe('emitter')
+  })
+
+  it('ne laisse pas une source lointaine battre le corps sous le doigt', () => {
+    // Même défaut que celui corrigé en US3 pour les extrémités, mais entre catégories cette fois.
+    const grab = hitTestWorld([horizontal], [emitter(0, 316, 208)], { x: 300, y: 200 }, TOUCH_RADII)
+    expect(grab?.target).toBe('bar')
+  })
+
+  it('fonctionne sans aucune source', () => {
+    expect(hitTestWorld([horizontal], [], { x: 300, y: 202 })?.target).toBe('bar')
   })
 })

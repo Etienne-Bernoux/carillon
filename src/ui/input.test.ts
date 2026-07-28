@@ -1,14 +1,14 @@
-import { describe, expect, it } from 'vitest'
-import type { BarHit } from '../core/hit-test'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { Grab } from '../core/hit-test'
 import type { Bar, Vec2 } from '../core/types'
-import { attachInput } from './input'
+import { LONG_PRESS_MS, attachInput } from './input'
 import type { Gesture } from './input'
 
 /**
  * Faux canvas : la machine à gestes n'a besoin que d'écouter des événements et de connaître son
  * rectangle. Un vrai DOM coûterait une dépendance pour vérifier une machine à états.
  */
-function harness(hit: BarHit | null = null) {
+function harness(hit: Grab | null = null) {
   const listeners = new Map<string, (event: PointerEvent) => void>()
   const canvas = {
     addEventListener: (type: string, handler: (event: PointerEvent) => void) => {
@@ -47,7 +47,7 @@ function harness(hit: BarHit | null = null) {
   }
 }
 
-function fakeHit(kind: BarHit['kind'] = 'body'): BarHit {
+function fakeHit(kind: 'body' | 'endA' | 'endB' = 'body'): Grab {
   const bar: Bar = {
     id: 7,
     a: { x: 0, y: 0 },
@@ -56,10 +56,14 @@ function fakeHit(kind: BarHit['kind'] = 'body'): BarHit {
     midi: 60,
     lastHitAt: -1,
   }
-  return { bar, kind, distance: 2 }
+  return { target: 'bar', bar, kind, distance: 2 }
 }
 
 describe('machine à gestes', () => {
+  // L'appui long repose sur un timer : on le pilote plutôt que d'attendre 500 ms par test.
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
   it('un tap dans le vide lâche une bille, sans jamais dessiner', () => {
     const h = harness(null)
     h.down(100, 100)
@@ -199,5 +203,57 @@ describe('machine à gestes', () => {
     tap({ x: 10, y: 10 })
     tap({ x: 20, y: 20 })
     expect(h.firstGestures()).toBe(1)
+  })
+
+  it('un appui long dans le vide pose une source, et ne lâche pas de bille', () => {
+    const h = harness(null)
+    h.down(300, 300)
+    vi.advanceTimersByTime(LONG_PRESS_MS + 10)
+    h.up(300, 300)
+
+    expect(h.types()).toContain('long-press')
+    expect(h.types()).not.toContain('drop-ball')
+    expect(h.gestures.find((g) => g.type === 'long-press')).toMatchObject({ point: { x: 300, y: 300 } })
+  })
+
+  it('un tap court lâche toujours une bille : l’appui long ne vole pas le geste', () => {
+    const h = harness(null)
+    h.down(300, 300)
+    vi.advanceTimersByTime(LONG_PRESS_MS - 100)
+    h.up(300, 300)
+
+    expect(h.types()).toContain('drop-ball')
+    expect(h.types()).not.toContain('long-press')
+  })
+
+  it('un glisser franc annule l’appui long', () => {
+    const h = harness(null)
+    h.down(300, 300)
+    h.move(400, 300)
+    vi.advanceTimersByTime(LONG_PRESS_MS + 10)
+    h.up(400, 300)
+
+    expect(h.types()).not.toContain('long-press')
+    expect(h.types()).toContain('create-bar')
+  })
+
+  it('un tremblement sous le seuil de tap n’annule pas l’appui long', () => {
+    const h = harness(null)
+    h.down(300, 300)
+    h.move(305, 302)
+    vi.advanceTimersByTime(LONG_PRESS_MS + 10)
+    h.up(305, 302)
+
+    expect(h.types()).toContain('long-press')
+  })
+
+  it('pas d’appui long sur une barre : ce serait voler le geste d’écoute', () => {
+    const h = harness(fakeHit())
+    h.down(50, 0)
+    vi.advanceTimersByTime(LONG_PRESS_MS + 10)
+    h.up(50, 0)
+
+    expect(h.types()).not.toContain('long-press')
+    expect(h.types()).toEqual(['grab', 'tap-bar'])
   })
 })

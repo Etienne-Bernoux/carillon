@@ -11,9 +11,10 @@ import {
 } from './core/music'
 import type { Tuning } from './core/music'
 import { DT, addBar, createWorld, spawnBall, stepWorld } from './core/physics'
-import type { Bar, ImpactEvent, Vec2 } from './core/types'
+import type { Bar, Emitter, ImpactEvent, Vec2 } from './core/types'
+import { MAX_BALLS, addEmitter, removeEmitter, runEmitters } from './core/emitter'
 import { createHistory } from './core/history'
-import { hitTestBars } from './core/hit-test'
+import { hitTestWorld } from './core/hit-test'
 import { attachInput } from './ui/input'
 import type { Gesture } from './ui/input'
 import { noteName } from './ui/notation'
@@ -74,7 +75,7 @@ let dragArea: SceneArea | null = null
  * explicitement non destructif — il ne doit pas consommer une place d'annulation, et surtout pas
  * évincer l'instantané d'une vraie suppression.
  */
-let pendingSnapshot: Bar[] | null = null
+let pendingSnapshot: { bars: Bar[]; emitters: Emitter[] } | null = null
 const history = createHistory()
 
 function placeBar(a: Vec2, b: Vec2): Bar | null {
@@ -119,12 +120,18 @@ function handleImpacts(events: readonly ImpactEvent[]): void {
 
 function advance(seconds: number): void {
   const steps = Math.max(0, Math.round(seconds / DT))
-  for (let i = 0; i < steps; i++) handleImpacts(stepWorld(world, DT))
+  for (let i = 0; i < steps; i++) {
+    runEmitters(world, (pos, hue) => {
+      spawnBall(world, { x: pos.x, y: pos.y }, { x: 0, y: 0 }, { hue })
+    })
+    handleImpacts(stepWorld(world, DT))
+  }
 }
 
 function clearAll(): void {
   world.bars.length = 0
   world.balls.length = 0
+  world.emitters.length = 0
   effects.clear()
   impactsTotal = 0
 }
@@ -134,7 +141,7 @@ function clearAll(): void {
  * téléphone en paysage n'était visible que sur une capture regardée à l'œil : aucune assertion ne
  * pouvait l'attraper, puisqu'il se joue à l'intérieur du canvas.
  */
-function countBarsUnderHud(): number {
+function countUnderHud(): number {
   const hudRects = Array.from(document.querySelectorAll<HTMLElement>('[data-hud]'))
     .map((element) => element.getBoundingClientRect())
     .filter((rect) => rect.width > 0 && rect.height > 0)
@@ -143,18 +150,25 @@ function countBarsUnderHud(): number {
   for (const bar of world.bars) {
     if (hudRects.some((rect) => segmentIntersectsRect(bar.a, bar.b, rect))) count++
   }
+  // Les sources comptent aussi : un compteur qui n'en regarde qu'une partie rend l'assertion
+  // structurellement aveugle à la nouvelle entité.
+  for (const emitter of world.emitters) {
+    if (hudRects.some((rect) => segmentIntersectsRect(emitter.pos, emitter.pos, rect))) count++
+  }
   return count
 }
 
-function countBarsOutOfBounds(): number {
+function outOfBounds(point: Vec2): boolean {
+  return point.x < 0 || point.x > world.bounds.w || point.y < 0 || point.y > world.bounds.h
+}
+
+function countOutOfBounds(): number {
   let count = 0
   for (const bar of world.bars) {
-    for (const point of [bar.a, bar.b]) {
-      if (point.x < 0 || point.x > world.bounds.w || point.y < 0 || point.y > world.bounds.h) {
-        count++
-        break
-      }
-    }
+    if (outOfBounds(bar.a) || outOfBounds(bar.b)) count++
+  }
+  for (const emitter of world.emitters) {
+    if (outOfBounds(emitter.pos)) count++
   }
   return count
 }
@@ -164,8 +178,13 @@ function loadSurprise(): void {
   buildSurpriseScene(
     world.bounds,
     sceneSeed,
-    (a, b) => {
-      placeBar(a, b)
+    {
+      bar: (a, b) => {
+        placeBar(a, b)
+      },
+      emitter: (pos) => {
+        addEmitter(world, pos)
+      },
     },
     measureSceneArea(world.bounds),
   )
@@ -208,7 +227,7 @@ function removeBar(id: number): void {
 /** Valide l'instantané de préhension au moment où le geste devient réellement modifiant. */
 function commitPending(): void {
   if (!pendingSnapshot) return
-  history.push(pendingSnapshot, tuning.id)
+  history.push(pendingSnapshot.bars, pendingSnapshot.emitters, tuning.id)
   pendingSnapshot = null
 }
 
@@ -238,6 +257,11 @@ function undo(): void {
   if (!restored) return
   world.bars.length = 0
   world.bars.push(...restored.bars)
+  world.emitters.length = 0
+  world.emitters.push(...restored.emitters)
+  // Réarmer les échéances : un instantané ne porte pas de temps (cf. history.cloneEmitter), sinon
+  // annuler ferait cracher une rafale de billes pour rattraper un retard fictif.
+  for (const emitter of world.emitters) emitter.nextAt = world.time + emitter.period
   // La gamme fait partie de l'état : sans ça, annuler un changement de gamme réaccordait les barres
   // mais laissait le libellé — donc l'interface annonçait une gamme que l'instrument ne jouait plus.
   if (restored.tuningId !== tuning.id) applyTuning(tuningById(restored.tuningId))
@@ -249,11 +273,10 @@ function undo(): void {
 function handleGesture(gesture: Gesture): void {
   switch (gesture.type) {
     case 'hover':
-      interaction = {
-        hoveredBarId: gesture.hit?.bar.id ?? null,
-        hoveredKind: gesture.hit?.kind ?? null,
-        pendingDeleteBarId: null,
-      }
+      interaction =
+        gesture.hit?.target === 'bar'
+          ? { ...NO_INTERACTION, hoveredBarId: gesture.hit.bar.id, hoveredKind: gesture.hit.kind }
+          : { ...NO_INTERACTION, hoveredEmitterId: gesture.hit?.emitter.id ?? null }
       canvas.style.cursor = gesture.hit ? 'grab' : 'crosshair'
       break
 
@@ -270,8 +293,26 @@ function handleGesture(gesture: Gesture): void {
     case 'create-bar':
       // L'instantané est pris avant la modification, jamais après : c'est ce qui rend l'annulation
       // capable de faire disparaître la barre qu'on vient de créer.
-      history.push(world.bars, tuning.id)
+      history.push(world.bars, world.emitters, tuning.id)
       if (placeBar(gesture.a, gesture.b)) userOwnsScene = true
+      fadeHint()
+      break
+
+    case 'long-press':
+      // Appui long dans le vide : pose une source. C'est le seul idiome qui n'introduit pas de mode
+      // et ne vole aucun geste existant.
+      history.push(world.bars, world.emitters, tuning.id)
+      {
+        // Bornée à la création comme au déplacement : le HUD ne capture pas le pointeur (l'overlay
+        // est en `pointer-events: none`), donc un appui long sur le titre poserait une source
+        // derrière lui, hors d'atteinte.
+        const area = measureSceneArea(world.bounds)
+        addEmitter(world, {
+          x: Math.max(area.left, Math.min(area.right, gesture.point.x)),
+          y: Math.max(area.top, Math.min(area.bottom, gesture.point.y)),
+        })
+      }
+      userOwnsScene = true
       fadeHint()
       break
 
@@ -281,22 +322,39 @@ function handleGesture(gesture: Gesture): void {
       break
 
     case 'grab':
-      pendingSnapshot = world.bars.map((bar) => ({ ...bar, a: { ...bar.a }, b: { ...bar.b } }))
+      pendingSnapshot = {
+        bars: world.bars.map((bar) => ({ ...bar, a: { ...bar.a }, b: { ...bar.b } })),
+        emitters: world.emitters.map((emitter) => ({ ...emitter, pos: { ...emitter.pos } })),
+      }
       // Zone mesurée une fois par geste, pas à chaque mouvement : lire le DOM à 120 Hz pendant un
       // glisser force un recalcul de mise en page à chaque frame.
       dragArea = measureSceneArea(world.bounds)
-      interaction = {
-        hoveredBarId: gesture.hit.bar.id,
-        hoveredKind: gesture.hit.kind,
-        pendingDeleteBarId: null,
-      }
+      interaction =
+        gesture.hit.target === 'bar'
+          ? { ...NO_INTERACTION, hoveredBarId: gesture.hit.bar.id, hoveredKind: gesture.hit.kind }
+          : { ...NO_INTERACTION, hoveredEmitterId: gesture.hit.emitter.id }
       fadeHint()
       break
 
     case 'drag': {
-      const { bar } = gesture.hit
       const area = dragArea ?? measureSceneArea(world.bounds)
       commitPending()
+      userOwnsScene = true
+
+      if (gesture.hit.target === 'emitter') {
+        const { emitter } = gesture.hit
+        emitter.pos.x = Math.max(area.left, Math.min(area.right, gesture.point.x))
+        emitter.pos.y = Math.max(area.top, Math.min(area.bottom, gesture.point.y))
+        const doomed = inDeleteZone(gesture.point)
+        interaction = {
+          ...NO_INTERACTION,
+          hoveredEmitterId: emitter.id,
+          pendingDeleteEmitterId: doomed ? emitter.id : null,
+        }
+        break
+      }
+
+      const { bar } = gesture.hit
       if (gesture.hit.kind === 'body') {
         // On borne le **déplacement**, pas les extrémités : borner chaque extrémité séparément
         // raccourcirait la barre contre un bord, donc changerait sa note — un déplacement doit
@@ -337,6 +395,7 @@ function handleGesture(gesture: Gesture): void {
       }
       const pendingDelete = inDeleteZone(gesture.point)
       interaction = {
+        ...NO_INTERACTION,
         hoveredBarId: bar.id,
         hoveredKind: gesture.hit.kind,
         pendingDeleteBarId: pendingDelete ? bar.id : null,
@@ -344,7 +403,6 @@ function handleGesture(gesture: Gesture): void {
       draft = pendingDelete
         ? null
         : { a: bar.a, b: bar.b, label: labelFor(Math.hypot(bar.b.x - bar.a.x, bar.b.y - bar.a.y)) }
-      userOwnsScene = true
       break
     }
 
@@ -357,8 +415,9 @@ function handleGesture(gesture: Gesture): void {
         pendingSnapshot = null
       } else if (inDeleteZone(gesture.point)) {
         commitPending()
-        removeBar(gesture.hit.bar.id)
-      } else {
+        if (gesture.hit.target === 'bar') removeBar(gesture.hit.bar.id)
+        else removeEmitter(world, gesture.hit.emitter.id)
+      } else if (gesture.hit.target === 'bar') {
         playBar(gesture.hit.bar, 0.5)
       }
       pendingSnapshot = null
@@ -370,8 +429,10 @@ function handleGesture(gesture: Gesture): void {
       pendingSnapshot = null
       // Taper une barre la fait sonner sans rien modifier : c'est comment on apprend la
       // correspondance entre la couleur d'une barre et sa hauteur.
-      playBar(gesture.hit.bar, 0.65)
-      gesture.hit.bar.lastHitAt = world.time
+      if (gesture.hit.target === 'bar') {
+        playBar(gesture.hit.bar, 0.65)
+        gesture.hit.bar.lastHitAt = world.time
+      }
       fadeHint()
       break
   }
@@ -381,7 +442,7 @@ attachInput(canvas, {
   onFirstGesture() {
     void audio.unlock()
   },
-  hitTest: (point, radii) => hitTestBars(world.bars, point, radii),
+  hitTest: (point, radii) => hitTestWorld(world.bars, world.emitters, point, radii),
   onGesture: handleGesture,
 })
 
@@ -402,7 +463,7 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-control
         const next = TUNINGS[(index + 1) % TUNINGS.length]
         if (next) {
           // L'instantané porte la gamme d'**avant** le changement : c'est elle qu'il faut restaurer.
-          history.push(world.bars, tuning.id)
+          history.push(world.bars, world.emitters, tuning.id)
           applyTuning(next)
         }
         break
@@ -411,13 +472,13 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-control
         undo()
         break
       case 'surprise':
-        history.push(world.bars, tuning.id)
+        history.push(world.bars, world.emitters, tuning.id)
         sceneSeed += 1
         userOwnsScene = false
         loadSurprise()
         break
       case 'clear':
-        history.push(world.bars, tuning.id)
+        history.push(world.bars, world.emitters, tuning.id)
         userOwnsScene = true
         clearAll()
         break
@@ -458,6 +519,11 @@ function frame(now: number): void {
   while (accumulator >= DT && steps < MAX_STEPS_PER_FRAME) {
     accumulator -= DT
     steps++
+    // Les sources émettent avant l'intégration du pas : une bille créée doit être simulée dès le pas
+    // où elle apparaît, sinon elle « saute » d'un pas au premier affichage.
+    runEmitters(world, (pos, hue) => {
+      spawnBall(world, { x: pos.x, y: pos.y }, { x: 0, y: 0 }, { hue })
+    })
     handleImpacts(stepWorld(world, DT))
   }
   if (steps === MAX_STEPS_PER_FRAME) {
@@ -492,6 +558,8 @@ interface CarillonDebug {
   undo(): void
   /** Géométrie des barres : sans elle, toute assertion sur un déplacement passerait par des pixels. */
   bars(): Array<{ id: number; ax: number; ay: number; bx: number; by: number; midi: number }>
+  addEmitter(x: number, y: number, period?: number): number
+  emitters(): Array<{ id: number; x: number; y: number; period: number }>
   stats(): {
     fps: number
     balls: number
@@ -508,6 +576,10 @@ interface CarillonDebug {
     barsUnderHud: number
     /** identifiant de la gamme courante */
     tuning: string
+    /** nombre de sources périodiques posées */
+    emitters: number
+    /** plafond de billes vivantes, exposé pour que le harnais n'ait pas à le deviner */
+    maxBalls: number
     /** nombre de gestes annulables empilés */
     undoDepth: number
     /** nombre de hauteurs distinctes présentes sur la scène — mesure la richesse musicale */
@@ -533,6 +605,15 @@ window.__carillon = {
   setMuted: (muted) => audio.setMuted(muted),
   setTuning: (id) => applyTuning(tuningById(id)),
   undo,
+  addEmitter: (x, y, period) =>
+    addEmitter(world, { x, y }, period === undefined ? {} : { period }).id,
+  emitters: () =>
+    world.emitters.map((emitter) => ({
+      id: emitter.id,
+      x: emitter.pos.x,
+      y: emitter.pos.y,
+      period: emitter.period,
+    })),
   bars: () =>
     world.bars.map((bar) => ({
       id: bar.id,
@@ -549,10 +630,12 @@ window.__carillon = {
     impacts: impactsTotal,
     notes: audio.playedCount(),
     droppedSteps,
-    barsOutOfBounds: countBarsOutOfBounds(),
-    barsUnderHud: countBarsUnderHud(),
+    barsOutOfBounds: countOutOfBounds(),
+    barsUnderHud: countUnderHud(),
     tuning: tuning.id,
     undoDepth: history.depth(),
+    emitters: world.emitters.length,
+    maxBalls: MAX_BALLS,
     distinctPitches: new Set(world.bars.map((bar) => bar.midi)).size,
   }),
 }

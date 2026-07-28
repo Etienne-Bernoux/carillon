@@ -19,6 +19,9 @@ pnpm dev
 - **Taper une barre** → la fait sonner, sans rien modifier.
 - **Lâcher une barre sur un bord de l'écran** → la jette. Elle passe en pointillés rouges avant, pour
   qu'on le sache.
+- **Appui long** dans le vide → pose une **source** : elle lâche une bille toutes les 0,9 s, donc la
+  scène joue toute seule et on l'accorde pendant qu'elle tourne. Une source se déplace et se jette
+  comme une barre.
 - **Annuler** ou `Cmd/Ctrl+Z` → revient sur le dernier geste.
 
 Aucun mode, aucune gomme, aucun outil à sélectionner : le geste se désambiguïse par **où il commence**.

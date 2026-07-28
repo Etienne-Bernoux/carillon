@@ -137,11 +137,13 @@ export function createWorld(bounds: Bounds): World {
   return {
     balls: [],
     bars: [],
+    emitters: [],
     gravity: { x: DEFAULT_GRAVITY.x, y: DEFAULT_GRAVITY.y },
     bounds,
     time: 0,
     nextBallId: 0,
     nextBarId: 0,
+    nextEmitterId: 0,
   }
 }
 

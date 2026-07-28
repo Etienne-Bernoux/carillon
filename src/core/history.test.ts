@@ -29,7 +29,7 @@ describe('createHistory — C4 : 20 gestes enchaînés', () => {
     const expectedUndos: Bar[][] = []
 
     for (let step = 0; step < 20; step++) {
-      history.push(bars, TUNING)
+      history.push(bars, [], TUNING)
       // L'instantané attendu après cet undo est l'état juste avant la modification.
       expectedUndos.unshift(bars.map((bar) => ({ ...bar, a: { ...bar.a }, b: { ...bar.b } })))
       bars = bars.map((bar, i) => (i === step ? { ...bar, midi: bar.midi + 12, b: { x: bar.b.x + 5, y: bar.b.y } } : bar))
@@ -57,7 +57,7 @@ describe('createHistory — isolation (copie profonde)', () => {
     const bar = makeBar(1, 60)
     const bars = [bar]
 
-    history.push(bars, TUNING)
+    history.push(bars, [], TUNING)
     bar.midi = 999
     bar.a.x = 12345
 
@@ -69,8 +69,8 @@ describe('createHistory — isolation (copie profonde)', () => {
 
   it('muter le résultat d’un undo ne change pas ce qui reste dans la pile', () => {
     const history = createHistory()
-    history.push([makeBar(1, 60)], TUNING)
-    history.push([makeBar(1, 62)], TUNING)
+    history.push([makeBar(1, 60)], [], TUNING)
+    history.push([makeBar(1, 62)], [], TUNING)
 
     const first = history.undo()?.bars ?? null
     expect(first).not.toBeNull()
@@ -95,7 +95,7 @@ describe('createHistory — C5 : pile bornée', () => {
     const history = createHistory({ limit })
 
     for (let i = 0; i < limit + 10; i++) {
-      history.push([makeBar(1, 60 + i)], TUNING)
+      history.push([makeBar(1, 60 + i)], [], TUNING)
     }
 
     expect(history.depth()).toBe(limit)
@@ -119,20 +119,20 @@ describe('createHistory — C5 : pile bornée', () => {
 
   it('limit est borné à 1 même si on passe 0 ou un nombre négatif', () => {
     const zero = createHistory({ limit: 0 })
-    zero.push([makeBar(1, 60)], TUNING)
-    zero.push([makeBar(1, 61)], TUNING)
+    zero.push([makeBar(1, 60)], [], TUNING)
+    zero.push([makeBar(1, 61)], [], TUNING)
     expect(zero.depth()).toBe(1)
 
     const negative = createHistory({ limit: -10 })
-    negative.push([makeBar(1, 60)], TUNING)
-    negative.push([makeBar(1, 61)], TUNING)
+    negative.push([makeBar(1, 60)], [], TUNING)
+    negative.push([makeBar(1, 61)], [], TUNING)
     expect(negative.depth()).toBe(1)
   })
 
   it('sans options, la limite par défaut est DEFAULT_HISTORY_LIMIT', () => {
     const history = createHistory()
     for (let i = 0; i < DEFAULT_HISTORY_LIMIT + 3; i++) {
-      history.push([makeBar(1, 60 + i)], TUNING)
+      history.push([makeBar(1, 60 + i)], [], TUNING)
     }
     expect(history.depth()).toBe(DEFAULT_HISTORY_LIMIT)
   })
@@ -141,25 +141,25 @@ describe('createHistory — C5 : pile bornée', () => {
 describe('createHistory — déduplication', () => {
   it('deux push consécutifs d’états identiques ne créent qu’une entrée', () => {
     const history = createHistory()
-    history.push([makeBar(1, 60)], TUNING)
-    history.push([makeBar(1, 60)], TUNING)
+    history.push([makeBar(1, 60)], [], TUNING)
+    history.push([makeBar(1, 60)], [], TUNING)
     expect(history.depth()).toBe(1)
   })
 
   it('un push d’un état réellement différent en crée une deuxième', () => {
     const history = createHistory()
-    history.push([makeBar(1, 60)], TUNING)
-    history.push([makeBar(1, 62)], TUNING)
+    history.push([makeBar(1, 60)], [], TUNING)
+    history.push([makeBar(1, 62)], [], TUNING)
     expect(history.depth()).toBe(2)
   })
 
   it('la déduplication ne compare que les valeurs, pas les références', () => {
     const history = createHistory()
     const first = [makeBar(1, 60, 10, 20, 110, 20)]
-    history.push(first, TUNING)
+    history.push(first, [], TUNING)
     // Objet différent en mémoire mais valeurs identiques : doit toujours dédupliquer.
     const second = [makeBar(1, 60, 10, 20, 110, 20)]
-    history.push(second, TUNING)
+    history.push(second, [], TUNING)
     expect(history.depth()).toBe(1)
   })
 })
@@ -167,8 +167,8 @@ describe('createHistory — déduplication', () => {
 describe('createHistory — clear', () => {
   it('remet la pile à zéro', () => {
     const history = createHistory()
-    history.push([makeBar(1, 60)], TUNING)
-    history.push([makeBar(1, 62)], TUNING)
+    history.push([makeBar(1, 60)], [], TUNING)
+    history.push([makeBar(1, 62)], [], TUNING)
     expect(history.depth()).toBe(2)
 
     history.clear()
@@ -195,28 +195,28 @@ describe('déduplication et gamme — régressions de la revue US3', () => {
     // réelle : taper une barre pour l'écouter consommait une place d'annulation, et 40 taps
     // évinçaient l'instantané d'une vraie suppression.
     const history = createHistory()
-    history.push([bar(-1)], TUNING)
-    history.push([bar(12.5)], TUNING)
-    history.push([bar(31.75)], TUNING)
+    history.push([bar(-1)], [], TUNING)
+    history.push([bar(12.5)], [], TUNING)
+    history.push([bar(31.75)], [], TUNING)
     expect(history.depth()).toBe(1)
   })
 
   it('ne déduplique pas quand la gamme change, même à barres identiques', () => {
     const history = createHistory()
-    history.push([bar(-1)], 'pentatonic-minor')
-    history.push([bar(-1)], 'dorian')
+    history.push([bar(-1)], [], 'pentatonic-minor')
+    history.push([bar(-1)], [], 'dorian')
     expect(history.depth()).toBe(2)
   })
 
   it('restitue la gamme d’avant le geste', () => {
     const history = createHistory()
-    history.push([bar(-1)], 'hirajoshi')
+    history.push([bar(-1)], [], 'hirajoshi')
     expect(history.undo()?.tuningId).toBe('hirajoshi')
   })
 
   it('n’expose jamais un `lastHitAt` restauré : c’est de l’état de rendu, pas d’édition', () => {
     const history = createHistory()
-    history.push([bar(42)], TUNING)
+    history.push([bar(42)], [], TUNING)
     expect(history.undo()?.bars[0]?.lastHitAt).toBe(-1)
   })
 })
