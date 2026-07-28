@@ -1,5 +1,14 @@
 import type { GrabKind } from '../core/hit-test'
+import {
+  advanceParticles,
+  clearParticles,
+  createParticleField,
+  particleFade,
+  spawnImpactParticles,
+} from '../core/particles'
+import type { Particle } from '../core/particles'
 import { BAR_THICKNESS } from '../core/physics'
+import { createRng } from '../core/rng'
 import type { Bounds, ImpactEvent, Vec2, World } from '../core/types'
 import { hueForMidi } from './notation'
 
@@ -8,6 +17,8 @@ const BG_BOTTOM = '#04060f'
 /** Durée de la traînée derrière une bille, en secondes de simulation. */
 const TRAIL_SECONDS = 0.22
 const GLOW_MS = 420
+/** longueur de la traînée d'une étincelle, exprimée en secondes de sa propre vitesse */
+const STREAK_SECONDS = 0.05
 
 interface Ripple {
   x: number
@@ -23,13 +34,27 @@ export interface Effects {
   advance(dt: number): void
   clear(): void
   readonly ripples: readonly Ripple[]
+  readonly particles: readonly Particle[]
+  /** en mouvement réduit, aucune étincelle ne naît — les ondes, elles, restent (elles ne bougent plus) */
+  setReducedMotion(reduced: boolean): void
 }
 
 export function createEffects(): Effects {
   const ripples: Ripple[] = []
+  const field = createParticleField()
+  // Seed fixe : deux sessions qui jouent la même scène doivent produire la même gerbe. C'est la même
+  // règle que la réverbe, et c'est ce qui rend une capture comparable d'une exécution à l'autre.
+  const rand = createRng(0x5eed)
+  let reduced = false
   return {
     ripples,
+    particles: field.particles,
+    setReducedMotion(value) {
+      reduced = value
+      if (value) clearParticles(field)
+    },
     addImpact(event, midi, strength) {
+      if (!reduced) spawnImpactParticles(field, event, rand, midi)
       // Au-delà de ~140 ondes simultanées le gain visuel est nul et le coût réel : on jette les plus vieilles.
       if (ripples.length > 140) ripples.splice(0, ripples.length - 140)
       ripples.push({
@@ -42,6 +67,7 @@ export function createEffects(): Effects {
       })
     },
     advance(dt) {
+      advanceParticles(field, dt)
       let write = 0
       for (let i = 0; i < ripples.length; i++) {
         const r = ripples[i]
@@ -53,6 +79,7 @@ export function createEffects(): Effects {
     },
     clear() {
       ripples.length = 0
+      clearParticles(field)
     },
   }
 }
@@ -65,6 +92,8 @@ export interface Draft {
 
 /** État d'interaction courant : ce que le rendu doit montrer, sans que le monde en sache rien. */
 export interface Interaction {
+  /** montrer les poignées de **toutes** les barres, faute de survol au doigt */
+  revealHandles: boolean
   hoveredBarId: number | null
   hoveredKind: GrabKind | null
   /** barre qui sera supprimée si l'on relâche maintenant — doit se voir avant le relâchement */
@@ -74,6 +103,7 @@ export interface Interaction {
 }
 
 export const NO_INTERACTION: Interaction = {
+  revealHandles: false,
   hoveredBarId: null,
   hoveredKind: null,
   pendingDeleteBarId: null,
@@ -84,6 +114,18 @@ export const NO_INTERACTION: Interaction = {
 export interface Renderer {
   resize(): Bounds
   draw(world: World, effects: Effects, draft: Draft | null, interaction: Interaction): void
+  /**
+   * Mouvement réduit : on **raccourcit**, on ne fige pas. Une scène immobile ne serait plus un
+   * instrument — les billes doivent continuer de tomber, c'est la simulation. Ce qui disparaît est
+   * l'ornement : traînées, expansion des ondes, pulsation des sources.
+   */
+  setReducedMotion(reduced: boolean): void
+  /**
+   * Nombre de points de trajectoire retenus. Exposé pour que « le mouvement réduit supprime les
+   * traînées » soit assertable **directement**, et non par un comptage de pixels clairs — qui ne
+   * mesurait en réalité que le cœur des billes.
+   */
+  trailPointCount(): number
 }
 
 /**
@@ -135,6 +177,7 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
   const trails = new Map<number, number[]>()
   let bounds: Bounds = { w: stage.clientWidth || 1, h: stage.clientHeight || 1 }
   let backdrop: CanvasGradient | null = null
+  let reducedMotion = false
 
   function resize(): Bounds {
     const dpr = Math.min(window.devicePixelRatio || 1, 2)
@@ -177,6 +220,7 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
       strokeBar(bar.a, bar.b)
 
       if (bar.id === interaction.hoveredBarId) drawGrabHandles(bar, interaction.hoveredKind)
+      else if (interaction.revealHandles) drawGrabHandles(bar, null, 0.45)
     }
   }
 
@@ -184,8 +228,8 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
    * Poignées de préhension au survol. Elles ne sont pas décoratives : sans elles, rien n'indique
    * qu'une extrémité s'attrape pour accorder la barre, et le geste central du produit reste invisible.
    */
-  function drawGrabHandles(bar: { a: Vec2; b: Vec2 }, kind: GrabKind | null): void {
-    base.strokeStyle = 'rgba(232, 240, 255, 0.55)'
+  function drawGrabHandles(bar: { a: Vec2; b: Vec2 }, kind: GrabKind | null, strength = 1): void {
+    base.strokeStyle = `rgba(232, 240, 255, ${0.55 * strength})`
     base.lineWidth = 1.4
     strokeBar(bar.a, bar.b)
 
@@ -195,8 +239,10 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
     ] as const) {
       const active = kind === own
       base.beginPath()
-      base.arc(point.x, point.y, active ? 8 : 5.5, 0, Math.PI * 2)
-      base.fillStyle = active ? 'rgba(255, 255, 255, 0.95)' : 'rgba(232, 240, 255, 0.5)'
+      base.arc(point.x, point.y, active ? 8 : 5.5 * strength + 2, 0, Math.PI * 2)
+      base.fillStyle = active
+        ? 'rgba(255, 255, 255, 0.95)'
+        : `rgba(232, 240, 255, ${0.5 * strength})`
       base.fill()
     }
   }
@@ -222,12 +268,37 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
     base.globalCompositeOperation = 'lighter'
     for (const r of effects.ripples) {
       const p = r.age / r.ttl
-      const radius = 6 + p * (34 + r.strength * 62)
-      const alpha = (1 - p) * (0.25 + r.strength * 0.55)
+      // Mouvement réduit : l'onde ne s'étend pas, elle s'estompe sur place et plus vite.
+      const radius = reducedMotion ? 10 + r.strength * 8 : 6 + p * (34 + r.strength * 62)
+      const alpha = (1 - p) * (0.25 + r.strength * 0.55) * (reducedMotion ? 0.7 : 1)
       base.strokeStyle = `hsla(${r.hue}, 100%, 72%, ${alpha})`
       base.lineWidth = (1 - p) * (1.5 + r.strength * 3.5)
       base.beginPath()
       base.arc(r.x, r.y, radius, 0, Math.PI * 2)
+      base.stroke()
+    }
+    base.globalCompositeOperation = 'source-over'
+  }
+
+  /**
+   * Les étincelles se dessinent **sous** les ondes : l'anneau doit rester lisible par-dessus la gerbe,
+   * sinon l'impact perd son point de repère. Un simple `fillRect` par étincelle — pas de halo, pas de
+   * `shadowBlur` : à 240 étincelles, un sprite par pièce coûterait plus que tout le reste de la frame.
+   */
+  function drawParticles(effects: Effects): void {
+    base.globalCompositeOperation = 'lighter'
+    base.lineCap = 'round'
+    for (const particle of effects.particles) {
+      const fade = particleFade(particle)
+      // Un **segment** le long de la vitesse, pas un point : en carré de 2 px, les étincelles se
+      // lisaient comme des pixels morts au milieu du néon (vérifié sur capture). La traînée courte
+      // donne la direction de l'éclat, ce qu'un point ne peut pas faire.
+      const streak = STREAK_SECONDS * (0.4 + fade * 0.6)
+      base.strokeStyle = `hsla(${hueForMidi(particle.midi)}, 100%, ${72 + fade * 22}%, ${fade * (0.55 + particle.strength * 0.45)})`
+      base.lineWidth = 1.1 + particle.strength * 1.5 * fade
+      base.beginPath()
+      base.moveTo(particle.x, particle.y)
+      base.lineTo(particle.x - particle.vx * streak, particle.y - particle.vy * streak)
       base.stroke()
     }
     base.globalCompositeOperation = 'source-over'
@@ -268,7 +339,10 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
   function drawEmitters(world: World, interaction: Interaction): void {
     for (const emitter of world.emitters) {
       const remaining = Math.max(0, emitter.nextAt - world.time)
-      const progress = 1 - Math.min(1, remaining / Math.max(emitter.period, 1e-6))
+      // Mouvement réduit : anneau fixe, à mi-course, plutôt qu'une pulsation continue.
+      const progress = reducedMotion
+        ? 0.5
+        : 1 - Math.min(1, remaining / Math.max(emitter.period, 1e-6))
       const doomed = emitter.id === interaction.pendingDeleteEmitterId
       const hovered = emitter.id === interaction.hoveredEmitterId
 
@@ -319,7 +393,7 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
     base.lineJoin = 'round'
 
     for (const ball of world.balls) {
-      const points = trails.get(ball.id)
+      const points = reducedMotion ? undefined : trails.get(ball.id)
       if (points && points.length >= 6) {
         const headX = points[points.length - 3] ?? ball.pos.x
         const headY = points[points.length - 2] ?? ball.pos.y
@@ -350,12 +424,24 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
 
   return {
     resize,
+    trailPointCount() {
+      let total = 0
+      for (const points of trails.values()) total += points.length / 3
+      return total
+    },
+    setReducedMotion(reduced) {
+      reducedMotion = reduced
+      // La Map d'historique est vidée : sinon réactiver le mouvement ferait réapparaître d'un coup des
+      // traînées vieilles de plusieurs secondes.
+      if (reduced) trails.clear()
+    },
     draw(world, effects, draft, interaction) {
-      recordTrails(world)
+      if (!reducedMotion) recordTrails(world)
       if (backdrop) {
         base.fillStyle = backdrop
         base.fillRect(0, 0, bounds.w, bounds.h)
       }
+      drawParticles(effects)
       drawRipples(effects)
       drawEmitters(world, interaction)
       drawBars(world, interaction)

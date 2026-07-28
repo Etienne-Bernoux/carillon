@@ -24,7 +24,7 @@ const ROOT = path.resolve(__dirname, '..')
 const PROOFS_DIR = path.join(ROOT, 'docs', 'proofs')
 const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
-const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share']
+const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis']
 
 const rawArgs = process.argv.slice(2)
 const flags = new Set(rawArgs.filter((a) => a.startsWith('--')))
@@ -307,7 +307,7 @@ async function runStress(browser, url, rec) {
 
   console.log(
     `  [stress] mesuré = fps=${stats.fps.toFixed(1)} balls=${stats.balls} bars=${stats.bars} ` +
-      `impacts=${stats.impacts} notes=${stats.notes} droppedSteps=${stats.droppedSteps}`
+      `impacts=${stats.impacts} notes=${stats.notes} étincelles=${stats.particles} droppedSteps=${stats.droppedSteps}`
   )
   rec.assert(
     'le plafond de billes est réellement atteint à la mesure',
@@ -321,8 +321,20 @@ async function runStress(browser, url, rec) {
   )
   rec.assert('des notes ont réellement été jouées', stats.notes > 0, `notes=${stats.notes}`)
   rec.assert('aucun pas de simulation abandonné', stats.droppedSteps === 0, `droppedSteps=${stats.droppedSteps}`)
+  // Sans cette assertion, « fps >= 60 » mesurerait un budget d'où l'US6 serait absente tout en
+  // prétendant couvrir les particules — exactement l'erreur corrigée à l'US4 pour les sources.
   rec.assert(
-    'fps >= 60 au plafond de billes, avec sources et audio actifs',
+    'des étincelles brûlent pendant la mesure (la charge de l’US6 est dans le budget)',
+    stats.particles > 0,
+    `étincelles=${stats.particles}`
+  )
+  rec.assert(
+    'les étincelles restent sous leur plafond même à pleine charge',
+    stats.particles <= stats.maxParticles,
+    `étincelles=${stats.particles} / plafond=${stats.maxParticles}`
+  )
+  rec.assert(
+    'fps >= 60 au plafond de billes, avec sources, audio et étincelles actifs',
     stats.fps >= 60,
     `fps=${stats.fps.toFixed(1)}`
   )
@@ -721,6 +733,172 @@ async function runShare(browser, url, rec) {
   await broken.close()
 }
 
+/**
+ * Le vernis, mais mesuré. Trois défauts d'usage chiffrés au fil des US précédentes :
+ * le HUD mangeait 44 % d'un 320×568 ; l'accordage n'était découvrable qu'à la souris, faute de survol
+ * tactile ; et `prefers-reduced-motion` était ignoré.
+ */
+async function runVernis(browser, url, rec) {
+  // F1 — densité du HUD sur le plus petit écran courant.
+  const small = await browser.newPage()
+  rec.attachConsoleListeners(small)
+  await small.setViewport({ width: 320, height: 568, deviceScaleFactor: 2, isMobile: true, hasTouch: true })
+  await small.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(small)
+  await tick(small)
+
+  const hudShare = () =>
+    small.evaluate(() => {
+      const rects = [...document.querySelectorAll('[data-hud]')]
+        .map((el) => el.getBoundingClientRect())
+        .filter((r) => r.width > 0 && r.height > 0)
+      const middle = window.innerHeight / 2
+      let top = 0
+      let bottom = window.innerHeight
+      for (const r of rects) {
+        if ((r.top + r.bottom) / 2 < middle) top = Math.max(top, r.bottom)
+        else bottom = Math.min(bottom, r.top)
+      }
+      return (window.innerHeight - (bottom - top)) / window.innerHeight
+    })
+
+  const atLoad = await hudShare()
+  // Un premier geste : l'indice a été lu, il cède sa place sur les petits écrans.
+  await small.touchscreen.tap(160, 300)
+  await tick(small)
+  const afterGesture = await hudShare()
+  console.log(
+    `  [vernis] HUD sur 320x568 : ${Math.round(atLoad * 100)}% au chargement, ${Math.round(afterGesture * 100)}% après le 1er geste (44 % avant l'US6)`
+  )
+  rec.assert(
+    'le HUD occupe au plus 30 % d’un 320x568 en usage',
+    afterGesture <= 0.3,
+    `${Math.round(afterGesture * 100)}%`
+  )
+
+  // F2 — un pictogramme sans nom est une devinette : chaque contrôle garde un libellé accessible unique.
+  const labels = await small.evaluate(() =>
+    [...document.querySelectorAll('[data-control]')].map((el) => ({
+      label: el.getAttribute('aria-label') ?? '',
+      title: el.getAttribute('title') ?? '',
+      // Style **calculé**, pas `textContent` : ce dernier inclut les libellés masqués en CSS, donc il
+      // ne distingue pas le mode icône du mode texte — première version de cette assertion, creuse.
+      labelHidden: (() => {
+        const label = el.querySelector('.label')
+        return label ? getComputedStyle(label).display === 'none' : false
+      })(),
+    }))
+  )
+  rec.assert(
+    'chaque contrôle garde un libellé accessible distinct en mode icône',
+    labels.length >= 6 &&
+      labels.every((l) => l.label.length > 2 && l.title.length > 2) &&
+      new Set(labels.map((l) => l.label)).size === labels.length,
+    `${labels.length} contrôles`
+  )
+  // Le mode icône doit réellement être actif : sinon l'assertion précédente ne prouverait rien.
+  const iconMode = labels.filter((l) => l.labelHidden).length
+  rec.assert(
+    'le mode icône est bien actif sur cet écran',
+    iconMode === labels.length,
+    `${iconMode}/${labels.length} libellés masqués`
+  )
+
+  // F3 — au doigt, les poignées se révèlent au premier contact (il n'existe pas de survol tactile).
+  const revealed = await small.evaluate(() => window.__carillon.stats().revealHandles)
+  rec.assert('un contact tactile révèle les poignées de préhension', revealed, `revealHandles=${revealed}`)
+  // Capture **pendant** la révélation : après l'estompage, elle ne montrerait plus ce qu'elle prouve.
+  await rec.shot(small, 'petit-ecran-poignees')
+  await small.evaluate(() => window.__carillon.advance(6))
+  await tick(small)
+  const faded = await small.evaluate(() => window.__carillon.stats().revealHandles)
+  rec.assert('la révélation s’estompe ensuite', !faded, `revealHandles=${faded}`)
+  await rec.shot(small, 'petit-ecran-repos')
+  await small.close()
+
+  // À la souris, pas de révélation globale : le survol suffit, et l'afficher en permanence serait du bruit.
+  const desk = await browser.newPage()
+  rec.attachConsoleListeners(desk)
+  await desk.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await desk.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(desk)
+  await desk.mouse.click(640, 700)
+  await tick(desk)
+  const deskReveal = await desk.evaluate(() => window.__carillon.stats().revealHandles)
+  rec.assert('un clic souris ne révèle rien globalement', !deskReveal, `revealHandles=${deskReveal}`)
+  await desk.close()
+
+  // F4 — mouvement réduit : plus de traînées, mais les billes bougent toujours.
+  for (const reduce of [false, true]) {
+    const page = await browser.newPage()
+    rec.attachConsoleListeners(page)
+    await page.emulateMediaFeatures([
+      { name: 'prefers-reduced-motion', value: reduce ? 'reduce' : 'no-preference' },
+    ])
+    await page.setViewport({ width: 1280, height: 800 })
+    await page.goto(url, { waitUntil: 'load' })
+    await waitForCarillon(page)
+    await tick(page)
+    await page.evaluate(() => {
+      for (let i = 0; i < 20; i++) window.__carillon.dropBall(140 + i * 50, 170)
+    })
+    await wait(900)
+    const stats = await page.evaluate(() => window.__carillon.stats())
+    console.log(
+      `  [vernis] reduce=${reduce} : vu par l'app ${stats.reducedMotion}, traînée ${stats.trailPoints}, étincelles ${stats.particles}, billes ${stats.balls}`
+    )
+    rec.assert(
+      `la préférence de mouvement est bien lue (reduce=${reduce})`,
+      stats.reducedMotion === reduce,
+      `reducedMotion=${stats.reducedMotion}`
+    )
+    rec.assert(
+      reduce ? 'le mouvement réduit supprime les traînées' : 'les traînées existent en mode normal',
+      reduce ? stats.trailPoints === 0 : stats.trailPoints > 0,
+      `points=${stats.trailPoints}`
+    )
+    // Le point clé : on raccourcit, on ne fige pas. Une scène immobile ne serait plus un instrument.
+    rec.assert(
+      `les billes continuent de tomber (reduce=${reduce})`,
+      stats.balls > 0,
+      `billes=${stats.balls}`
+    )
+    rec.assert(
+      reduce ? 'le mouvement réduit supprime les étincelles' : 'les impacts produisent des étincelles',
+      reduce ? stats.particles === 0 : stats.particles > 0,
+      `étincelles=${stats.particles}`
+    )
+    if (reduce) await rec.shot(page, 'mouvement-reduit')
+    await page.close()
+  }
+
+  // F5 — les étincelles, en gros plan. Une gerbe se photographie **peu après** l'impact : à l'âge 0
+  // toutes les étincelles sont encore au point de contact, cachées dans le halo de la bille, et la
+  // capture ne montre rien. C'est ce faux négatif qui a d'abord fait croire à un rendu invisible.
+  const spark = await browser.newPage()
+  rec.attachConsoleListeners(spark)
+  await spark.setViewport({ width: 1000, height: 700, deviceScaleFactor: 2 })
+  await spark.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(spark)
+  await spark.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    c.addBar(300, 420, 700, 470)
+    c.dropBall(420, 60)
+  })
+  await spark.waitForFunction(() => window.__carillon.stats().impacts > 0, { timeout: 5000 })
+  await wait(70)
+  const sparkStats = await spark.evaluate(() => window.__carillon.stats())
+  rec.assert(
+    'un impact isolé produit une gerbe visible et bornée',
+    sparkStats.particles > 0 && sparkStats.particles <= sparkStats.maxParticles,
+    `étincelles=${sparkStats.particles}`
+  )
+  console.log(`  [vernis] gerbe d'un impact isolé : ${sparkStats.particles} étincelles`)
+  await rec.shot(spark, 'etincelles-gros-plan')
+  await spark.close()
+}
+
 async function runResize(browser, url, rec) {
   const page = await browser.newPage()
   rec.attachConsoleListeners(page)
@@ -1033,6 +1211,7 @@ const SCENARIOS = {
   resize: runResize,
   alive: runAlive,
   share: runShare,
+  vernis: runVernis,
   edit: runEdit,
   touch: runTouch,
 }

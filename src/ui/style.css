@@ -81,6 +81,12 @@ body {
 .toolbar button {
   pointer-events: auto;
   appearance: none;
+  display: inline-flex;
+  /* `baseline` grandissait la boîte : l'icône (1 rem) et le libellé (0,84 rem) ont des lignes de base
+     différentes, ce qui ajoutait ~8 px par bouton — le HUD du paysage passait de 36 % à 48 %. */
+  align-items: center;
+  gap: 6px;
+  line-height: 1.15;
   border: 1px solid var(--edge);
   border-radius: 999px;
   padding: 8px 15px;
@@ -91,6 +97,31 @@ body {
   backdrop-filter: blur(10px);
   cursor: pointer;
   transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+
+/* Le nom court de gamme ne sert qu'au mode icône. */
+.toolbar .label-short {
+  display: none;
+}
+
+.toolbar .icon {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+/*
+ * En mode texte, le pictogramme **disparaît** : afficher les deux élargissait chaque bouton d'environ
+ * 20 px, ce qui faisait passer la barre d'outils de deux à trois rangées sur un écran bas et large.
+ * Seule la gamme garde sa note de musique — elle était déjà là avant, et elle dit de quoi parle le
+ * bouton dont le texte change.
+ */
+.toolbar button:not([data-control='tuning']) .icon {
+  display: none;
+}
+
+/* Son coupé : le même pictogramme, barré. Deux glyphes différents se confondraient. */
+.toolbar button[data-control='mute'][aria-pressed='true'] .icon {
+  text-decoration: line-through;
 }
 
 .toolbar button:hover {
@@ -138,6 +169,59 @@ body {
   opacity: 0.35;
 }
 
+/*
+ * Sur petit écran, l'indice **disparaît** une fois lu au lieu de rester en filigrane : c'est un
+ * dispositif d'apprentissage à usage unique, et il coûtait 8 points de surface de jeu sur un 320×568.
+ * `announce()` le fait réapparaître le temps d'un message, puis le remasque.
+ */
+@media (max-width: 640px), (max-height: 480px) {
+  .hint[data-faded='true'] {
+    display: none;
+  }
+}
+
+/*
+ * Mode icône. Mesuré avant : le HUD occupait 44 % d'un 320×568 et 31 % d'un 375×740, parce que six
+ * libellés en toutes lettres ne tiennent pas sur une rangée et en imposaient trois. On garde les
+ * pictogrammes, les `aria-label` et les infobulles ; seul le texte visible disparaît — sauf le nom
+ * court de la gamme, qui est le seul texte porteur d'état.
+ */
+/*
+ * Mode icône : écran étroit **ou** écran bas. Un téléphone en paysage a le même problème qu'un
+ * téléphone en portrait — six libellés ne tiennent pas sur une rangée, et chaque rangée
+ * supplémentaire est prise sur une hauteur déjà rare.
+ */
+@media (max-width: 640px), (max-height: 480px) {
+  .toolbar {
+    gap: 6px;
+  }
+
+  .toolbar button {
+    padding: 9px 12px;
+  }
+
+  /* Même spécificité que la règle qui masque l'icône en mode texte, et placée après : une media query
+     n'ajoute **aucune** spécificité, donc un sélecteur plus court y perdrait. C'est ce qui a produit
+     cinq boutons parfaitement vides à la première tentative. */
+  .toolbar button:not([data-control='tuning']) .icon {
+    display: inline;
+  }
+
+  .toolbar .label {
+    display: none;
+  }
+
+  .toolbar .label-short {
+    display: inline;
+    font-size: 0.78rem;
+  }
+}
+
+/*
+ * Empilement en une colonne : **seulement** sur écran étroit. Sur un écran bas et large, la barre
+ * d'outils reste à côté du titre, où elle partage la hauteur au lieu de s'ajouter à elle — mesuré :
+ * l'empiler y coûtait 14 points de surface de jeu.
+ */
 @media (max-width: 640px) {
   .overlay {
     grid-template-columns: minmax(0, 1fr);
@@ -151,6 +235,19 @@ body {
   .toolbar {
     grid-column: 1;
     grid-row: 3;
+    justify-content: center;
+  }
+
+  /*
+   * Deux rangées **assumées**. Les cinq pictogrammes tiennent largement sur une ligne, mais le bouton
+   * de gamme garde son nom court (seul texte porteur d'état) et ne rentre pas avec eux : à 320 px le
+   * retour à la ligne éjectait le dernier bouton, seul, sous les autres — ça se lit comme un bug de
+   * mise en page. On donne donc sa propre rangée à la gamme, au-dessus, et les icônes s'alignent
+   * dessous. Même hauteur totale, intention lisible.
+   */
+  .toolbar button[data-control='tuning'] {
+    order: -1;
+    flex-basis: 100%;
     justify-content: center;
   }
 

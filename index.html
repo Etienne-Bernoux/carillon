@@ -21,19 +21,53 @@
         <p class="tagline">la physique fait la musique</p>
       </header>
 
+      <!-- Chaque bouton porte un pictogramme ET un libellé. Sous 640 px, seul le pictogramme reste
+           visible (cf. style.css) : le HUD occupait 44 % d'un écran de 320×568. Le libellé accessible
+           et l'infobulle sont conservés dans les deux cas — un pictogramme sans nom est une devinette.
+           Exception assumée : le bouton de gamme garde un nom court, parce que son texte **porte
+           l'état** (quelle gamme joue) et qu'aucune icône ne peut le dire. -->
       <nav class="toolbar" aria-label="Contrôles" data-hud>
-        <button type="button" data-control="tuning" aria-label="Changer de gamme">
-          <span aria-hidden="true">♪</span>&nbsp;<span id="tuning-label">Pentatonique mineure</span>
+        <button type="button" data-control="tuning" aria-label="Changer de gamme" title="Changer de gamme">
+          <span class="icon" aria-hidden="true">♪</span>
+          <span class="label" id="tuning-label">Pentatonique mineure</span>
+          <span class="label-short" id="tuning-label-short" aria-hidden="true">Pent. min.</span>
         </button>
-        <button type="button" data-control="surprise">Scène surprise</button>
-        <button type="button" data-control="share" title="Copier un lien vers cette scène">
-          Partager
+        <button type="button" data-control="surprise" aria-label="Scène surprise" title="Scène surprise">
+          <span class="icon" aria-hidden="true">✦</span>
+          <span class="label">Scène surprise</span>
         </button>
-        <button type="button" data-control="undo" title="Annuler le dernier geste (Cmd/Ctrl+Z)">
-          Annuler
+        <button
+          type="button"
+          data-control="share"
+          aria-label="Partager cette scène"
+          title="Copier un lien vers cette scène"
+        >
+          <span class="icon" aria-hidden="true">⤴</span>
+          <span class="label">Partager</span>
         </button>
-        <button type="button" data-control="clear">Effacer</button>
-        <button type="button" data-control="mute" aria-pressed="false">Son activé</button>
+        <button
+          type="button"
+          data-control="undo"
+          aria-label="Annuler le dernier geste"
+          title="Annuler le dernier geste (Cmd/Ctrl+Z)"
+        >
+          <span class="icon" aria-hidden="true">↺</span>
+          <span class="label">Annuler</span>
+        </button>
+        <button type="button" data-control="clear" aria-label="Tout effacer" title="Tout effacer">
+          <span class="icon" aria-hidden="true">✕</span>
+          <span class="label">Effacer</span>
+        </button>
+        <button
+          type="button"
+          data-control="mute"
+          aria-pressed="false"
+          aria-label="Couper le son"
+          title="Couper le son"
+        >
+          <span class="icon" aria-hidden="true">♫</span>
+          <span class="label" id="mute-label">Son activé</span>
+        </button>
       </nav>
 
       <!-- Volontairement court : cet indice est lu une fois, et chaque ligne qu'il prend est de la

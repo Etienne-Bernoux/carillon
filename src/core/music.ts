@@ -7,6 +7,11 @@ import type { Bar } from './types'
 export interface Tuning {
   readonly id: string
   readonly label: string
+  /**
+   * Nom compact, pour le mode icône des petits écrans. Le bouton de gamme est le seul dont le texte
+   * **porte l'état** : le réduire à un pictogramme ferait perdre l'information « quelle gamme joue ».
+   */
+  readonly short: string
   readonly scale: readonly number[]
   readonly rootMidi: number
 }
@@ -15,6 +20,7 @@ export interface Tuning {
 const PENTATONIC_MINOR: Tuning = {
   id: 'pentatonic-minor',
   label: 'Pentatonique mineure',
+  short: 'Pent. min.',
   scale: [0, 3, 5, 7, 10],
   rootMidi: 57, // A3
 }
@@ -29,24 +35,28 @@ export const TUNINGS: readonly Tuning[] = [
   {
     id: 'pentatonic-major',
     label: 'Pentatonique majeure',
+    short: 'Pent. maj.',
     scale: [0, 2, 4, 7, 9],
     rootMidi: 57,
   },
   {
     id: 'dorian',
     label: 'Dorien',
+    short: 'Dorien',
     scale: [0, 2, 3, 5, 7, 9, 10],
     rootMidi: 57,
   },
   {
     id: 'hirajoshi',
     label: 'Hirajoshi (japonaise)',
+    short: 'Hirajoshi',
     scale: [0, 2, 3, 7, 8],
     rootMidi: 57,
   },
   {
     id: 'lydian',
     label: 'Lydien',
+    short: 'Lydien',
     scale: [0, 2, 4, 6, 7, 9, 11],
     rootMidi: 57,
   },

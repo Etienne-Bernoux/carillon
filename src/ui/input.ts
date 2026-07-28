@@ -23,6 +23,12 @@ export type Gesture =
   | { type: 'drop-ball'; point: Vec2 }
   /** appui long dans le vide : pose une source */
   | { type: 'long-press'; point: Vec2 }
+  /**
+   * Premier contact **tactile** de la session. Il n'existe pas de survol au doigt, donc les poignées
+   * d'extrémité — la seule chose qui annonce qu'une barre s'attrape et s'accorde — n'apparaissaient
+   * jamais sur téléphone. Le geste central du produit n'était découvrable qu'à la souris.
+   */
+  | { type: 'touch-hint' }
   | { type: 'grab'; hit: Grab }
   | { type: 'drag'; hit: Grab; point: Vec2; delta: Vec2 }
   /** `cancelled` : le système a repris le pointeur, l'utilisateur n'a rien décidé. */
@@ -47,6 +53,7 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
   let hoveredKey = ''
   let longPressTimer: ReturnType<typeof setTimeout> | null = null
   let longPressFired = false
+  let touchHinted = false
 
   function cancelLongPress(): void {
     if (longPressTimer !== null) {
@@ -77,6 +84,10 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
     if (!unlocked) {
       unlocked = true
       handlers.onFirstGesture()
+    }
+    if (event.pointerType === 'touch' && !touchHinted) {
+      touchHinted = true
+      handlers.onGesture({ type: 'touch-hint' })
     }
     if (grabbed) {
       handlers.onGesture({ type: 'grab', hit: grabbed })

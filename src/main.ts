@@ -14,6 +14,7 @@ import { DT, addBar, createWorld, spawnBall, stepWorld } from './core/physics'
 import type { Bar, Emitter, ImpactEvent, Vec2 } from './core/types'
 import { MAX_BALLS, addEmitter, removeEmitter, runEmitters } from './core/emitter'
 import { createHistory } from './core/history'
+import { MAX_PARTICLES } from './core/particles'
 import { decodeScene, encodeScene } from './core/share'
 import type { SharedScene } from './core/share'
 import { placeSharedBar, placeSharedEmitter, toSharedBar, toSharedPoint } from './core/share-layout'
@@ -55,6 +56,8 @@ function requireElement<T extends Element>(selector: string): T {
 const canvas = requireElement<HTMLCanvasElement>('#stage')
 const hint = document.querySelector<HTMLParagraphElement>('#hint')
 const tuningLabel = document.querySelector<HTMLSpanElement>('#tuning-label')
+const tuningLabelShort = document.querySelector<HTMLSpanElement>('#tuning-label-short')
+const muteLabel = document.querySelector<HTMLSpanElement>('#mute-label')
 
 const renderer = createRenderer(canvas)
 const effects = createEffects()
@@ -73,6 +76,12 @@ let tuning: Tuning = DEFAULT_TUNING
 /** Ordre **figé** : l'index de gamme voyage dans l'URL, le réordonner casserait les liens existants. */
 const TUNING_IDS = TUNINGS.map((candidate) => candidate.id)
 let interaction: Interaction = { ...NO_INTERACTION }
+/**
+ * Temps de simulation jusqu'auquel les poignées de toutes les barres restent visibles. Déclenché par
+ * le premier contact tactile : sans survol au doigt, rien n'annonçait qu'une barre s'attrape.
+ */
+let revealHandlesUntil = -1
+const REVEAL_HANDLES_SECONDS = 5
 let dragArea: SceneArea | null = null
 /**
  * Scène reçue par lien, gardée telle quelle. Deux raisons, toutes deux trouvées en revue :
@@ -102,6 +111,9 @@ function placeBar(a: Vec2, b: Vec2): Bar | null {
 function applyTuning(next: Tuning): void {
   tuning = next
   if (tuningLabel) tuningLabel.textContent = tuning.label
+  // Le nom court sert au mode icône des petits écrans : c'est le seul libellé qui porte un état, donc
+  // le seul qu'on ne peut pas remplacer par un pictogramme.
+  if (tuningLabelShort) tuningLabelShort.textContent = tuning.short
   // Réaccorder ce qui est déjà posé : sans ça, changer de gamme ne s'entendrait qu'aux barres
   // suivantes, et la boucle « je change, j'entends » ne se ferme pas.
   retuneBars(world.bars, tuning, world.bounds.w)
@@ -395,6 +407,10 @@ function handleGesture(gesture: Gesture): void {
       fadeHint()
       break
 
+    case 'touch-hint':
+      revealHandlesUntil = world.time + REVEAL_HANDLES_SECONDS
+      break
+
     case 'long-press':
       // Appui long dans le vide : pose une source. C'est le seul idiome qui n'introduit pas de mode
       // et ne vole aucun geste existant.
@@ -613,7 +629,11 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-control
         const muted = !audio.muted()
         audio.setMuted(muted)
         button.setAttribute('aria-pressed', String(muted))
-        button.textContent = muted ? 'Son coupé' : 'Son activé'
+        // On écrit dans le libellé, pas dans le bouton : `button.textContent = …` effacerait le
+        // pictogramme et le libellé accessible en même temps.
+        if (muteLabel) muteLabel.textContent = muted ? 'Son coupé' : 'Son activé'
+        button.setAttribute('aria-label', muted ? 'Rétablir le son' : 'Couper le son')
+        button.setAttribute('title', muted ? 'Rétablir le son' : 'Couper le son')
         break
       }
     }
@@ -671,9 +691,26 @@ function frame(now: number): void {
   // Les effets avancent en temps **simulé**, pas en temps mural : après un écrêtage, les deux
   // horloges dériveraient et les ondes ne colleraient plus aux impacts.
   effects.advance(steps * DT)
-  renderer.draw(world, effects, draft, interaction)
+  renderer.draw(world, effects, draft, {
+    ...interaction,
+    revealHandles: world.time < revealHandlesUntil,
+  })
   requestAnimationFrame(frame)
 }
+
+/**
+ * Mouvement réduit : lu **une fois** au démarrage puis à chaque changement de préférence système, et
+ * non à chaque frame — interroger `matchMedia` 120 fois par seconde serait absurde.
+ */
+const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+function syncReducedMotion(): void {
+  // Les deux couches, depuis **un seul** endroit : le rendu (traînées, ondes, pulsation) et les
+  // effets (étincelles). Deux points de synchronisation finiraient par divulguer.
+  renderer.setReducedMotion(reducedMotionQuery.matches)
+  effects.setReducedMotion(reducedMotionQuery.matches)
+}
+reducedMotionQuery.addEventListener('change', syncReducedMotion)
+syncReducedMotion()
 
 // Le libellé de gamme est écrit depuis l'état, jamais laissé au littéral HTML : sinon l'UI pourrait
 // annoncer une gamme que l'instrument ne joue pas, et rien ne le signalerait.
@@ -714,6 +751,14 @@ interface CarillonDebug {
     tuning: string
     /** nombre de sources périodiques posées */
     emitters: number
+    /** poignées de toutes les barres visibles (révélation tactile) — assertable sans passer par des pixels */
+    revealHandles: boolean
+    /** préférence système de mouvement réduit, telle que l'app la voit */
+    reducedMotion: boolean
+    /** points de trajectoire retenus par le rendu ; doit être 0 en mouvement réduit */
+    trailPoints: number
+    particles: number
+    maxParticles: number
     /** plafond de billes vivantes, exposé pour que le harnais n'ait pas à le deviner */
     maxBalls: number
     /** nombre de gestes annulables empilés */
@@ -771,6 +816,11 @@ window.__carillon = {
     tuning: tuning.id,
     undoDepth: history.depth(),
     emitters: world.emitters.length,
+    revealHandles: world.time < revealHandlesUntil,
+    reducedMotion: reducedMotionQuery.matches,
+    trailPoints: renderer.trailPointCount(),
+    particles: effects.particles.length,
+    maxParticles: MAX_PARTICLES,
     maxBalls: MAX_BALLS,
     distinctPitches: new Set(world.bars.map((bar) => bar.midi)).size,
   }),

@@ -90,6 +90,15 @@ Pièges déjà connus (issus des règles cortex, à ne pas réapprendre) :
   ne laisse rien passer.
 - **Un seuil de test se pose sur le domaine, pas sur les cas déjà regardés.** Deux largeurs vérifiées
   laissaient un trou sur toutes les autres : la richesse musicale y valait 40 % de sa valeur desktop.
+- **« Présent dans l'état » ≠ « visible à l'écran ».** Deux propriétés distinctes : la première
+  s'asserte, la seconde ne se juge qu'en regardant. Les étincelles de l'US6 étaient comptées par
+  `stats()`, bornées, couvertes par 10 mutations tuées — et parfaitement invisibles. Un effet qu'on ne
+  voit pas se dimensionne ou se retire ; le garder invisible, c'est un test vert qui protège du vide.
+- **Un effet transitoire se photographie à un instant choisi**, et le scénario dit lequel et pourquoi.
+  Une gerbe capturée à l'âge 0 est invisible **par construction** — rien n'a encore bougé. Ce faux
+  négatif ressemble trait pour trait à un rendu cassé.
+- **La sonde jetable doit devenir un scénario.** Une preuve qui vit dans un fichier supprimé en fin de
+  tour n'est pas une preuve. Si elle a servi une fois à trancher, elle sert au prochain run.
 
 Une US n'est close qu'après avoir **regardé** les captures. Le jeu accepté est archivé dans
 `docs/proofs/us<N>/` ; `docs/proofs/<scénario>/` ne contient que l'état courant, écrasé à chaque run.
