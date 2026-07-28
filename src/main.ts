@@ -141,7 +141,7 @@ function clearAll(): void {
  * téléphone en paysage n'était visible que sur une capture regardée à l'œil : aucune assertion ne
  * pouvait l'attraper, puisqu'il se joue à l'intérieur du canvas.
  */
-function countBarsUnderHud(): number {
+function countUnderHud(): number {
   const hudRects = Array.from(document.querySelectorAll<HTMLElement>('[data-hud]'))
     .map((element) => element.getBoundingClientRect())
     .filter((rect) => rect.width > 0 && rect.height > 0)
@@ -150,18 +150,25 @@ function countBarsUnderHud(): number {
   for (const bar of world.bars) {
     if (hudRects.some((rect) => segmentIntersectsRect(bar.a, bar.b, rect))) count++
   }
+  // Les sources comptent aussi : un compteur qui n'en regarde qu'une partie rend l'assertion
+  // structurellement aveugle à la nouvelle entité.
+  for (const emitter of world.emitters) {
+    if (hudRects.some((rect) => segmentIntersectsRect(emitter.pos, emitter.pos, rect))) count++
+  }
   return count
 }
 
-function countBarsOutOfBounds(): number {
+function outOfBounds(point: Vec2): boolean {
+  return point.x < 0 || point.x > world.bounds.w || point.y < 0 || point.y > world.bounds.h
+}
+
+function countOutOfBounds(): number {
   let count = 0
   for (const bar of world.bars) {
-    for (const point of [bar.a, bar.b]) {
-      if (point.x < 0 || point.x > world.bounds.w || point.y < 0 || point.y > world.bounds.h) {
-        count++
-        break
-      }
-    }
+    if (outOfBounds(bar.a) || outOfBounds(bar.b)) count++
+  }
+  for (const emitter of world.emitters) {
+    if (outOfBounds(emitter.pos)) count++
   }
   return count
 }
@@ -252,6 +259,9 @@ function undo(): void {
   world.bars.push(...restored.bars)
   world.emitters.length = 0
   world.emitters.push(...restored.emitters)
+  // Réarmer les échéances : un instantané ne porte pas de temps (cf. history.cloneEmitter), sinon
+  // annuler ferait cracher une rafale de billes pour rattraper un retard fictif.
+  for (const emitter of world.emitters) emitter.nextAt = world.time + emitter.period
   // La gamme fait partie de l'état : sans ça, annuler un changement de gamme réaccordait les barres
   // mais laissait le libellé — donc l'interface annonçait une gamme que l'instrument ne jouait plus.
   if (restored.tuningId !== tuning.id) applyTuning(tuningById(restored.tuningId))
@@ -292,7 +302,16 @@ function handleGesture(gesture: Gesture): void {
       // Appui long dans le vide : pose une source. C'est le seul idiome qui n'introduit pas de mode
       // et ne vole aucun geste existant.
       history.push(world.bars, world.emitters, tuning.id)
-      addEmitter(world, gesture.point)
+      {
+        // Bornée à la création comme au déplacement : le HUD ne capture pas le pointeur (l'overlay
+        // est en `pointer-events: none`), donc un appui long sur le titre poserait une source
+        // derrière lui, hors d'atteinte.
+        const area = measureSceneArea(world.bounds)
+        addEmitter(world, {
+          x: Math.max(area.left, Math.min(area.right, gesture.point.x)),
+          y: Math.max(area.top, Math.min(area.bottom, gesture.point.y)),
+        })
+      }
       userOwnsScene = true
       fadeHint()
       break
@@ -611,8 +630,8 @@ window.__carillon = {
     impacts: impactsTotal,
     notes: audio.playedCount(),
     droppedSteps,
-    barsOutOfBounds: countBarsOutOfBounds(),
-    barsUnderHud: countBarsUnderHud(),
+    barsOutOfBounds: countOutOfBounds(),
+    barsUnderHud: countUnderHud(),
     tuning: tuning.id,
     undoDepth: history.depth(),
     emitters: world.emitters.length,

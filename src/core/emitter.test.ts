@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_PERIOD, MAX_BALLS, MIN_PERIOD, addEmitter, removeEmitter, runEmitters } from './emitter'
-import { DT, createWorld, spawnBall } from './physics'
+import { DT, addBar, createWorld, spawnBall, stepWorld } from './physics'
 import type { Vec2, World } from './types'
 
 function world(): World {
@@ -73,16 +73,33 @@ describe('D1 — cadence d’émission', () => {
 })
 
 describe('D2 — déterminisme', () => {
-  it('produit la même suite d’instants d’émission à monde identique', () => {
-    function run(): number[] {
-      const w = world()
+  it('produit la même **trace d’impacts** à monde identique, sur 30 s', () => {
+    // Le critère parle de la trace d'impacts, pas des instants d'émission. Une version antérieure de
+    // ce test comparait deux mondes sans barres et sans appeler `stepWorld` : elle comparait donc deux
+    // fois le même calcul arithmétique pur, et restait verte quelle que soit la régression. Ici la
+    // musique elle-même est comparée — c'est ce déterminisme dont dépendra le partage par URL.
+    function run(): string[] {
+      const w = createWorld({ w: 1280, h: 800 })
+      for (let i = 0; i < 6; i++) {
+        const x = 120 + i * 180
+        addBar(w, { x: x - 90, y: 250 + (i % 3) * 130 }, { x: x + 90, y: 300 + (i % 3) * 130 }, 60 + i)
+      }
       addEmitter(w, { x: 300, y: 80 }, { period: 0.37 })
       addEmitter(w, { x: 900, y: 120 }, { period: 0.61 })
-      return simulate(w, 30)
+
+      const trace: string[] = []
+      const steps = Math.round(30 / DT)
+      for (let i = 0; i < steps; i++) {
+        runEmitters(w, (pos, hue) => spawnBall(w, pos, { x: 0, y: 0 }, { hue }))
+        for (const impact of stepWorld(w, DT)) {
+          trace.push(`${impact.barId}@${impact.at.toFixed(6)}:${impact.speed.toFixed(3)}`)
+        }
+      }
+      return trace
     }
 
     const first = run()
-    expect(first.length).toBeGreaterThan(100)
+    expect(first.length).toBeGreaterThan(50)
     expect(run()).toEqual(first)
   })
 })

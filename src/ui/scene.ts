@@ -2,8 +2,8 @@ import { lengthRangeForWidth } from '../core/music'
 import { createRng } from '../core/rng'
 import type { Bounds, Vec2 } from '../core/types'
 
-export type PlaceBar = (a: Vec2, b: Vec2) => void
-export type PlaceEmitter = (pos: Vec2) => void
+type PlaceBar = (a: Vec2, b: Vec2) => void
+type PlaceEmitter = (pos: Vec2) => void
 
 /**
  * Récepteur de la scène générée. Un objet plutôt que des paramètres positionnels : la signature
@@ -12,7 +12,12 @@ export type PlaceEmitter = (pos: Vec2) => void
  */
 export interface SceneSink {
   bar: PlaceBar
-  emitter?: PlaceEmitter
+  /**
+   * Obligatoire, et pas optionnel : une scène d'accueil sans source est une scène **morte**, et
+   * c'est la régression la plus silencieuse que ce produit puisse avoir. Un champ optionnel la
+   * rendait possible par simple oubli.
+   */
+  emitter: PlaceEmitter
 }
 
 /** Zone occupée par le titre en haut, à laisser libre pour ne pas dessiner sous le HUD. */
@@ -94,12 +99,10 @@ export function buildSurpriseScene(
   // Une ou deux sources au-dessus de la première rangée : c'est ce qui fait que la scène d'accueil
   // joue toute seule au lieu d'attendre un clic. Deux dès qu'il y a la place, pour que le motif ne
   // soit pas une simple répétition.
-  if (sink.emitter) {
-    const sourceY = area.top + rowGap * 0.35
-    const count = bounds.w >= 700 ? 2 : 1
-    for (let i = 0; i < count; i++) {
-      sink.emitter({ x: area.left + (usable * (i + 1)) / (count + 1), y: sourceY })
-    }
+  const sourceY = area.top + rowGap * 0.35
+  const sourceCount = bounds.w >= 700 ? 2 : 1
+  for (let i = 0; i < sourceCount; i++) {
+    sink.emitter({ x: area.left + (usable * (i + 1)) / (sourceCount + 1), y: sourceY })
   }
 
   for (const [k, spot] of slots.entries()) {

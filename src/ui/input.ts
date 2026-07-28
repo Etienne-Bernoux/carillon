@@ -120,6 +120,10 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
     }
     if (!moved) return
 
+    // Un appui long a déjà agi : continuer à glisser ne doit pas afficher un aperçu de barre qui
+    // ne sera jamais créée. L'aperçu mentirait sur ce que le relâchement va produire.
+    if (longPressFired) return
+
     if (grabbed) {
       handlers.onGesture({
         type: 'drag',

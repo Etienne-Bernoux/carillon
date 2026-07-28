@@ -63,12 +63,18 @@ function cloneBars(bars: readonly Bar[]): Bar[] {
   return bars.map(cloneBar)
 }
 
+/**
+ * `nextAt` est exclu, exactement comme `lastHitAt` pour une barre : c'est une échéance qui avance
+ * toute seule, pas de l'état d'édition. La recopier faisait restaurer une échéance **dans le passé**,
+ * et la source rattrapait son retard par une rafale de billes en une frame, en perdant la phase du
+ * motif. C'est `undo` qui réarme, à partir du temps courant.
+ */
 function cloneEmitter(emitter: Emitter): Emitter {
   return {
     id: emitter.id,
     pos: cloneVec2(emitter.pos),
     period: emitter.period,
-    nextAt: emitter.nextAt,
+    nextAt: 0,
     hue: emitter.hue,
   }
 }

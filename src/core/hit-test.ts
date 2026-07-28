@@ -21,20 +21,19 @@ export interface EmitterHit {
  */
 export type Grab = ({ target: 'bar' } & BarHit) | ({ target: 'emitter' } & EmitterHit)
 
-/** Rayon de préhension d'un émetteur — il est petit et rond, donc généreux par nécessité. */
-export const EMITTER_RADIUS = 18
-
 export interface HitRadii {
   /** rayon de préhension du corps */
   body: number
   /** rayon de préhension d'une extrémité */
   endpoint: number
+  /** rayon de préhension d'une source */
+  emitter: number
 }
 
 /** Souris : précise. */
-export const MOUSE_RADII: HitRadii = { body: 12, endpoint: 14 }
-/** Doigt : généreux, sinon rien n'est attrapable au pouce. */
-export const TOUCH_RADII: HitRadii = { body: 18, endpoint: 24 }
+export const MOUSE_RADII: HitRadii = { body: 12, endpoint: 14, emitter: 18 }
+/** Doigt : généreux, sinon rien n'est attrapable au pouce — la source est la plus petite cible. */
+export const TOUCH_RADII: HitRadii = { body: 18, endpoint: 24, emitter: 26 }
 
 function distanceToSegment(point: Vec2, a: Vec2, b: Vec2): number {
   const abx = b.x - a.x
@@ -54,9 +53,9 @@ function distanceToSegment(point: Vec2, a: Vec2, b: Vec2): number {
  * distances comparables, accorder l'emporte sur déplacer) sans jamais faire gagner un candidat
  * nettement plus lointain.
  */
-export const ENDPOINT_BIAS = 10
+const ENDPOINT_BIAS = 10
 /** Même logique de biais pour une source : petite cible ronde, on aide le doigt à la viser. */
-export const EMITTER_BIAS = 10
+const EMITTER_BIAS = 10
 
 /**
  * Barre visée par un point de préhension, et **par quoi** on l'attrape.
@@ -65,6 +64,11 @@ export const EMITTER_BIAS = 10
  * échelle de distance, l'extrémité bénéficiant de `ENDPOINT_BIAS`. Le parcours suit l'ordre des
  * `id` avec une comparaison stricte, donc deux barres superposées donnent toujours le même résultat.
  */
+/** Score de comparaison d'une préhension : plus petit gagne. Une seule définition, pas deux. */
+function grabScore(hit: BarHit): number {
+  return hit.distance - (hit.kind === 'body' ? 0 : ENDPOINT_BIAS)
+}
+
 export function hitTestBars(
   bars: readonly Bar[],
   point: Vec2,
@@ -113,12 +117,12 @@ export function hitTestWorld(
   radii: HitRadii = MOUSE_RADII,
 ): Grab | null {
   const bar = hitTestBars(bars, point, radii)
-  const barScore = bar ? bar.distance - (bar.kind === 'body' ? 0 : ENDPOINT_BIAS) : Number.POSITIVE_INFINITY
+  const barScore = bar ? grabScore(bar) : Number.POSITIVE_INFINITY
 
   let emitterHit: EmitterHit | null = null
   for (const emitter of emitters) {
     const distance = Math.hypot(point.x - emitter.pos.x, point.y - emitter.pos.y)
-    if (distance <= EMITTER_RADIUS && (!emitterHit || distance < emitterHit.distance)) {
+    if (distance <= radii.emitter && (!emitterHit || distance < emitterHit.distance)) {
       emitterHit = { emitter, distance }
     }
   }

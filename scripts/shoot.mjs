@@ -24,7 +24,7 @@ const ROOT = path.resolve(__dirname, '..')
 const PROOFS_DIR = path.join(ROOT, 'docs', 'proofs')
 const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
-const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch']
+const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive']
 
 const rawArgs = process.argv.slice(2)
 const flags = new Set(rawArgs.filter((a) => a.startsWith('--')))
@@ -268,6 +268,10 @@ async function runStress(browser, url, rec) {
       const ay = 200 + (i % 3) * 150
       c.addBar(ax, ay, ax + 130, ay + 50)
     }
+    // Des sources à cadence rapide : sans elles, le scénario mesurait un budget d'où l'US4 était
+    // absente — zéro émission dans la boucle chaude, zéro anneau à dessiner — tout en prétendant
+    // couvrir « le plafond de billes ».
+    for (let i = 0; i < 6; i++) c.addEmitter(120 + i * 180, 120, 0.15)
   })
 
   await page.evaluate(() => {
@@ -280,9 +284,9 @@ async function runStress(browser, url, rec) {
       c.dropBall(30 + (j % 40) * 30, 10 + Math.floor(j / 40) * 12)
     }
     let dropped = 0
-    for (let i = 0; i < 220; i++) spawn(dropped++)
+    for (let i = 0; i < c.stats().maxBalls; i++) spawn(dropped++)
 
-    const TARGET = 220
+    const TARGET = c.stats().maxBalls
     // Les billes meurent en sortant par le bas ; sans ce recomplètement, la mesure 2,5 s plus
     // tard ne verrait plus qu'une fraction des 200 billes annoncées par le nom du scénario.
     window.__stressTimer = setInterval(() => {
@@ -305,10 +309,23 @@ async function runStress(browser, url, rec) {
     `  [stress] mesuré = fps=${stats.fps.toFixed(1)} balls=${stats.balls} bars=${stats.bars} ` +
       `impacts=${stats.impacts} notes=${stats.notes} droppedSteps=${stats.droppedSteps}`
   )
-  rec.assert('au moins 200 billes vivantes à la mesure', stats.balls >= 200, `balls=${stats.balls}`)
+  rec.assert(
+    'le plafond de billes est réellement atteint à la mesure',
+    stats.balls >= stats.maxBalls - 20,
+    `balls=${stats.balls} / maxBalls=${stats.maxBalls}`
+  )
+  rec.assert(
+    'des sources tournent pendant la mesure (la charge de l’US4 est dans le budget)',
+    stats.emitters >= 6,
+    `sources=${stats.emitters}`
+  )
   rec.assert('des notes ont réellement été jouées', stats.notes > 0, `notes=${stats.notes}`)
   rec.assert('aucun pas de simulation abandonné', stats.droppedSteps === 0, `droppedSteps=${stats.droppedSteps}`)
-  rec.assert('fps >= 60 avec 200+ billes / 12 barres, audio actif', stats.fps >= 60, `fps=${stats.fps.toFixed(1)}`)
+  rec.assert(
+    'fps >= 60 au plafond de billes, avec sources et audio actifs',
+    stats.fps >= 60,
+    `fps=${stats.fps.toFixed(1)}`
+  )
 
   await rec.shot(page, 'stress')
   await page.close()
@@ -391,7 +408,13 @@ async function runControls(browser, url, rec) {
   await page.click('[data-control="surprise"]')
   await tick(page)
   const afterSurprise1 = await page.evaluate(() => window.__carillon.stats().bars)
-  const geometry1 = await page.evaluate(() => JSON.stringify(window.__carillon.bars()))
+  // Sans les identifiants : `clearAll` ne remet pas `nextBarId` à zéro, donc deux scènes portent
+  // toujours des id différents et la comparaison serait vraie quoi qu'il arrive.
+  const geometry = () =>
+    page.evaluate(() =>
+      JSON.stringify(window.__carillon.bars().map((b) => [b.ax, b.ay, b.bx, b.by, b.midi]))
+    )
+  const geometry1 = await geometry()
   rec.assert('« Scène surprise » remplit la scène', afterSurprise1 > 0, `bars=${afterSurprise1}`)
 
   // Deuxième appui successif → une scène différente. L'API de debug n'expose pas la géométrie
@@ -401,7 +424,7 @@ async function runControls(browser, url, rec) {
   await page.click('[data-control="surprise"]')
   await tick(page)
   const afterSurprise2 = await page.evaluate(() => window.__carillon.stats().bars)
-  const geometry2 = await page.evaluate(() => JSON.stringify(window.__carillon.bars()))
+  const geometry2 = await geometry()
   console.log(`  [controls] scène 1 : bars=${afterSurprise1} — scène 2 : bars=${afterSurprise2}`)
   rec.assert('« Scène surprise » (2e appui) remplit aussi la scène', afterSurprise2 > 0, `bars=${afterSurprise2}`)
   // Géométrie et non pixels, pour la même raison : la scène bouge toute seule depuis l'US4.
@@ -446,7 +469,7 @@ async function runControls(browser, url, rec) {
   const retuned = tuningBefore.midis.filter((midi, i) => midi !== tuningAfter.midis[i]).length
   rec.assert(
     'sélecteur de gamme : les barres déjà posées sont réaccordées',
-    tuningBefore.midis.length > 0 && retuned > tuningBefore.midis.length / 2,
+    tuningBefore.midis.length > 0 && retuned >= tuningBefore.midis.length / 3,
     `${retuned}/${tuningBefore.midis.length} barres ont changé de hauteur`
   )
   rec.assert(
@@ -501,6 +524,62 @@ async function runControls(browser, url, rec) {
   )
 
   await rec.shot(page, 'controls')
+  await page.close()
+}
+
+/**
+ * La valeur centrale de l'US4 : la scène joue **sans qu'on la touche**. Une régression ici — sources
+ * absentes de la scène d'accueil, posées hors zone, émission débranchée — ne ferait échouer aucune
+ * autre assertion : la scène redeviendrait simplement morte, en silence.
+ */
+async function runAlive(browser, url, rec) {
+  const page = await browser.newPage()
+  rec.attachConsoleListeners(page)
+  await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await page.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(page)
+  await tick(page)
+
+  const atLoad = await page.evaluate(() => window.__carillon.stats())
+  rec.assert(
+    'la scène d’accueil contient au moins une source',
+    atLoad.emitters >= 1,
+    `sources=${atLoad.emitters}`
+  )
+
+  // Aucun geste, aucun appel d'API : on regarde juste le temps passer.
+  await wait(3200)
+  await tick(page)
+  const passive = await page.evaluate(() => window.__carillon.stats())
+  console.log(
+    `  [alive] sans aucun geste : billes=${passive.balls} impacts=${passive.impacts} sources=${passive.emitters}`
+  )
+  rec.assert(
+    'la scène joue toute seule : des impacts sans aucun geste',
+    passive.impacts > 0,
+    `impacts=${passive.impacts} après 3,2 s`
+  )
+  rec.assert('aucune source hors champ', passive.barsOutOfBounds === 0, `horsChamp=${passive.barsOutOfBounds}`)
+  rec.assert('aucune source derrière le HUD', passive.barsUnderHud === 0, `sousHud=${passive.barsUnderHud}`)
+  await rec.shot(page, 'alive')
+
+  // Annuler ne doit pas provoquer de rafale : l'instantané ne porte pas d'échéance, donc les sources
+  // sont réarmées depuis le temps courant. Sans ça, une annulation après quelques secondes faisait
+  // rattraper un retard fictif — 4 billes par source dans une seule frame, et la phase du motif perdue.
+  await dragBar(page, [260, 620], [620, 640])
+  await tick(page)
+  await wait(2500)
+  const beforeUndo = await page.evaluate(() => window.__carillon.stats().balls)
+  await page.click('[data-control="undo"]')
+  await tick(page)
+  const afterUndo = await page.evaluate(() => window.__carillon.stats().balls)
+  console.log(`  [alive] annulation : billes ${beforeUndo} -> ${afterUndo}`)
+  rec.assert(
+    'annuler ne déclenche pas de rafale de billes',
+    afterUndo - beforeUndo <= 2,
+    `écart=${afterUndo - beforeUndo} bille(s) sur la frame de l’annulation`
+  )
+
   await page.close()
 }
 
@@ -814,6 +893,7 @@ const SCENARIOS = {
   mobile: runMobile,
   controls: runControls,
   resize: runResize,
+  alive: runAlive,
   edit: runEdit,
   touch: runTouch,
 }

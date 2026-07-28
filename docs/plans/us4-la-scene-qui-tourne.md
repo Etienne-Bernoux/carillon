@@ -91,6 +91,25 @@ non commité de l'US4 : la restauration l'a ramené à `HEAD`, effaçant le câb
 Les autres fichiers étaient intacts, le socle a été réappliqué, mais la règle est désormais explicite —
 copier le fichier avant de le muter, restaurer depuis la copie.
 
+## Suites de la revue
+
+Verdict initial : **non livrable**. Trois bloquants, tous réels, tous reproduits avant correction.
+
+| Point | Défaut réel | Correctif | Preuve |
+|---|---|---|---|
+| **B1** — annuler crachait une rafale | l'instantané recopiait `nextAt`, donc annuler restaurait une échéance **dans le passé** : la source rattrapait un retard fictif en lâchant 4 billes dans une seule frame, et la phase du motif était perdue. Le clone était incohérent avec sa propre doctrine — `lastHitAt` était déjà exclu pour cette raison exacte | `nextAt` sort de l'instantané ; `undo` réarme depuis le temps courant | test de mutation : **écart de 8 billes** sur la frame d'annulation sans le correctif, 0 avec |
+| **B2** — D9 coché sans preuve | le scénario de charge faisait `reset()`, donc **zéro source** et 220 billes sur un plafond de 320 : la charge propre à l'US4 (émission, anneaux, traînées au plafond) n'était pas dans le budget mesuré, et « fps ≥ 60 au plafond » était indéfendable | 6 sources à cadence minimale, cible de billes lue depuis `maxBalls`, et deux assertions nouvelles | **315 billes sur 320**, 6 sources, 120 fps, 0 pas jeté |
+| **B3** — assertion creuse réintroduite | la comparaison de géométrie incluait les `id`, et `clearAll` ne remet pas `nextBarId` à zéro : deux scènes portaient toujours des identifiants différents, donc l'assertion était vraie quoi qu'il arrive. Exactement le défaut que ce commit prétendait corriger, réintroduit dans le même commit | comparaison sur la géométrie seule | test de mutation : rougit avec la graine figée |
+| **I1** — D2 ne prouvait rien | le test de déterminisme comparait deux mondes **sans barres** et **sans appeler `stepWorld`** : deux fois le même calcul arithmétique pur, vrai par construction | il compare désormais la **trace d'impacts** (barre, instant, vitesse) sur 30 s avec barres et sources | ✅ |
+| **I2** — source posée sous le HUD | l'appui long ne bornait rien, et l'overlay est en `pointer-events: none` : un appui long sur le titre posait une source derrière lui. Les deux compteurs de garde n'itéraient que `world.bars`, donc l'assertion `barsUnderHud === 0` était structurellement aveugle à la nouvelle entité | position bornée à la création comme au déplacement ; les compteurs voient les sources | assertions vertes dans `alive`, `mobile`, `resize` |
+| **I3** — aperçu mensonger | après un appui long, continuer à glisser affichait un aperçu de barre avec son étiquette de note, alors que le relâchement ne créait rien | le mouvement ne produit plus d'aperçu une fois l'appui long déclenché | ✅ |
+| **I4** — l'US4 n'était couverte par aucune assertion | 66 assertions avant, 66 après : deux remplacées, aucune ajoutée. D5, D6 et D7 étaient annoncés « scénario navigateur » sans scénario — la vérification avait eu lieu à la main, donc n'était pas rejouable | nouveau scénario `alive` : source présente, impacts sans aucun geste, rien sous le HUD, pas de rafale à l'annulation | 8 scénarios, **72 assertions** |
+| Mineurs | rayon de préhension d'une source non adapté au doigt (la plus petite cible était la seule à ne pas grossir) ; `SceneSink.emitter` optionnel, donc une scène morte par simple oubli ; formule de score dupliquée ; seuil de réaccordage à une barre de marge ; quatre exports sans consommateur | tous traités | ✅ |
+
+**Ce que cette revue apprend** : une assertion creuse peut être réintroduite **dans le commit même qui
+en corrige deux autres**. Le seul garde-fou qui l'attrape est le test de mutation, systématiquement,
+sur chaque assertion de type « ça a changé » — pas la relecture.
+
 ## Risques
 
 - **L'appui long entre en conflit avec le glisser** : un doigt qui tremble pendant 500 ms ne doit pas

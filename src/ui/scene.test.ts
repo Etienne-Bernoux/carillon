@@ -14,7 +14,7 @@ const VIEWPORTS: Bounds[] = [
 
 function collect(bounds: Bounds, seed: number): Array<[Vec2, Vec2]> {
   const bars: Array<[Vec2, Vec2]> = []
-  buildSurpriseScene(bounds, seed, { bar: (a, b) => bars.push([a, b]) })
+  buildSurpriseScene(bounds, seed, { bar: (a, b) => bars.push([a, b]), emitter: () => {} })
   return bars
 }
 
