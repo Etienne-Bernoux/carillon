@@ -1,5 +1,7 @@
 # Carillon
 
+**[▶ Jouer en ligne](https://etienne-bernoux.github.io/carillon/)**
+
 **La physique fait la musique.** Dessine des barres, lâche des billes : chaque rebond joue une note
 et allume une onde de lumière. Une barre courte sonne aigu, une longue sonne grave — on accorde
 l'instrument à la géométrie.

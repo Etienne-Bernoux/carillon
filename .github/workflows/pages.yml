@@ -1,0 +1,59 @@
+# Déploiement de Carillon sur GitHub Pages.
+#
+# Le déploiement est **conditionné aux tests** : `pnpm check` tourne avant le build, donc une
+# régression sur les 179 tests unitaires ou sur le typage bloque la mise en ligne.
+#
+# `pnpm shoot` ne peut pas tourner ici : le harnais pilote le Chrome du poste de dev. Ce que le CI
+# vérifie est donc le noyau pur — ce qui est précisément ce que la frontière noyau/adaptateur rend
+# possible (cf. CLAUDE.md §4).
+name: Déployer sur Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Un seul déploiement à la fois, et on annule celui en cours si un nouveau commit arrive.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Vérifier (typage strict + tests)
+        run: pnpm check
+
+      - name: Construire
+        run: pnpm build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
