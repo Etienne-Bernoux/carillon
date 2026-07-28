@@ -63,6 +63,12 @@ src/main.ts   boucle à pas fixe, câblage, API de debug (window.__carillon)
 La frontière noyau pur / adaptateur navigateur n'est pas décorative : elle rend la physique et la
 musique testables en Vitest, sans navigateur et sans flakiness.
 
+## Déploiement
+
+Poussé sur `main` → GitHub Actions construit et publie sur Pages. Le déploiement est **conditionné aux
+tests** : `pnpm check` tourne avant le build, donc une régression bloque la mise en ligne. Les 9
+scénarios navigateur (`pnpm shoot`) restent une étape locale — le harnais pilote le Chrome du poste.
+
 ## Documentation
 
 - [`CLAUDE.md`](./CLAUDE.md) — méthode de travail (boucle compound engineering, Definition of Done)
