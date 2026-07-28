@@ -183,3 +183,22 @@ describe('B5 — retuneBars', () => {
     expect(list.map((bar) => bar.midi)).not.toEqual(pentatonic)
   })
 })
+
+describe('ordre figé du catalogue de gammes', () => {
+  it('épingle l’ordre : son index voyage dans les liens partagés', () => {
+    // Réordonner ou insérer une gamme en tête casserait **tous** les liens déjà émis, sans qu'aucun
+    // autre test ne le voie (les autres bouclent sur le catalogue, donc sont insensibles à l'ordre).
+    // Ajouter une gamme à la fin fait échouer ce test : c'est voulu, on met alors l'ajout ici aussi.
+    expect(TUNINGS.map((tuning) => tuning.id)).toEqual([
+      'pentatonic-minor',
+      'pentatonic-major',
+      'dorian',
+      'hirajoshi',
+      'lydian',
+    ])
+  })
+
+  it('ne peut pas dépasser 64 gammes : l’index est encodé sur 6 bits', () => {
+    expect(TUNINGS.length).toBeLessThanOrEqual(64)
+  })
+})

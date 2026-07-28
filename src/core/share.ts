@@ -178,19 +178,6 @@ export function decodeScene(text: string, tuningIds: readonly string[]): SharedS
   return { tuningId: tuningIds[tuningIndex] ?? tuningIds[0] ?? '', bars, emitters }
 }
 
-/**
- * Passe des pixels aux fractions. `origin` est le coin de la zone de jeu sur l'axe considéré, et
- * `width` **toujours la largeur du viewport**, y compris pour les ordonnées : c'est cette unité
- * commune qui préserve la forme des barres, donc leurs notes, d'un écran à l'autre.
- */
-export function toShared(value: number, origin: number, width: number): number {
-  return width <= 0 ? 0 : (value - origin) / width
-}
-
-export function fromShared(fraction: number, origin: number, width: number): number {
-  return origin + fraction * width
-}
-
 /** Taille d'URL qu'occuperait cette scène, pour vérifier le budget sans construire l'URL. */
 export function encodedLength(barCount: number, emitterCount: number): number {
   return HEADER + Math.min(barCount, MAX_BARS) * 8 + Math.min(emitterCount, MAX_EMITTERS) * 5

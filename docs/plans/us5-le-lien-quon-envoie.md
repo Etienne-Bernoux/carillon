@@ -93,6 +93,27 @@ C'est la capture d'écran du destinataire — pas le test unitaire — qui a dis
   raccourcie — raccourcir changerait sa note. Sans cette translation, deux barres passaient derrière
   le HUD en paysage.
 
+## Suites de la revue
+
+Verdict initial : **non livrable**. Le bloquant était, pour la cinquième fois dans ce projet, un test
+qui ne pouvait pas échouer.
+
+| Point | Défaut réel | Correctif | Preuve |
+|---|---|---|---|
+| **B1** — les deux tests E2 étaient creux | ils comparaient `midiForLength(len·w, T, w)` à `midiForLength(len·1280, T, 1280)`. Le `w` se **simplifie** : c'était une identité arithmétique de `midiForLength`, vraie quoi que fasse l'encodeur — un encodeur normalisant par la hauteur passait le test. Et les deux membres utilisaient le même `len` décodé | la géométrie du partage est extraite dans `core/share-layout.ts`, **pur et testé**, et E2 passe par le vrai chemin : pixels d'un écran → fractions → encodage → pixels d'un autre écran. L'assertion est **exacte** et non un quota : toute barre au-dessus du seuil d'étirement garde sa note, sans exception | 11 tests ; la mutation « longueur par la hauteur » les fait rougir |
+| **I2** — une barre courte repassait sous le HUD | on recadrait **puis** on étirait : une barre courte, recadrée à fleur du bord haut, ressortait en s'étirant. Invisible aux assertions parce que la graine d'accueil ne place aucune barre courte tout en haut | on étire **puis** on recadre, et un test dédié épingle l'ordre | ✅ |
+| **I3** — le bouton ne disait plus rien sans presse-papiers | `navigator.clipboard?.writeText(...).then(...)` : l'optional chaining court-circuite le `.then`. Sur origine non sécurisée — le cas « je montre à quelqu'un sur le même réseau » — le clic ne produisait aucun retour visible | le retour est émis dans les deux cas | ✅ |
+| **I4** — la position des sources n'était prouvée nulle part | seuls `x` et la période étaient assertés en unitaire, et seul le **nombre** de sources dans le navigateur. Intervertir `x` et `y` dans l'encodeur passait les 167 tests et 84 assertions | `y` asserté en unitaire, positions relatives comparées dans le scénario | ✅ |
+| **I5** — les gardes de décodage n'étaient jamais atteints | aucune des 15 entrées hostiles n'avait une **longueur correcte** avec un caractère invalide dans le corps : les retirer laissait tout vert, alors que `decode12` rendrait des coordonnées négatives injectées dans la physique | une entrée hostile de longueur correcte a été ajoutée | ✅ |
+| **I6** — l'ordre du catalogue de gammes n'était protégé par rien | son index voyage dans les liens : insérer une gamme en tête casse **tous** les liens émis, et aucun test ne le voyait (les autres bouclent sur le catalogue, donc sont insensibles à l'ordre) | test « golden » qui épingle l'ordre, plafond de 64 gammes asserté, avertissement au-dessus de `TUNINGS` | ✅ |
+| **I7** — artefact de debug commité | un PNG de sonde (66 Ko) s'était glissé dans le commit | retiré, et le motif `probe-*` est désormais ignoré | ✅ |
+| Angles morts | un lien rouvert puis **redimensionné** laissait ses barres en pixels absolus ; partager puis modifier puis recharger **ressuscitait** l'ancienne scène ; une scène vide produisait un lien mort ; la région live faisait relire toute l'astuce | la scène reçue est gardée et **replacée** à chaque redimensionnement ; toute édition détache l'URL ; une scène vide refuse de se partager ; la région live est coupée le temps de la restauration | mutation : sans replacement, **6 barres derrière le HUD et 5 hors champ** après rotation |
+
+**Ce que cette revue apprend** : extraire du code de `main.ts` vers un module pur n'est pas un
+raffinement de style — c'est ce qui rend une propriété **démontrable**. Les cinq fonctions de géométrie
+du partage vivaient dans un fichier sans aucun test unitaire, et leur seule preuve était un scénario
+navigateur à un couple de viewports et une graine. Le défaut I2 vivait exactement là.
+
 ## Risques
 
 - **Un lien qui restaure une scène morte** (sans source) : l'US4 vient d'établir que c'est la

@@ -6,6 +6,10 @@ dist/
 .vite/
 coverage/
 
+# Sondes de mise au point : jamais versionnées (un PNG de debug s'est déjà glissé dans un commit).
+probe-*
+chrome-probe.mjs
+
 # Sorties brutes du harnais : écrasées à chaque `pnpm shoot`, donc non versionnées.
 # Le jeu de captures *accepté* d'une US vit dans docs/proofs/us<N>/, qui est versionné.
 docs/proofs/sandbox/

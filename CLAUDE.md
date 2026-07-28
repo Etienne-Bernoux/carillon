@@ -81,6 +81,13 @@ Pièges déjà connus (issus des règles cortex, à ne pas réapprendre) :
 - **Ce qui vit dans le canvas ne se vérifie pas depuis le DOM.** `scrollWidth` est aveugle aux barres
   qui débordent ou passent derrière le HUD : il faut un compteur exposé par l'app
   (`barsOutOfBounds`, `barsUnderHud`) et l'asserter à 0.
+- **Une propriété qui vit dans `main.ts` n'est pas démontrable.** Extraire la logique dans un module
+  pur n'est pas du style : c'est ce qui permet de l'asserter. Déjà payé — cinq fonctions de géométrie
+  sans aucun test unitaire, dont la seule preuve était un scénario navigateur à un viewport et une
+  graine, avec un défaut logé exactement là.
+- **Une assertion exacte plutôt qu'un quota.** « Au plus une note décalée » laisse passer une
+  déformation réelle sur une scène plus dense ; « toute barre au-dessus de ce seuil garde sa note »
+  ne laisse rien passer.
 - **Un seuil de test se pose sur le domaine, pas sur les cas déjà regardés.** Deux largeurs vérifiées
   laissaient un trou sur toutes les autres : la richesse musicale y valait 40 % de sa valeur desktop.
 

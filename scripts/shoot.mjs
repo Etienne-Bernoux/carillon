@@ -601,6 +601,11 @@ async function runShare(browser, url, rec) {
     midis: window.__carillon.bars().map((bar) => bar.midi),
     emitters: window.__carillon.emitters().length,
     tuning: window.__carillon.stats().tuning,
+    // Positions **relatives** des sources : sans elles, intervertir x et y dans l'encodeur passait
+    // tout le lot — la scène jouait quand même.
+    emitterSpots: window.__carillon
+      .emitters()
+      .map((e) => [Math.round((e.x / window.innerWidth) * 100), Math.round((e.y / window.innerHeight) * 100)]),
   }))
 
   await author.click('[data-control="share"]')
@@ -626,6 +631,9 @@ async function runShare(browser, url, rec) {
     return {
       midis: bars.map((bar) => bar.midi),
       emitters: window.__carillon.emitters().length,
+      emitterSpots: window.__carillon
+        .emitters()
+        .map((e) => [Math.round((e.x / window.innerWidth) * 100), Math.round((e.y / window.innerHeight) * 100)]),
       tuning: stats.tuning,
       sousHud: stats.barsUnderHud,
       horsChamp: stats.barsOutOfBounds,
@@ -644,6 +652,14 @@ async function runShare(browser, url, rec) {
     `${before.midis.length} -> ${after.midis.length}`
   )
   rec.assert('les sources sont restaurées', after.emitters === before.emitters, `sources=${after.emitters}`)
+  const spotDrift = after.emitterSpots.filter(
+    ([x, y], i) => Math.abs(x - (before.emitterSpots[i]?.[0] ?? 0)) > 4 || Math.abs(y - (before.emitterSpots[i]?.[1] ?? 0)) > 12
+  ).length
+  rec.assert(
+    'les sources retrouvent leur place relative',
+    spotDrift === 0,
+    `avant=${JSON.stringify(before.emitterSpots)} après=${JSON.stringify(after.emitterSpots)}`
+  )
   rec.assert('la gamme est restaurée', after.tuning === before.tuning, `gamme=${after.tuning}`)
   // Le format encode milieu + longueur + angle, donc les barres sont repositionnées sans être
   // déformées : au plus une note bouge, celle qui touche la longueur minimale jouable sur petit écran.
@@ -661,8 +677,37 @@ async function runShare(browser, url, rec) {
   await tick(guest)
   const playing = await guest.evaluate(() => window.__carillon.stats())
   rec.assert('la scène reçue joue toute seule', playing.impacts > 0, `impacts=${playing.impacts}`)
+
+  // Rotation du téléphone après ouverture du lien : la scène doit se **replacer**, pas rester en
+  // pixels absolus derrière le HUD.
+  await guest.setViewport({ width: 740, height: 375, deviceScaleFactor: 2, isMobile: true, hasTouch: true })
+  await tick(guest)
+  const rotated = await guest.evaluate(() => window.__carillon.stats())
+  console.log(`  [share] après rotation : barres=${rotated.bars} sousHud=${rotated.barsUnderHud} horsChamp=${rotated.barsOutOfBounds}`)
+  rec.assert('la scène reçue survit à une rotation', rotated.bars === before.midis.length, `barres=${rotated.bars}`)
+  rec.assert('rien derrière le HUD après rotation', rotated.barsUnderHud === 0, `sousHud=${rotated.barsUnderHud}`)
+  rec.assert('rien hors champ après rotation', rotated.barsOutOfBounds === 0, `horsChamp=${rotated.barsOutOfBounds}`)
   await rec.shot(guest, 'received')
   await guest.close()
+
+  // Modifier après avoir partagé doit détacher l'URL : sinon un rechargement ressusciterait la scène
+  // du lien et effacerait les modifications.
+  const editor = await browser.newPage()
+  rec.attachConsoleListeners(editor)
+  await editor.setViewport({ width: 1280, height: 800 })
+  await editor.goto(link, { waitUntil: 'load' })
+  await waitForCarillon(editor)
+  await tick(editor)
+  const hashBefore = await editor.evaluate(() => location.hash.slice(0, 3))
+  await dragBar(editor, [300, 620], [640, 640])
+  await tick(editor)
+  const hashAfter = await editor.evaluate(() => location.hash)
+  rec.assert(
+    'modifier une scène reçue détache l’URL du lien',
+    hashBefore === '#s=' && hashAfter === '',
+    `avant="${hashBefore}" après="${hashAfter}"`
+  )
+  await editor.close()
 
   // Lien trafiqué : jamais d'erreur, repli sur la scène d'accueil.
   const broken = await browser.newPage()
