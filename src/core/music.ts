@@ -19,6 +19,11 @@ const PENTATONIC_MINOR: Tuning = {
   rootMidi: 57, // A3
 }
 
+/**
+ * **L'ordre de ce tableau est figé** : son index voyage dans les liens partagés (cf. `share.ts`).
+ * Réordonner ou insérer en tête casserait tous les liens déjà émis. On ajoute donc **à la fin**, et le
+ * catalogue ne peut pas dépasser 64 entrées — l'index est encodé sur 6 bits. Un test l'épingle.
+ */
 export const TUNINGS: readonly Tuning[] = [
   PENTATONIC_MINOR,
   {

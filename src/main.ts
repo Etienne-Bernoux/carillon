@@ -14,6 +14,9 @@ import { DT, addBar, createWorld, spawnBall, stepWorld } from './core/physics'
 import type { Bar, Emitter, ImpactEvent, Vec2 } from './core/types'
 import { MAX_BALLS, addEmitter, removeEmitter, runEmitters } from './core/emitter'
 import { createHistory } from './core/history'
+import { decodeScene, encodeScene } from './core/share'
+import type { SharedScene } from './core/share'
+import { placeSharedBar, placeSharedEmitter, toSharedBar, toSharedPoint } from './core/share-layout'
 import { hitTestWorld } from './core/hit-test'
 import { attachInput } from './ui/input'
 import type { Gesture } from './ui/input'
@@ -67,8 +70,18 @@ let interacted = false
 /** Vrai dès que la scène appartient à l'utilisateur : on ne la régénère plus sous ses doigts. */
 let userOwnsScene = false
 let tuning: Tuning = DEFAULT_TUNING
+/** Ordre **figé** : l'index de gamme voyage dans l'URL, le réordonner casserait les liens existants. */
+const TUNING_IDS = TUNINGS.map((candidate) => candidate.id)
 let interaction: Interaction = { ...NO_INTERACTION }
 let dragArea: SceneArea | null = null
+/**
+ * Scène reçue par lien, gardée telle quelle. Deux raisons, toutes deux trouvées en revue :
+ * — au redimensionnement, on la **replace** depuis ses fractions au lieu de laisser des pixels
+ *   absolus qui finissent derrière le HUD ;
+ * — dès qu'on édite, on l'oublie **et** on nettoie l'URL, sinon un rechargement ressusciterait
+ *   silencieusement la scène du lien en effaçant les modifications.
+ */
+let linkedScene: SharedScene | null = null
 /**
  * Instantané pris à la préhension mais **pas encore empilé** : au `pointerdown` on ne sait pas
  * encore si le geste va modifier quoi que ce soit. Taper une barre pour l'entendre est un geste
@@ -80,7 +93,9 @@ const history = createHistory()
 
 function placeBar(a: Vec2, b: Vec2): Bar | null {
   const length = Math.hypot(b.x - a.x, b.y - a.y)
-  if (length < MIN_BAR_LENGTH) return null
+  // Tolérance d'un micromètre : `share-layout` produit des barres d'exactement `MIN_BAR_LENGTH`, et
+  // l'erreur flottante les faisait repasser sous un seuil strict — une barre perdue par lien reçu.
+  if (length < MIN_BAR_LENGTH - 1e-6) return null
   return addBar(world, a, b, midiForLength(length, tuning, world.bounds.w))
 }
 
@@ -190,6 +205,87 @@ function loadSurprise(): void {
   )
 }
 
+/** Préfixe du fragment d'URL qui porte une scène. */
+const SHARE_KEY = '#s='
+
+function sharedScene(): SharedScene {
+  const area = measureSceneArea(world.bounds)
+  const width = world.bounds.w
+  return {
+    tuningId: tuning.id,
+    bars: world.bars.map((bar) => toSharedBar(bar.a, bar.b, area, width)),
+    emitters: world.emitters.map((emitter) => ({
+      ...toSharedPoint(emitter.pos, area, width),
+      period: emitter.period,
+    })),
+  }
+}
+
+function applyShared(shared: SharedScene): void {
+  clearAll()
+  applyTuning(tuningById(shared.tuningId))
+
+  const area = measureSceneArea(world.bounds)
+  const width = world.bounds.w
+  // Toute la géométrie vit dans `core/share-layout`, pur et testé : c'est là qu'on garantit qu'une
+  // barre garde sa note, remplit l'écran et ne passe pas derrière le HUD.
+  for (const bar of shared.bars) {
+    placeBar(...placeSharedBar(bar, area, width, MIN_BAR_LENGTH))
+  }
+  for (const emitter of shared.emitters) {
+    addEmitter(world, placeSharedEmitter(emitter, area, width), { period: emitter.period })
+  }
+  // La scène vient de quelqu'un d'autre : on ne la remplace pas par une scène surprise.
+  userOwnsScene = true
+  linkedScene = shared
+}
+
+/**
+ * À appeler dès qu'un geste modifie la scène : le lien affiché ne la décrit plus. Le laisser dans
+ * l'URL ferait ressusciter l'ancienne scène au moindre rechargement, alors qu'avant l'US5 un
+ * rechargement donnait une scène neuve.
+ */
+function detachFromLink(): void {
+  if (!linkedScene && !location.hash.startsWith(SHARE_KEY)) return
+  linkedScene = null
+  if (location.hash.startsWith(SHARE_KEY)) {
+    window.history.replaceState(null, '', `${location.origin}${location.pathname}`)
+  }
+}
+
+function shareLink(): string {
+  return `${location.origin}${location.pathname}${SHARE_KEY}${encodeScene(sharedScene(), TUNING_IDS)}`
+}
+
+/** Scène portée par l'URL, ou `null`. Un lien illisible rend `null`, jamais une erreur. */
+function sceneFromUrl(): SharedScene | null {
+  const hash = location.hash
+  if (!hash.startsWith(SHARE_KEY)) return null
+  return decodeScene(hash.slice(SHARE_KEY.length), TUNING_IDS)
+}
+
+let announceTimer: ReturnType<typeof setTimeout> | null = null
+const hintTemplate = hint?.innerHTML ?? ''
+
+/**
+ * Message éphémère, affiché dans la pastille d'astuce plutôt que dans un élément dédié : elle est déjà
+ * la zone que l'œil regarde après une action, et l'ajouter ailleurs mangerait de la hauteur de jeu.
+ */
+function announce(text: string): void {
+  if (!hint) return
+  hint.textContent = text
+  hint.removeAttribute('data-faded')
+  if (announceTimer !== null) clearTimeout(announceTimer)
+  announceTimer = setTimeout(() => {
+    // On coupe la région live le temps de remettre l'astuce : sinon un lecteur d'écran relit tout le
+    // texte d'aide 2,2 s après chaque partage.
+    hint.setAttribute('aria-live', 'off')
+    hint.innerHTML = hintTemplate
+    if (interacted) hint.setAttribute('data-faded', 'true')
+    setTimeout(() => hint.setAttribute('aria-live', 'polite'), 50)
+  }, 2200)
+}
+
 function fadeHint(): void {
   if (interacted) return
   interacted = true
@@ -294,6 +390,7 @@ function handleGesture(gesture: Gesture): void {
       // L'instantané est pris avant la modification, jamais après : c'est ce qui rend l'annulation
       // capable de faire disparaître la barre qu'on vient de créer.
       history.push(world.bars, world.emitters, tuning.id)
+      detachFromLink()
       if (placeBar(gesture.a, gesture.b)) userOwnsScene = true
       fadeHint()
       break
@@ -302,6 +399,7 @@ function handleGesture(gesture: Gesture): void {
       // Appui long dans le vide : pose une source. C'est le seul idiome qui n'introduit pas de mode
       // et ne vole aucun geste existant.
       history.push(world.bars, world.emitters, tuning.id)
+      detachFromLink()
       {
         // Bornée à la création comme au déplacement : le HUD ne capture pas le pointeur (l'overlay
         // est en `pointer-events: none`), donc un appui long sur le titre poserait une source
@@ -339,6 +437,7 @@ function handleGesture(gesture: Gesture): void {
     case 'drag': {
       const area = dragArea ?? measureSceneArea(world.bounds)
       commitPending()
+      detachFromLink()
       userOwnsScene = true
 
       if (gesture.hit.target === 'emitter') {
@@ -468,17 +567,45 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-control
         }
         break
       }
+      case 'share': {
+        if (world.bars.length === 0 && world.emitters.length === 0) {
+          // Un lien vers une scène vide ouvre une page définitivement blanche chez le destinataire,
+          // sans même la régénération d'accueil. Atteignable en deux clics (Effacer puis Partager).
+          announce('Rien à partager : la scène est vide')
+          break
+        }
+        const link = shareLink()
+        // `window.history` explicitement : `history` désigne ici l'historique d'annulation du produit.
+        // Et `replaceState` plutôt que `pushState` : sinon chaque partage ajoute une entrée et le
+        // bouton « retour » du navigateur devient inutilisable.
+        window.history.replaceState(null, '', link)
+        // L'optional chaining court-circuiterait le `.then` : sur une origine non sécurisée (http sur
+        // une IP de LAN — le cas « je montre à quelqu'un sur le même réseau »), `clipboard` est
+        // `undefined` et l'utilisateur cliquait sans le moindre retour visible.
+        const copied = navigator.clipboard?.writeText(link)
+        if (copied) {
+          void copied.then(
+            () => announce('Lien copié'),
+            () => announce('Lien dans la barre d’adresse'),
+          )
+        } else {
+          announce('Lien dans la barre d’adresse')
+        }
+        break
+      }
       case 'undo':
         undo()
         break
       case 'surprise':
         history.push(world.bars, world.emitters, tuning.id)
+        detachFromLink()
         sceneSeed += 1
         userOwnsScene = false
         loadSurprise()
         break
       case 'clear':
         history.push(world.bars, world.emitters, tuning.id)
+        detachFromLink()
         userOwnsScene = true
         clearAll()
         break
@@ -498,7 +625,14 @@ const resizeObserver = new ResizeObserver(() => {
   // La scène générée est calculée pour un viewport donné : après une rotation d'écran ou un
   // redimensionnement de fenêtre, elle resterait hors champ. On la reconstruit à graine identique,
   // donc à l'identique, sauf si la scène appartient désormais à l'utilisateur.
-  if (!userOwnsScene) loadSurprise()
+  if (linkedScene) {
+    // Une scène reçue se **replace** depuis ses fractions : sinon ses pixels absolus se retrouvent
+    // derrière le HUD dès que le destinataire tourne son téléphone.
+    const restored = linkedScene
+    applyShared(restored)
+  } else if (!userOwnsScene) {
+    loadSurprise()
+  }
 })
 resizeObserver.observe(canvas)
 
@@ -544,7 +678,9 @@ function frame(now: number): void {
 // Le libellé de gamme est écrit depuis l'état, jamais laissé au littéral HTML : sinon l'UI pourrait
 // annoncer une gamme que l'instrument ne joue pas, et rien ne le signalerait.
 applyTuning(DEFAULT_TUNING)
-loadSurprise()
+const linked = sceneFromUrl()
+if (linked) applyShared(linked)
+else loadSurprise()
 requestAnimationFrame(frame)
 
 interface CarillonDebug {
