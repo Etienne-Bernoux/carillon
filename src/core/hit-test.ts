@@ -1,4 +1,4 @@
-import type { Bar, Vec2 } from './types'
+import type { Bar, Emitter, Vec2 } from './types'
 
 /** Ce qu'on a attrapé sur une barre : son corps, ou l'une de ses deux extrémités. */
 export type GrabKind = 'body' | 'endA' | 'endB'
@@ -9,6 +9,20 @@ export interface BarHit {
   /** distance du point de préhension à la géométrie visée, en px */
   distance: number
 }
+
+export interface EmitterHit {
+  emitter: Emitter
+  distance: number
+}
+
+/**
+ * Ce que le pointeur attrape. Généralisé en US4 : une entité qu'on ne pourrait ni déplacer ni jeter
+ * réintroduirait exactement la frustration que l'US3 a corrigée pour les barres.
+ */
+export type Grab = ({ target: 'bar' } & BarHit) | ({ target: 'emitter' } & EmitterHit)
+
+/** Rayon de préhension d'un émetteur — il est petit et rond, donc généreux par nécessité. */
+export const EMITTER_RADIUS = 18
 
 export interface HitRadii {
   /** rayon de préhension du corps */
@@ -40,7 +54,9 @@ function distanceToSegment(point: Vec2, a: Vec2, b: Vec2): number {
  * distances comparables, accorder l'emporte sur déplacer) sans jamais faire gagner un candidat
  * nettement plus lointain.
  */
-const ENDPOINT_BIAS = 10
+export const ENDPOINT_BIAS = 10
+/** Même logique de biais pour une source : petite cible ronde, on aide le doigt à la viser. */
+export const EMITTER_BIAS = 10
 
 /**
  * Barre visée par un point de préhension, et **par quoi** on l'attrape.
@@ -80,4 +96,35 @@ export function hitTestBars(
   }
 
   return best
+}
+
+/**
+ * Ce que le pointeur attrape dans le monde : barre ou source.
+ *
+ * Tous les candidats sont ramenés à un **score** unique (distance moins un biais selon la nature de
+ * la cible), pour la même raison qu'en US3 : un arbitrage par catégorie — « toute source bat toute
+ * barre » — ferait gagner une cible nettement plus lointaine, et on éditerait autre chose que ce
+ * qu'on vise.
+ */
+export function hitTestWorld(
+  bars: readonly Bar[],
+  emitters: readonly Emitter[],
+  point: Vec2,
+  radii: HitRadii = MOUSE_RADII,
+): Grab | null {
+  const bar = hitTestBars(bars, point, radii)
+  const barScore = bar ? bar.distance - (bar.kind === 'body' ? 0 : ENDPOINT_BIAS) : Number.POSITIVE_INFINITY
+
+  let emitterHit: EmitterHit | null = null
+  for (const emitter of emitters) {
+    const distance = Math.hypot(point.x - emitter.pos.x, point.y - emitter.pos.y)
+    if (distance <= EMITTER_RADIUS && (!emitterHit || distance < emitterHit.distance)) {
+      emitterHit = { emitter, distance }
+    }
+  }
+
+  if (emitterHit && emitterHit.distance - EMITTER_BIAS < barScore) {
+    return { target: 'emitter', ...emitterHit }
+  }
+  return bar ? { target: 'bar', ...bar } : null
 }

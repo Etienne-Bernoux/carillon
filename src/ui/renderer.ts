@@ -69,12 +69,16 @@ export interface Interaction {
   hoveredKind: GrabKind | null
   /** barre qui sera supprimée si l'on relâche maintenant — doit se voir avant le relâchement */
   pendingDeleteBarId: number | null
+  hoveredEmitterId: number | null
+  pendingDeleteEmitterId: number | null
 }
 
 export const NO_INTERACTION: Interaction = {
   hoveredBarId: null,
   hoveredKind: null,
   pendingDeleteBarId: null,
+  hoveredEmitterId: null,
+  pendingDeleteEmitterId: null,
 }
 
 export interface Renderer {
@@ -257,6 +261,35 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
     base.restore()
   }
 
+  /**
+   * Une source se voit à sa pulsation : l'anneau se resserre à l'approche de son prochain lâcher.
+   * Sans ce battement, rien ne distingue une source d'une décoration, et sa période reste invisible.
+   */
+  function drawEmitters(world: World, interaction: Interaction): void {
+    for (const emitter of world.emitters) {
+      const remaining = Math.max(0, emitter.nextAt - world.time)
+      const progress = 1 - Math.min(1, remaining / Math.max(emitter.period, 1e-6))
+      const doomed = emitter.id === interaction.pendingDeleteEmitterId
+      const hovered = emitter.id === interaction.hoveredEmitterId
+
+      base.strokeStyle = doomed ? 'rgba(255, 110, 130, 0.95)' : `hsla(${emitter.hue}, 90%, 78%, ${0.35 + progress * 0.5})`
+      base.lineWidth = hovered ? 3 : 2
+      base.save()
+      if (doomed) base.setLineDash([6, 5])
+      base.beginPath()
+      base.arc(emitter.pos.x, emitter.pos.y, 13 - progress * 5, 0, Math.PI * 2)
+      base.stroke()
+      base.restore()
+
+      base.globalCompositeOperation = 'lighter'
+      base.fillStyle = `hsla(${emitter.hue}, 100%, 80%, ${0.2 + progress * 0.6})`
+      base.beginPath()
+      base.arc(emitter.pos.x, emitter.pos.y, 3.5, 0, Math.PI * 2)
+      base.fill()
+      base.globalCompositeOperation = 'source-over'
+    }
+  }
+
   function recordTrails(world: World): void {
     for (const ball of world.balls) {
       let points = trails.get(ball.id)
@@ -324,6 +357,7 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
         base.fillRect(0, 0, bounds.w, bounds.h)
       }
       drawRipples(effects)
+      drawEmitters(world, interaction)
       drawBars(world, interaction)
       if (draft) drawDraft(draft)
       drawBalls(world)

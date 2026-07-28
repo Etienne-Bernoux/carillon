@@ -373,30 +373,6 @@ async function runMobile(browser, url, rec) {
   await page.close()
 }
 
-/**
- * Capture cadrée sur la **seule zone de jeu**, HUD exclu.
- *
- * Piège payé : comparer deux captures plein cadre pour prouver qu'un clic a changé la scène ne prouve
- * rien du tout. Le bouton cliqué reste survolé, et `.toolbar button:hover` change sa couleur avec une
- * transition de 140 ms — les deux captures diffèrent donc même si l'action n'a rien fait. Une
- * assertion qui ne peut pas échouer est pire qu'absente.
- */
-async function playAreaShot(page) {
-  const clip = await page.evaluate(() => {
-    const rects = [...document.querySelectorAll('[data-hud]')].map((el) => el.getBoundingClientRect())
-    const middle = window.innerHeight / 2
-    let top = 0
-    let bottom = window.innerHeight
-    for (const rect of rects) {
-      if (rect.width <= 0 || rect.height <= 0) continue
-      if ((rect.top + rect.bottom) / 2 < middle) top = Math.max(top, rect.bottom)
-      else bottom = Math.min(bottom, rect.top)
-    }
-    return { x: 0, y: Math.ceil(top) + 2, width: window.innerWidth, height: Math.max(1, Math.floor(bottom) - Math.ceil(top) - 4) }
-  })
-  return page.screenshot({ clip })
-}
-
 async function runControls(browser, url, rec) {
   const page = await browser.newPage()
   rec.attachConsoleListeners(page)
@@ -415,7 +391,7 @@ async function runControls(browser, url, rec) {
   await page.click('[data-control="surprise"]')
   await tick(page)
   const afterSurprise1 = await page.evaluate(() => window.__carillon.stats().bars)
-  const shot1 = await playAreaShot(page)
+  const geometry1 = await page.evaluate(() => JSON.stringify(window.__carillon.bars()))
   rec.assert('« Scène surprise » remplit la scène', afterSurprise1 > 0, `bars=${afterSurprise1}`)
 
   // Deuxième appui successif → une scène différente. L'API de debug n'expose pas la géométrie
@@ -425,10 +401,15 @@ async function runControls(browser, url, rec) {
   await page.click('[data-control="surprise"]')
   await tick(page)
   const afterSurprise2 = await page.evaluate(() => window.__carillon.stats().bars)
-  const shot2 = await playAreaShot(page)
+  const geometry2 = await page.evaluate(() => JSON.stringify(window.__carillon.bars()))
   console.log(`  [controls] scène 1 : bars=${afterSurprise1} — scène 2 : bars=${afterSurprise2}`)
   rec.assert('« Scène surprise » (2e appui) remplit aussi la scène', afterSurprise2 > 0, `bars=${afterSurprise2}`)
-  rec.assert('« Scène surprise » : deux appuis donnent des scènes différentes', !shot1.equals(shot2), 'comparaison pixel des deux captures')
+  // Géométrie et non pixels, pour la même raison : la scène bouge toute seule depuis l'US4.
+  rec.assert(
+    '« Scène surprise » : deux appuis donnent des scènes différentes',
+    geometry1 !== geometry2,
+    'comparaison de la géométrie des barres'
+  )
 
   // Sélecteur de gamme : change la gamme, le libellé, ET réaccorde les barres déjà posées.
   // La couleur d'une barre encode sa classe de hauteur : une comparaison pixel prouve donc que le
@@ -438,14 +419,16 @@ async function runControls(browser, url, rec) {
       id: window.__carillon.stats().tuning,
       pitches: window.__carillon.stats().distinctPitches,
       label: document.querySelector('#tuning-label')?.textContent ?? '',
+      // Les hauteurs réelles, pas des pixels. Depuis que les sources font vivre la scène, deux
+      // captures diffèrent de toute façon : la comparaison d'images ne prouvait plus rien, ce que le
+      // test de mutation a confirmé (assertion verte avec le réaccordage neutralisé).
+      midis: window.__carillon.bars().map((bar) => bar.midi),
     }))
 
   const tuningBefore = await readTuning()
-  const beforeTuningShot = await playAreaShot(page)
   await page.click('[data-control="tuning"]')
   await tick(page)
   const tuningAfter = await readTuning()
-  const afterTuningShot = await playAreaShot(page)
 
   console.log(
     `  [controls] gamme : ${tuningBefore.id} (${tuningBefore.pitches} hauteurs) -> ${tuningAfter.id} (${tuningAfter.pitches} hauteurs)`
@@ -460,10 +443,11 @@ async function runControls(browser, url, rec) {
     tuningBefore.label !== tuningAfter.label,
     `avant="${tuningBefore.label}" après="${tuningAfter.label}"`
   )
+  const retuned = tuningBefore.midis.filter((midi, i) => midi !== tuningAfter.midis[i]).length
   rec.assert(
-    'sélecteur de gamme : les barres déjà posées sont réaccordées (couleur = hauteur)',
-    !beforeTuningShot.equals(afterTuningShot),
-    'comparaison pixel avant/après changement de gamme'
+    'sélecteur de gamme : les barres déjà posées sont réaccordées',
+    tuningBefore.midis.length > 0 && retuned > tuningBefore.midis.length / 2,
+    `${retuned}/${tuningBefore.midis.length} barres ont changé de hauteur`
   )
   rec.assert(
     'la scène reste musicalement riche après réaccordage',

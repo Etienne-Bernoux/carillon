@@ -6,7 +6,7 @@
  * Les billes ne font jamais partie de l'historique : elles sont éphémères.
  */
 
-import type { Bar, Vec2 } from './types'
+import type { Bar, Emitter, Vec2 } from './types'
 
 /** Nombre d'états annulables conservés par défaut. */
 export const DEFAULT_HISTORY_LIMIT = 40
@@ -22,12 +22,13 @@ export interface HistoryOptions {
  */
 export interface Snapshot {
   bars: Bar[]
+  emitters: Emitter[]
   tuningId: string
 }
 
 export interface History {
   /** Enregistre l'état courant AVANT une modification. */
-  push(bars: readonly Bar[], tuningId: string): void
+  push(bars: readonly Bar[], emitters: readonly Emitter[], tuningId: string): void
   /** Retourne l'état à restaurer, ou null si rien à annuler. Retire l'entrée de la pile. */
   undo(): Snapshot | null
   /** Nombre d'états annulables disponibles. */
@@ -60,6 +61,31 @@ function cloneBar(bar: Bar): Bar {
 
 function cloneBars(bars: readonly Bar[]): Bar[] {
   return bars.map(cloneBar)
+}
+
+function cloneEmitter(emitter: Emitter): Emitter {
+  return {
+    id: emitter.id,
+    pos: cloneVec2(emitter.pos),
+    period: emitter.period,
+    nextAt: emitter.nextAt,
+    hue: emitter.hue,
+  }
+}
+
+function emittersEqual(a: readonly Emitter[], b: readonly Emitter[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const first = a[i]
+    const second = b[i]
+    // `nextAt` est exclu : c'est une échéance qui avance toute seule, comme `lastHitAt` pour une
+    // barre. L'inclure désactiverait la déduplication dès qu'une source tourne.
+    if (!first || !second) return false
+    if (first.id !== second.id || first.period !== second.period || !vecEqual(first.pos, second.pos)) {
+      return false
+    }
+  }
+  return true
 }
 
 function vecEqual(a: Vec2, b: Vec2): boolean {
@@ -98,12 +124,23 @@ export function createHistory(options?: Partial<HistoryOptions>): History {
   const stack: Snapshot[] = []
 
   return {
-    push(bars: readonly Bar[], tuningId: string): void {
-      const snapshot: Snapshot = { bars: cloneBars(bars), tuningId }
+    push(bars: readonly Bar[], emitters: readonly Emitter[], tuningId: string): void {
+      const snapshot: Snapshot = {
+        bars: cloneBars(bars),
+        emitters: emitters.map(cloneEmitter),
+        tuningId,
+      }
       const top = stack[stack.length - 1]
       // Déduplication : un geste qui ne change rien (attraper puis relâcher au même endroit, ou
       // taper une barre pour l'entendre) ne doit pas consommer une place d'annulation.
-      if (top && top.tuningId === snapshot.tuningId && barsEqual(top.bars, snapshot.bars)) return
+      if (
+        top &&
+        top.tuningId === snapshot.tuningId &&
+        barsEqual(top.bars, snapshot.bars) &&
+        emittersEqual(top.emitters, snapshot.emitters)
+      ) {
+        return
+      }
       stack.push(snapshot)
       if (stack.length > limit) stack.shift()
     },

@@ -1,9 +1,14 @@
 import { MOUSE_RADII, TOUCH_RADII } from '../core/hit-test'
-import type { BarHit, HitRadii } from '../core/hit-test'
+import type { Grab, HitRadii } from '../core/hit-test'
 import type { Vec2 } from '../core/types'
 
 /** En dessous de cette distance, le geste est lu comme un tap et non comme un glisser. */
 const TAP_RADIUS = 14
+/**
+ * Durée d'un appui long, en ms. C'est le seul idiome qui pose une source sans introduire de mode et
+ * sans voler un geste existant : le tap lâche une bille, le glisser dessine.
+ */
+export const LONG_PRESS_MS = 500
 
 /**
  * Intentions émises par la couche d'entrée. Le pari de l'US3 est de n'avoir **aucun mode** : ni
@@ -11,22 +16,24 @@ const TAP_RADIUS = 14
  * directement ici — `grab` n'existe que si le geste a démarré sur une barre.
  */
 export type Gesture =
-  | { type: 'hover'; hit: BarHit | null }
+  | { type: 'hover'; hit: Grab | null }
   | { type: 'draft'; a: Vec2; b: Vec2 }
   | { type: 'draft-cancel' }
   | { type: 'create-bar'; a: Vec2; b: Vec2 }
   | { type: 'drop-ball'; point: Vec2 }
-  | { type: 'grab'; hit: BarHit }
-  | { type: 'drag'; hit: BarHit; point: Vec2; delta: Vec2 }
+  /** appui long dans le vide : pose une source */
+  | { type: 'long-press'; point: Vec2 }
+  | { type: 'grab'; hit: Grab }
+  | { type: 'drag'; hit: Grab; point: Vec2; delta: Vec2 }
   /** `cancelled` : le système a repris le pointeur, l'utilisateur n'a rien décidé. */
-  | { type: 'release'; hit: BarHit; point: Vec2; cancelled: boolean }
-  | { type: 'tap-bar'; hit: BarHit }
+  | { type: 'release'; hit: Grab; point: Vec2; cancelled: boolean }
+  | { type: 'tap-bar'; hit: Grab }
 
 export interface InputHandlers {
   /** premier geste de la session : c'est là qu'on déverrouille l'audio */
   onFirstGesture(): void
   /** L'entrée ne connaît pas le monde : elle demande ce qui se trouve sous le point. */
-  hitTest(point: Vec2, radii: HitRadii): BarHit | null
+  hitTest(point: Vec2, radii: HitRadii): Grab | null
   onGesture(gesture: Gesture): void
 }
 
@@ -34,10 +41,19 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
   let activePointer: number | null = null
   let start: Vec2 | null = null
   let last: Vec2 | null = null
-  let grabbed: BarHit | null = null
+  let grabbed: Grab | null = null
   let moved = false
   let unlocked = false
   let hoveredKey = ''
+  let longPressTimer: ReturnType<typeof setTimeout> | null = null
+  let longPressFired = false
+
+  function cancelLongPress(): void {
+    if (longPressTimer !== null) {
+      clearTimeout(longPressTimer)
+      longPressTimer = null
+    }
+  }
 
   function toLocal(event: PointerEvent): Vec2 {
     const rect = canvas.getBoundingClientRect()
@@ -62,7 +78,21 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
       unlocked = true
       handlers.onFirstGesture()
     }
-    if (grabbed) handlers.onGesture({ type: 'grab', hit: grabbed })
+    if (grabbed) {
+      handlers.onGesture({ type: 'grab', hit: grabbed })
+      return
+    }
+
+    // Appui long **dans le vide** seulement : sur une barre, l'appui long n'a pas de sens et
+    // volerait le geste d'écoute.
+    longPressFired = false
+    const origin = start
+    longPressTimer = setTimeout(() => {
+      longPressTimer = null
+      if (moved || activePointer === null) return
+      longPressFired = true
+      handlers.onGesture({ type: 'long-press', point: origin })
+    }, LONG_PRESS_MS)
   }
 
   function onPointerMove(event: PointerEvent): void {
@@ -72,7 +102,9 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
       if (event.pointerType === 'touch') return
       // Survol : on ne réémet que sur changement, sinon c'est un événement par pixel parcouru.
       const hit = handlers.hitTest(point, radiiFor(event))
-      const key = hit ? `${hit.bar.id}:${hit.kind}` : ''
+      // Clé d'identité du survol, valable pour les deux natures de cible : c'est elle qui évite de
+      // réémettre un `hover` à chaque pixel parcouru.
+      const key = hit ? (hit.target === 'bar' ? `bar${hit.bar.id}:${hit.kind}` : `emit${hit.emitter.id}`) : ''
       if (key !== hoveredKey) {
         hoveredKey = key
         handlers.onGesture({ type: 'hover', hit })
@@ -80,7 +112,12 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
       return
     }
 
-    if (!moved && Math.hypot(point.x - start.x, point.y - start.y) > TAP_RADIUS) moved = true
+    if (!moved && Math.hypot(point.x - start.x, point.y - start.y) > TAP_RADIUS) {
+      moved = true
+      // Un vrai mouvement annule l'appui long : un doigt qui tremble ne doit pas empêcher la
+      // création, mais un glisser franc ne doit pas la déclencher.
+      cancelLongPress()
+    }
     if (!moved) return
 
     if (grabbed) {
@@ -98,6 +135,7 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
 
   function finish(event: PointerEvent, cancelled: boolean): void {
     if (event.pointerId !== activePointer || !start || !last) return
+    cancelLongPress()
     const point = cancelled ? last : toLocal(event)
 
     if (grabbed) {
@@ -110,7 +148,8 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
       }
     } else {
       handlers.onGesture({ type: 'draft-cancel' })
-      if (!cancelled) {
+      // Un appui long a déjà agi : le relâchement ne doit pas lâcher une bille par-dessus.
+      if (!cancelled && !longPressFired) {
         if (moved) handlers.onGesture({ type: 'create-bar', a: start, b: point })
         else handlers.onGesture({ type: 'drop-ball', point })
       }
@@ -136,6 +175,7 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
   canvas.addEventListener('pointercancel', onPointerCancel)
 
   return () => {
+    cancelLongPress()
     canvas.removeEventListener('pointerdown', onPointerDown)
     canvas.removeEventListener('pointermove', onPointerMove)
     canvas.removeEventListener('pointerup', onPointerUp)

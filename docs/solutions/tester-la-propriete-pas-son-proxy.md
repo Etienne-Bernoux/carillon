@@ -116,6 +116,39 @@ Trois règles qui en découlent :
 3. **Greper les marqueurs** (`MUTATION`, `TEMPORAIRE`, `void d`) avant commit — utile, mais c'est le
    filet le plus faible des trois, puisqu'il suppose qu'on a pensé à laisser un marqueur.
 
+## Ce qui rend une comparaison d'images creuse évolue avec le produit
+
+Une assertion par comparaison de captures peut être **valide un jour et creuse le lendemain**, sans
+qu'une seule ligne du test ne change. Vécu deux fois sur le même projet :
+
+1. d'abord l'état `:hover` du bouton cliqué faisait différer les deux images ;
+2. puis, quand le produit a gagné des sources qui lâchent des billes en continu, **la scène elle-même
+   bouge** : deux captures diffèrent toujours, quoi qu'on teste.
+
+La leçon n'est pas « cadrer mieux la capture » — c'est que **comparer des pixels pour prouver un
+changement d'état est fragile par nature**. Dès qu'une propriété est observable autrement, il faut
+l'asserter directement. Ici l'API de debug exposait déjà les hauteurs des barres : l'assertion est
+devenue « 8 barres sur 15 ont changé de hauteur » au lieu de « les deux images diffèrent », et le test
+de mutation donne 0 sur 15 quand on neutralise le réaccordage.
+
+Corollaire : **rejouer le test de mutation après chaque changement de produit qui rend la scène plus
+vivante**. Le risque était écrit noir sur blanc dans le plan de l'US concernée, et c'est le test de
+mutation — pas la relecture — qui a confirmé qu'il s'était réalisé.
+
+## Restaurer une mutation : jamais avec `git checkout --`
+
+Le fichier muté portait du travail **non commité**. `git checkout -- src/main.ts` l'a ramené à `HEAD`,
+effaçant d'un coup tout le câblage de l'US en cours. Le bon geste :
+
+```bash
+cp src/main.ts "$TMPDIR/avant-mutation.ts"   # avant de muter
+# ... muter, lancer, observer l'échec attendu ...
+cp "$TMPDIR/avant-mutation.ts" src/main.ts    # restaurer depuis la copie
+```
+
+`git checkout --` ne restaure pas « l'état d'avant la mutation », il restaure « l'état du dernier
+commit ». Les deux ne coïncident que si l'on vient de commiter.
+
 ## Voir aussi
 
 - `docs/solutions/harnais-de-capture-qui-ment-sur-la-perf.md` — même famille de piège, côté harnais :
