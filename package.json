@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "pnpm@10.34.5",
   "description": "Bac à sable musical physique : on dessine, on lâche des billes, chaque rebond joue une note.",
   "scripts": {
     "dev": "vite",
