@@ -1619,6 +1619,79 @@ async function runNatures(browser, url, rec) {
     `y minimal = ${Math.round(trampoline.highest)}`
   )
 
+  /*
+   * Le rendu des trois natures, mesuré. La scène est **figée** (aucune bille, aucune source), donc la
+   * seule différence entre deux relevés est la nature de la barre — c'est le cas où une mesure de pixels
+   * est exacte, contrairement à une scène vivante où le décor la noie.
+   *
+   * Ce que la capture a corrigé : le pointillé était d'abord porté par le cœur blanc de 1,6 px, invisible
+   * sous les 7 px de couleur. Une barre éphémère était **indiscernable d'un mur**.
+   */
+  const ink = await page.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    const y = 200
+    const made = []
+    for (let i = 0; i < 5; i += 1) {
+      made.push(c.addBar(160, y + i * 90, 560, y + i * 90))
+    }
+    c.setBar(made[1], { nature: 'trampoline' })
+    c.setBar(made[2], { nature: 'ephemeral' })
+    c.setBar(made[3], { nature: 'ephemeral', hitsLeft: 1 })
+    c.setBar(made[4], { nature: 'ephemeral', absentUntil: 1e9 })
+    return { ids: made, bars: c.bars() }
+  })
+  await wait(200)
+
+  const measure = await page.evaluate((bars) => {
+    const stage = document.getElementById('stage')
+    const scale = stage.width / stage.clientWidth
+    const ctx = stage.getContext('2d')
+    return bars.map((bar) => {
+      const x0 = Math.round((Math.min(bar.ax, bar.bx) - 6) * scale)
+      const y0 = Math.round((Math.min(bar.ay, bar.by) - 14) * scale)
+      const w = Math.round((Math.abs(bar.bx - bar.ax) + 12) * scale)
+      const h = Math.round(28 * scale)
+      const { data } = ctx.getImageData(x0, y0, w, h)
+      let matter = 0
+      let white = 0
+      for (let i = 0; i < data.length; i += 4) {
+        const [r, g, b] = [data[i], data[i + 1], data[i + 2]]
+        // « Matière » = pixel nettement plus clair que le fond nocturne, quelle que soit sa teinte.
+        if (r + g + b > 220) matter += 1
+        // « Blanc » = les crans du trampoline, qui sont peu saturés contrairement au corps coloré.
+        if (Math.min(r, g, b) > 110) white += 1
+      }
+      return { matter, white }
+    })
+  }, ink.bars)
+
+  const [mur, tramp, pleine, usee, absente] = measure
+  console.log(
+    `  [natures] matière : mur=${mur.matter} trampoline=${tramp.matter} éphémère=${pleine.matter} usée=${usee.matter} absente=${absente.matter} | blanc du trampoline=${tramp.white} contre ${mur.white} pour le mur`
+  )
+  rec.assert(
+    'une barre éphémère se distingue d’un mur (le trait est ajouré)',
+    pleine.matter < mur.matter * 0.9,
+    `${pleine.matter} contre ${mur.matter}`
+  )
+  rec.assert(
+    'une éphémère usée s’est visiblement érodée',
+    usee.matter < pleine.matter * 0.75,
+    `${usee.matter} contre ${pleine.matter}`
+  )
+  rec.assert(
+    'une barre absente ne laisse qu’un fantôme',
+    absente.matter < mur.matter * 0.3,
+    `${absente.matter} contre ${mur.matter}`
+  )
+  rec.assert(
+    'un trampoline porte des crans que le mur n’a pas',
+    tramp.white > mur.white * 1.4,
+    `${tramp.white} contre ${mur.white}`
+  )
+
+  await rec.shot(page, 'natures-rendu')
   await rec.shot(page, 'natures')
   await page.close()
 }
