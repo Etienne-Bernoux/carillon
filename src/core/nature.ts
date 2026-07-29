@@ -34,6 +34,9 @@ export const EPHEMERAL_HITS = 3
  */
 const EPHEMERAL_DIVISION_INDEX = 0
 
+/** durée minimale d'une absence : en dessous, elle ne s'entend pas et la barre clignote */
+export const MIN_ABSENCE_SECONDS = 0.4
+
 /** marge sous le bord haut : une bille qui frôle le bord se lit déjà comme sortie */
 const TOP_MARGIN = 12
 
@@ -84,7 +87,17 @@ export function registerHit(bar: Bar, speed: number, time: number, bpm: number):
   if (bar.hitsLeft > 0) return false
 
   bar.hitsLeft = EPHEMERAL_HITS
-  bar.absentUntil = gridTimeAfter(time, divisionAt(EPHEMERAL_DIVISION_INDEX), bpm)
+  /*
+   * Le retour est sur la grille, mais l'**absence** doit durer assez pour s'entendre. Sans plancher,
+   * une barre touchée juste avant la barre de mesure disparaissait pour 1 ms — mesuré — soit un huitième
+   * de pas de simulation : elle ne disparaissait pas du tout, et la mesure concernée ne dérivait pas.
+   * C'est exactement le clignotement que cette nature veut éviter. On saute donc à l'instant de grille
+   * suivant tant que l'absence serait trop brève.
+   */
+  const division = divisionAt(EPHEMERAL_DIVISION_INDEX)
+  let back = gridTimeAfter(time, division, bpm)
+  while (back - time < MIN_ABSENCE_SECONDS) back = gridTimeAfter(back, division, bpm)
+  bar.absentUntil = back
   return true
 }
 

@@ -298,16 +298,28 @@ function stepBall(world: World, ball: Ball, dt: number, events: ImpactEvent[]): 
       ball.vel.y -= j * normal.y
 
       /*
-       * Plafond de rebond, appliqué **après** la réflexion et sur la seule composante normale : un
-       * trampoline rend plus d'énergie qu'il n'en reçoit, donc la vitesse croîtrait à chaque rebond
-       * jusqu'à ce que la bille traverse l'écran par le haut. La borne est dérivée de la scène (cf.
-       * `maxBounceSpeed`), pas choisie.
+       * Plafond de rebond — **seulement** là où de l'énergie est injectée, et **seulement** sur la
+       * composante qui monte.
+       *
+       * Première version, deux fois trop large : la borne était comparée à la composante normale de
+       * n'importe quelle barre, dans n'importe quel sens. Mesuré, elle bridait un mur **vertical**
+       * (sortant 720 → 579 px/s) et même un rebond vers le **bas**. Inerte tant que rien n'injectait
+       * d'énergie — un rebond amorti vérifie toujours la borne — mais elle se met à mordre dès qu'un
+       * trampoline existe, c'est-à-dire maintenant.
+       *
+       * La grandeur qui compte est la vitesse **ascendante** (`-vel.y`, l'axe y descend) : c'est elle
+       * seule qui décide si la bille sort par le haut, via `apogée = v² / 2g`.
        */
-      const outgoing = dot(ball.vel, normal)
-      const cap = maxBounceSpeed(world.gravity.y, bestHit.point.y)
-      if (outgoing > cap) {
-        ball.vel.x += (cap - outgoing) * normal.x
-        ball.vel.y += (cap - outgoing) * normal.y
+      if (e > 1) {
+        /*
+         * La hauteur disponible se mesure depuis le **bord haut de la bille**, pas depuis le point de
+         * contact : celui-ci est sous le centre de la bille (d'un rayon plus la demi-épaisseur de
+         * barre), donc une borne posée dessus laissait la bille à moitié hors de l'écran au sommet —
+         * mesuré, son centre montait à y = 1. C'est son bord haut que l'œil juge.
+         */
+        const rising = -ball.vel.y
+        const cap = maxBounceSpeed(world.gravity.y, ball.pos.y - ball.radius)
+        if (rising > cap) ball.vel.y = -cap
       }
 
       const tangent = perp(normal)

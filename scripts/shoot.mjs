@@ -24,7 +24,7 @@ const ROOT = path.resolve(__dirname, '..')
 const PROOFS_DIR = path.join(ROOT, 'docs', 'proofs')
 const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
-const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis', 'rythme', 'timbres']
+const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis', 'rythme', 'timbres', 'natures']
 
 const rawArgs = process.argv.slice(2)
 const flags = new Set(rawArgs.filter((a) => a.startsWith('--')))
@@ -1094,10 +1094,22 @@ async function runRythme(browser, url, rec) {
   console.log(
     `  [rythme] sources : ${emitters.map((e) => `#${e.id} div=${e.divisionIndex} période=${e.period.toFixed(3)}s échéance=${e.nextAt.toFixed(3)}`).join(' | ')}`
   )
+  /*
+   * On laisse passer **une division entière** avant de comparer. Sans cela, l'assertion dépendait de
+   * l'instant de chargement : les deux sources sont posées à 180 ms d'écart de temps mural, et si ces
+   * 180 ms enjambent une frontière de division, elles visent deux pas *différents de la même grille* —
+   * l'assertion tombait sans qu'il y ait de défaut (mesuré instable environ une fois sur sept).
+   *
+   * Après une division, les deux visent le même instant suivant quel que soit leur passé : c'est
+   * exactement la propriété « en phase », et elle ne dépend plus du hasard du chargement.
+   */
+  await page.evaluate((seconds) => window.__carillon.advance(seconds), (60 / 96) * 4 * 0.5 + 0.05)
+  await tick(page)
+  const armed = await page.evaluate(() => window.__carillon.emitters())
   rec.assert(
     'deux sources de même division visent exactement le même instant',
-    emitters.length === 2 && emitters[0].nextAt === emitters[1].nextAt,
-    emitters.map((e) => e.nextAt).join(' vs ')
+    armed.length === 2 && armed[0].nextAt === armed[1].nextAt,
+    armed.map((e) => e.nextAt).join(' vs ')
   )
   rec.assert(
     'la période découle du tempo et de la division, pas d’une valeur libre',
@@ -1164,19 +1176,27 @@ async function runRythme(browser, url, rec) {
     const c = window.__carillon
     c.reset()
     c.addBar(400, 450, 800, 500)
-    c.dropBall(500, 120)
-    const seen = { queued: 0, returned: 0, ballsAfter: 0 }
-    // 6 s simulées : la bille tombe (~1,1 s), sort, revient sur le temps de la mesure (2,5 s), etc.
-    for (let i = 0; i < 6; i += 1) {
-      c.advance(1)
+    const firstId = c.dropBall(500, 120)
+    /*
+     * On suit les **identifiants**. Une bille recyclée revient avec un id neuf : c'est la seule chose
+     * qui distingue un retour d'une bille encore en vol. La version précédente prenait le maximum du
+     * nombre de billes sur six relevés, dont le premier à t = 1 s — quand la bille d'origine rebondit
+     * encore. Vérifié par mutation : en empêchant tout retour, elle restait verte.
+     */
+    const seen = { queued: 0, fresh: 0, ballsAfter: 0, ids: [] }
+    // Relevé tous les quarts de seconde : la file se vide sur le temps de mesure, et un relevé par
+    // seconde pouvait tomber systématiquement à côté de la fenêtre où elle est pleine.
+    for (let i = 0; i < 32; i += 1) {
+      c.advance(0.25)
       seen.queued = Math.max(seen.queued, c.stats().pendingRespawns)
-      seen.returned = Math.max(seen.returned, c.stats().balls)
+      for (const ball of c.balls()) if (!seen.ids.includes(ball.id)) seen.ids.push(ball.id)
     }
+    seen.fresh = seen.ids.filter((id) => id !== firstId).length
     seen.ballsAfter = c.stats().balls
     return seen
   })
   console.log(
-    `  [rythme] recyclage : file max=${recycled.queued} billes max=${recycled.returned} billes à la fin=${recycled.ballsAfter}`
+    `  [rythme] recyclage : file max=${recycled.queued} billes neuves=${recycled.fresh} billes à la fin=${recycled.ballsAfter}`
   )
   rec.assert(
     'une bille lâchée à la main est reprogrammée quand elle sort',
@@ -1184,9 +1204,9 @@ async function runRythme(browser, url, rec) {
     `file max=${recycled.queued}`
   )
   rec.assert(
-    'la scène ne s’éteint pas : la bille est toujours là 6 s plus tard',
-    recycled.returned > 0,
-    `billes max=${recycled.returned}`
+    'la bille **revient** : au moins une bille d’identifiant neuf apparaît',
+    recycled.fresh > 0,
+    `${recycled.fresh} bille(s) neuve(s)`
   )
 
   // Capture du chemin **nominal** : deux sources en phase et une bille recyclée. Prise ici et non en
@@ -1207,25 +1227,77 @@ async function runRythme(browser, url, rec) {
   // Et le recyclage ne fuit pas : ni les billes ni la file ne grossissent sans fin.
   const bounded = await page.evaluate(() => {
     const c = window.__carillon
+    // Scène neuve : sans ça le compte héritait des billes encore en circulation du bloc précédent, et
+    // la borne « 60 lâchées, 60 en circulation » comparait à un total faussé.
+    c.reset()
+    c.addBar(200, 500, 1000, 540)
     for (let i = 0; i < 60; i += 1) c.dropBall(60 + i * 20, 100)
     c.advance(180)
     const s = c.stats()
-    return { balls: s.balls, queued: s.pendingRespawns, max: s.maxBalls, dropped: s.droppedSteps }
+    c.advance(60)
+    const later = c.stats()
+    return {
+      balls: s.balls,
+      queued: s.pendingRespawns,
+      queuedLater: later.pendingRespawns,
+      max: s.maxBalls,
+      dropped: s.droppedSteps,
+    }
   })
   console.log(
     `  [rythme] après 180 s et 60 billes recyclées : billes=${bounded.balls}/${bounded.max} file=${bounded.queued} pasPerdus=${bounded.dropped}`
   )
+  /*
+   * Borné par ce que la scène peut **produire**, pas par le plafond global : 60 billes lâchées, donc au
+   * plus 62 en vol et en attente confondues. `balls <= MAX_BALLS` était garanti par construction
+   * (`runEmitters` tronque le tableau à chaque pas) — une assertion qui ne pouvait rien apprendre.
+   */
   rec.assert(
-    'le recyclage reste borné (billes)',
-    bounded.balls <= bounded.max,
-    `${bounded.balls}/${bounded.max}`
+    'le recyclage ne crée pas de billes : 60 lâchées, 60 en circulation',
+    bounded.balls + bounded.queued <= 62,
+    `${bounded.balls} en vol + ${bounded.queued} en attente`
   )
   rec.assert(
-    'le recyclage reste borné (file d’attente)',
-    bounded.queued <= bounded.max,
-    `file=${bounded.queued}`
+    'la file ne croît pas avec le temps',
+    bounded.queuedLater <= bounded.queued + 2,
+    `${bounded.queued} -> ${bounded.queuedLater}`
   )
   rec.assert('aucun pas de simulation abandonné', bounded.dropped === 0, `${bounded.dropped}`)
+
+  /*
+   * « Effacer » doit vider la scène, **file des retours comprise**. Sans ça, les billes recyclées en
+   * attente revenaient à chaque mesure dans une scène sans aucune barre, indéfiniment : un contrôle qui
+   * cesse de faire ce qu'il annonce.
+   */
+  const cleared = await page.evaluate(async () => {
+    const c = window.__carillon
+    for (let i = 0; i < 5; i += 1) c.dropBall(200 + i * 150, 100)
+    c.advance(4) // le temps qu'elles sortent et soient reprogrammées
+    const before = c.stats().pendingRespawns
+    document.querySelector('[data-control="clear"]').click()
+    const justAfter = c.stats()
+    c.advance(8) // deux mesures : largement de quoi voir revenir ce qui aurait survécu
+    const later = c.stats()
+    return { before, justAfter: justAfter.pendingRespawns, balls: later.balls, queued: later.pendingRespawns }
+  })
+  console.log(
+    `  [rythme] après Effacer : file ${cleared.before} -> ${cleared.justAfter}, puis ${cleared.balls} bille(s) et ${cleared.queued} en attente 8 s plus tard`
+  )
+  rec.assert(
+    'des retours étaient bien en attente avant d’effacer',
+    cleared.before > 0,
+    `file=${cleared.before}`
+  )
+  rec.assert(
+    'Effacer vide aussi la file des retours',
+    cleared.justAfter === 0,
+    `file=${cleared.justAfter}`
+  )
+  rec.assert(
+    'aucune bille ne réapparaît dans une scène effacée',
+    cleared.balls === 0 && cleared.queued === 0,
+    `${cleared.balls} bille(s), ${cleared.queued} en attente`
+  )
 
   await rec.shot(page, 'rythme-charge')
   await page.close()
@@ -1300,9 +1372,16 @@ async function runTimbres(browser, url, rec) {
     ids.length === 5 && new Set(ids.slice(0, 4)).size === 4 && ids[4] === ids[0],
     ids.join(' -> ')
   )
+  /*
+   * Le libellé doit **changer avec** l'instrument. `label.length > 2` passait alors que le bouton
+   * annonçait cinq fois « Carillon » : vérifié par mutation, en retirant les deux écritures de
+   * `applyInstrument`. Pire, les libellés des autres assertions étant construits depuis ce même texte,
+   * le journal devenait trompeur et non seulement muet.
+   */
+  const distinctLabels = new Set(seen.slice(0, 4).map((s) => s.label))
   rec.assert(
     'le libellé visible suit l’instrument courant',
-    seen.every((s) => s.label.length > 2),
+    distinctLabels.size === 4 && seen[4]?.label === seen[0]?.label,
     seen.map((s) => s.label).join(', ')
   )
 
@@ -1361,6 +1440,16 @@ async function runTimbres(browser, url, rec) {
       m.dense.peak > m.sparse.peak * 1.2,
       `${m.sparse.peak.toFixed(3)} -> ${m.dense.peak.toFixed(3)}`
     )
+    /*
+     * La crête **avant** limiteur était mesurée, journalisée et jamais assertée : là, 18 ou 180,
+     * personne ne le voyait. Un facteur 25 vaut déjà 28 dB de réduction — au-delà, le limiteur ne
+     * limite plus, il écrase, et il faut baisser le gain en amont plutôt que compter sur lui.
+     */
+    rec.assert(
+      `le limiteur n'est pas écrasé sur « ${m.id} »`,
+      m.dense.peakBeforeCompressor < 25,
+      `avant limiteur = ${m.dense.peakBeforeCompressor.toFixed(1)}`
+    )
   }
   console.log(
     `  [timbres] audio : ${audio.map((m) => `${m.id} ${m.sparse.peak.toFixed(2)}→${m.dense.peak.toFixed(2)} (avant limiteur ${m.dense.peakBeforeCompressor.toFixed(1)})`).join(' | ')}`
@@ -1398,6 +1487,131 @@ async function runTimbres(browser, url, rec) {
   )
   await rec.shot(small, 'timbres-petit-ecran')
   await small.close()
+}
+
+/**
+ * Les natures de barres, côté geste. L'appui long change la nature d'une barre — et surtout, il ne doit
+ * **pas** voler le geste d'écoute : le relâchement qui suit ne fait pas sonner la barre par-dessus.
+ * Cette garantie était encodée à l'envers avant l'US9 (« pas d'appui long sur une barre »), son motif
+ * était bon, il est conservé autrement.
+ */
+async function runNatures(browser, url, rec) {
+  const page = await browser.newPage()
+  rec.attachConsoleListeners(page)
+  await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await page.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(page)
+  await page.mouse.click(640, 740)
+
+  const bar = await page.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    c.addBar(400, 500, 800, 500)
+    return c.bars()[0]
+  })
+  const mid = { x: (bar.ax + bar.bx) / 2, y: (bar.ay + bar.by) / 2 }
+
+  // Appui long : on presse **sans bouger** au-delà du seuil, sinon c'est un déplacement de barre.
+  const longPress = async () => {
+    await page.mouse.move(mid.x, mid.y)
+    await page.mouse.down()
+    await wait(700)
+    await page.mouse.up()
+    await wait(120)
+    return page.evaluate(() => window.__carillon.bars()[0])
+  }
+
+  const seen = [bar.nature]
+  for (let i = 0; i < 3; i += 1) seen.push((await longPress()).nature)
+  console.log(`  [natures] cycle par appui long : ${seen.join(' -> ')}`)
+  rec.assert(
+    'un appui long sur une barre parcourt les trois natures et boucle',
+    seen.length === 4 && new Set(seen.slice(0, 3)).size === 3 && seen[3] === seen[0],
+    seen.join(' -> ')
+  )
+
+  // Le geste d'écoute n'est pas volé : l'appui long ne doit produire **aucune** note.
+  const silent = await page.evaluate(() => window.__carillon.stats().notes)
+  await longPress()
+  await wait(150)
+  const afterPress = await page.evaluate(() => window.__carillon.stats().notes)
+  rec.assert(
+    'un appui long ne fait pas sonner la barre',
+    afterPress === silent,
+    `notes ${silent} -> ${afterPress}`
+  )
+
+  // Et le tap, lui, la fait toujours sonner sans changer sa nature.
+  const beforeTap = await page.evaluate(() => ({
+    nature: window.__carillon.bars()[0].nature,
+    notes: window.__carillon.stats().notes,
+  }))
+  await page.mouse.click(mid.x, mid.y)
+  await wait(200)
+  const afterTap = await page.evaluate(() => ({
+    nature: window.__carillon.bars()[0].nature,
+    notes: window.__carillon.stats().notes,
+  }))
+  rec.assert(
+    'le tap fait sonner la barre sans changer sa nature',
+    afterTap.nature === beforeTap.nature && afterTap.notes > beforeTap.notes,
+    `${beforeTap.nature}, notes ${beforeTap.notes} -> ${afterTap.notes}`
+  )
+
+  // Annulable comme toute modification de scène — ce que la déduplication avalait avant la review.
+  const changed = (await longPress()).nature
+  await page.keyboard.down('Meta')
+  await page.keyboard.press('KeyZ')
+  await page.keyboard.up('Meta')
+  await wait(200)
+  const undone = await page.evaluate(() => window.__carillon.bars()[0]?.nature)
+  rec.assert(
+    'annuler restaure la nature précédente',
+    undone !== undefined && undone !== changed,
+    `${changed} -> ${undone}`
+  )
+
+  /*
+   * Un **trampoline** garde sa bille dans le champ, mesuré dans la vraie page. La nature est posée par
+   * le geste, pas par une API : une première version de ce bloc mesurait un mur — la bille ne montait
+   * donc jamais, et l'assertion ne pouvait rien apprendre malgré son nom.
+   */
+  const target = await page.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    c.addBar(400, 520, 900, 520)
+    return c.bars()[0]
+  })
+  mid.x = (target.ax + target.bx) / 2
+  mid.y = (target.ay + target.by) / 2
+  const asTrampoline = await longPress()
+
+  const trampoline = await page.evaluate(() => {
+    const c = window.__carillon
+    let highest = 1e9
+    c.dropBall(650, 120)
+    for (let i = 0; i < 40; i += 1) {
+      c.advance(0.5)
+      for (const b of c.balls()) highest = Math.min(highest, b.y)
+    }
+    return { highest, impacts: c.stats().impacts }
+  })
+  console.log(
+    `  [natures] ${asTrampoline.nature} : ${trampoline.impacts} impacts, point le plus haut y=${Math.round(trampoline.highest)}`
+  )
+  rec.assert(
+    'la barre mesurée est bien un trampoline',
+    asTrampoline.nature === 'trampoline',
+    asTrampoline.nature
+  )
+  rec.assert(
+    'une bille sur un trampoline ne sort jamais par le haut du champ',
+    trampoline.highest > 0,
+    `y minimal = ${Math.round(trampoline.highest)}`
+  )
+
+  await rec.shot(page, 'natures')
+  await page.close()
 }
 
 async function runResize(browser, url, rec) {
@@ -1755,6 +1969,7 @@ const SCENARIOS = {
   vernis: runVernis,
   rythme: runRythme,
   timbres: runTimbres,
+  natures: runNatures,
   edit: runEdit,
   touch: runTouch,
 }

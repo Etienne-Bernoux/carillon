@@ -25,6 +25,7 @@ import {
 } from './core/emitter'
 import { divisionAt, divisionLabel, gridTimeAfter, nearestDivisionIndex } from './core/clock'
 import { createHistory } from './core/history'
+import { cycleNature, natureLabel } from './core/nature'
 import {
   DEFAULT_INSTRUMENT,
   INSTRUMENTS,
@@ -97,16 +98,16 @@ let tuning: Tuning = DEFAULT_TUNING
 const TUNING_IDS = TUNINGS.map((candidate) => candidate.id)
 let interaction: Interaction = { ...NO_INTERACTION }
 /**
- * Temps de simulation jusqu'auquel les poignées de toutes les barres restent visibles. Déclenché par
- * le premier contact tactile : sans survol au doigt, rien n'annonçait qu'une barre s'attrape.
- */
-/**
  * Instrument courant. C'est un réglage de **lecture**, pas une donnée de scène : il ne change aucune
  * hauteur, seulement le timbre. Il vit donc hors de l'historique et hors du lien de partage, exactement
  * comme le silence — alors que la gamme, elle, réaccorde les barres et fait partie de l'état.
  */
 let instrument: Instrument = DEFAULT_INSTRUMENT
 
+/**
+ * Temps de simulation jusqu'auquel les poignées de toutes les barres restent visibles. Déclenché par
+ * le premier contact tactile : sans survol au doigt, rien n'annonçait qu'une barre s'attrape.
+ */
 let revealHandlesUntil = -1
 const REVEAL_HANDLES_SECONDS = 5
 let dragArea: SceneArea | null = null
@@ -202,6 +203,12 @@ function clearAll(): void {
   world.bars.length = 0
   world.balls.length = 0
   world.emitters.length = 0
+  /*
+   * La file des retours **aussi**. Sans elle, « Effacer » ne vidait pas la scène : les billes recyclées
+   * en attente revenaient à chaque mesure, indéfiniment, dans une scène sans aucune barre. Un contrôle
+   * qui cesse de faire ce qu'il annonce.
+   */
+  world.respawns.length = 0
   effects.clear()
   impactsTotal = 0
 }
@@ -287,6 +294,8 @@ function applyShared(shared: SharedScene): void {
   for (const bar of shared.bars) {
     placeBar(...placeSharedBar(bar, area, width, MIN_BAR_LENGTH))
   }
+  // Scène neuve : les retours programmés par l'ancienne n'ont plus de point d'origine valide.
+  world.respawns.length = 0
   for (const emitter of shared.emitters) {
     addEmitter(world, placeSharedEmitter(emitter, area, width), {
       // Les liens déjà émis portent une période libre en secondes : on la rapproche de la division la
@@ -467,6 +476,24 @@ function handleGesture(gesture: Gesture): void {
       break
 
     case 'long-press':
+      /*
+       * Appui long **sur une barre** : change sa nature. Le tap reste l'écoute — c'est comme ça qu'on
+       * apprend le lien entre la couleur d'une barre et sa hauteur, et le lui voler serait payer une
+       * fonction avec une autre.
+       *
+       * L'instantané validé est celui pris au `grab`, donc l'état d'**avant** le changement : c'est lui
+       * qu'il faut restaurer.
+       */
+      if (gesture.hit?.target === 'bar') {
+        commitPending()
+        detachFromLink()
+        const nature = cycleNature(gesture.hit.bar)
+        announce(`Barre : ${natureLabel(nature)}`)
+        userOwnsScene = true
+        fadeHint()
+        break
+      }
+
       // Appui long dans le vide : pose une source. C'est le seul idiome qui n'introduit pas de mode
       // et ne vole aucun geste existant.
       history.push(world.bars, world.emitters, tuning.id)
@@ -581,7 +608,9 @@ function handleGesture(gesture: Gesture): void {
       dragArea = null
       // Une interruption système (geste de bord du navigateur, appel entrant) ne doit pas être lue
       // comme une intention de jeter la barre.
-      if (gesture.cancelled) {
+      // `handled` : un appui long a déjà agi pendant cet appui, donc ce relâchement ne décide rien —
+      // sans quoi il ferait sonner la barre par-dessus le changement de nature.
+      if (gesture.cancelled || gesture.handled) {
         pendingSnapshot = null
       } else if (inDeleteZone(gesture.point)) {
         commitPending()
@@ -811,7 +840,7 @@ interface CarillonDebug {
   setTuning(id: string): void
   undo(): void
   /** Géométrie des barres : sans elle, toute assertion sur un déplacement passerait par des pixels. */
-  bars(): Array<{ id: number; ax: number; ay: number; bx: number; by: number; midi: number }>
+  bars(): Array<{ id: number; ax: number; ay: number; bx: number; by: number; midi: number; nature: string; hitsLeft: number; absentUntil: number }>
   addEmitter(x: number, y: number, divisionIndex?: number): number
   /** positions et vitesses des billes vivantes — pour prouver qu'une scène **bouge**, pas qu'elle existe */
   balls(): { id: number; x: number; y: number; vx: number; vy: number }[]
@@ -858,6 +887,7 @@ interface CarillonDebug {
     particles: number
     maxParticles: number
     bpm: number
+    time: number
     pendingRespawns: number
     /** plafond de billes vivantes, exposé pour que le harnais n'ait pas à le deviner */
     maxBalls: number
@@ -936,6 +966,9 @@ window.__carillon = {
       bx: bar.b.x,
       by: bar.b.y,
       midi: bar.midi,
+      nature: bar.nature,
+      hitsLeft: bar.hitsLeft,
+      absentUntil: bar.absentUntil,
     })),
   stats: () => ({
     fps: Math.round(fps),
@@ -956,6 +989,7 @@ window.__carillon = {
     particles: effects.particles.length,
     maxParticles: MAX_PARTICLES,
     bpm: world.bpm,
+    time: world.time,
     pendingRespawns: world.respawns.length,
     maxBalls: MAX_BALLS,
     distinctPitches: new Set(world.bars.map((bar) => bar.midi)).size,

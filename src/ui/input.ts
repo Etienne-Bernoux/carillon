@@ -21,8 +21,12 @@ export type Gesture =
   | { type: 'draft-cancel' }
   | { type: 'create-bar'; a: Vec2; b: Vec2 }
   | { type: 'drop-ball'; point: Vec2 }
-  /** appui long dans le vide : pose une source */
-  | { type: 'long-press'; point: Vec2 }
+  /**
+   * Appui long. Dans le vide, il pose une source ; sur une barre, il change sa nature. `hit` dit sur
+   * quoi, et c'est le gestionnaire qui décide — le calque d'entrée ne connaît aucun de ces deux
+   * concepts.
+   */
+  | { type: 'long-press'; point: Vec2; hit: Grab | null }
   /**
    * Premier contact **tactile** de la session. Il n'existe pas de survol au doigt, donc les poignées
    * d'extrémité — la seule chose qui annonce qu'une barre s'attrape et s'accorde — n'apparaissaient
@@ -31,8 +35,12 @@ export type Gesture =
   | { type: 'touch-hint' }
   | { type: 'grab'; hit: Grab }
   | { type: 'drag'; hit: Grab; point: Vec2; delta: Vec2 }
-  /** `cancelled` : le système a repris le pointeur, l'utilisateur n'a rien décidé. */
-  | { type: 'release'; hit: Grab; point: Vec2; cancelled: boolean }
+  /**
+   * `cancelled` : le système a repris le pointeur, l'utilisateur n'a rien décidé.
+   * `handled` : un geste a **déjà** agi pendant cet appui (un appui long), donc le relâchement ne doit
+   * rien décider de plus. Distingué de `cancelled`, qui veut dire l'inverse — personne n'a décidé.
+   */
+  | { type: 'release'; hit: Grab; point: Vec2; cancelled: boolean; handled: boolean }
   /** relâchement sans mouvement sur une cible — barre **ou** source */
   | { type: 'tap'; hit: Grab }
 
@@ -90,20 +98,25 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
       touchHinted = true
       handlers.onGesture({ type: 'touch-hint' })
     }
-    if (grabbed) {
-      handlers.onGesture({ type: 'grab', hit: grabbed })
-      return
-    }
+    if (grabbed) handlers.onGesture({ type: 'grab', hit: grabbed })
 
-    // Appui long **dans le vide** seulement : sur une barre, l'appui long n'a pas de sens et
-    // volerait le geste d'écoute.
+    /*
+     * Appui long dans le vide **ou sur une barre**. Sur une source, non : taper une source change déjà
+     * son rythme, et un second idiome sur la même cible serait du bruit.
+     *
+     * Le relâchement qui suit ne doit surtout pas faire sonner la barre par-dessus — c'est le « vol du
+     * geste d'écoute » que cette fonction refusait jusqu'ici. D'où `handled` sur le `release`.
+     */
+    if (grabbed?.target === 'emitter') return
+
     longPressFired = false
     const origin = start
+    const target = grabbed
     longPressTimer = setTimeout(() => {
       longPressTimer = null
       if (moved || activePointer === null) return
       longPressFired = true
-      handlers.onGesture({ type: 'long-press', point: origin })
+      handlers.onGesture({ type: 'long-press', point: origin, hit: target })
     }, LONG_PRESS_MS)
   }
 
@@ -157,8 +170,14 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
     if (grabbed) {
       // Toujours un `release`, y compris interrompu : c'est lui qui remet à zéro la mise en évidence
       // et la zone de glisser. Sans ça, une interruption laissait la barre surlignée indéfiniment.
-      if (moved || cancelled) {
-        handlers.onGesture({ type: 'release', hit: grabbed, point, cancelled })
+      if (moved || cancelled || longPressFired) {
+        handlers.onGesture({
+          type: 'release',
+          hit: grabbed,
+          point,
+          cancelled,
+          handled: longPressFired,
+        })
       } else {
         handlers.onGesture({ type: 'tap', hit: grabbed })
       }

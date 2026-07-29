@@ -114,6 +114,10 @@ function barEqual(a: Bar, b: Bar): boolean {
   return (
     a.id === b.id &&
     a.restitution === b.restitution &&
+    // La nature **est** comparée : sans elle, la déduplication avalait un changement de nature et
+    // l'annulation sautait par-dessus — un champ de scène traité comme transitoire, exactement la
+    // famille de défauts que ce fichier documente partout ailleurs.
+    a.nature === b.nature &&
     a.midi === b.midi &&
     vecEqual(a.a, b.a) &&
     vecEqual(a.b, b.b)

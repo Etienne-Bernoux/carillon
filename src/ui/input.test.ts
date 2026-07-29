@@ -250,8 +250,30 @@ describe('machine à gestes', () => {
     expect(h.types()).toContain('long-press')
   })
 
-  it('pas d’appui long sur une barre : ce serait voler le geste d’écoute', () => {
+  it('appui long sur une barre : il agit **sans** voler le geste d’écoute', () => {
+    /*
+     * Ce test asseyait l'inverse jusqu'à l'US9 — « pas d'appui long sur une barre » — et son motif
+     * était bon : le relâchement qui suit ne doit pas faire sonner la barre par-dessus. La décision a
+     * changé (l'appui long change la nature de la barre), le motif est conservé : on exige toujours
+     * qu'aucun `tap` ne soit émis, et le `release` porte `handled` pour que le gestionnaire ne décide
+     * rien de plus.
+     */
     const h = harness(fakeHit())
+    h.down(50, 0)
+    vi.advanceTimersByTime(LONG_PRESS_MS + 10)
+    h.up(50, 0)
+
+    expect(h.types()).toEqual(['grab', 'long-press', 'release'])
+    // Le geste d'écoute n'est pas volé : pas de `tap`, donc la barre ne sonne pas.
+    expect(h.types()).not.toContain('tap')
+    const press = h.gestures.find((g) => g.type === 'long-press')
+    expect(press?.hit?.target).toBe('bar')
+    const release = h.gestures.find((g) => g.type === 'release')
+    expect(release?.handled).toBe(true)
+  })
+
+  it('un appui long sur une source n’émet rien : taper une source change déjà son rythme', () => {
+    const h = harness({ target: 'emitter', emitter: { id: 1 } } as never)
     h.down(50, 0)
     vi.advanceTimersByTime(LONG_PRESS_MS + 10)
     h.up(50, 0)
