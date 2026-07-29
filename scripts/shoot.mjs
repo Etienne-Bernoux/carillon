@@ -24,7 +24,7 @@ const ROOT = path.resolve(__dirname, '..')
 const PROOFS_DIR = path.join(ROOT, 'docs', 'proofs')
 const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
-const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis', 'rythme', 'timbres', 'natures', 'air']
+const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis', 'rythme', 'timbres', 'natures', 'air', 'partage']
 
 const rawArgs = process.argv.slice(2)
 const flags = new Set(rawArgs.filter((a) => a.startsWith('--')))
@@ -749,6 +749,85 @@ async function runShare(browser, url, rec) {
  * le HUD mangeait 44 % d'un 320×568 ; l'accordage n'était découvrable qu'à la souris, faute de survol
  * tactile ; et `prefers-reduced-motion` était ignoré.
  */
+/**
+ * Le format v2 transporte ce que la v1 perdait : la nature des barres, le tempo et l'instrument. Les
+ * trois étaient restés hors du lien aux US7, US8 et US9 sans qu'on l'ait décidé — une scène reçue se
+ * rejouait à 96 BPM au carillon, avec des murs, quoi qu'ait choisi celui qui l'a partagée.
+ */
+async function runPartageV2(browser, url, rec) {
+  const author = await browser.newPage()
+  rec.attachConsoleListeners(author)
+  await author.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await author.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(author)
+
+  // On pose une scène signée : trois natures, un instrument qui n'est pas le défaut, un tempo choisi.
+  const sent = await author.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    const ids = [
+      c.addBar(200, 300, 500, 320),
+      c.addBar(600, 400, 900, 420),
+      c.addBar(250, 550, 550, 570),
+    ]
+    c.setBar(ids[1], { nature: 'trampoline' })
+    c.setBar(ids[2], { nature: 'ephemeral' })
+    c.addEmitter(400, 120, 3)
+    // Deux clics : on quitte le carillon, donc l'instrument transporté n'est pas le défaut.
+    document.querySelector('[data-control="instrument"]').click()
+    document.querySelector('[data-control="instrument"]').click()
+    return {
+      natures: c.bars().map((bar) => bar.nature),
+      instrument: c.stats().instrument,
+      bpm: c.stats().bpm,
+      divisions: c.emitters().map((emitter) => emitter.divisionIndex),
+    }
+  })
+  // Le lien passe par le **bouton**, comme pour un utilisateur : c'est lui qui écrit le fragment
+  // d'URL, et le tester par un appel direct laisserait ce chemin non vérifié.
+  await author.click('[data-control="share"]')
+  await wait(200)
+  const link = await author.evaluate(() => location.href)
+  console.log(
+    `  [partage] envoyé : natures=${sent.natures.join(',')} instrument=${sent.instrument} divisions=${sent.divisions.join(',')} | lien de ${link.length} caractères`
+  )
+  await author.close()
+
+  const guest = await browser.newPage()
+  rec.attachConsoleListeners(guest)
+  await guest.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await guest.goto(link, { waitUntil: 'load' })
+  await waitForCarillon(guest)
+  await tick(guest)
+  const got = await guest.evaluate(() => ({
+    natures: window.__carillon.bars().map((bar) => bar.nature),
+    instrument: window.__carillon.stats().instrument,
+    bpm: window.__carillon.stats().bpm,
+    divisions: window.__carillon.emitters().map((emitter) => emitter.divisionIndex),
+  }))
+  console.log(
+    `  [partage] reçu : natures=${got.natures.join(',')} instrument=${got.instrument} divisions=${got.divisions.join(',')}`
+  )
+
+  rec.assert(
+    'la nature de chaque barre traverse le lien',
+    JSON.stringify(got.natures) === JSON.stringify(sent.natures),
+    `${sent.natures.join(',')} -> ${got.natures.join(',')}`
+  )
+  rec.assert(
+    'l’instrument traverse le lien',
+    got.instrument === sent.instrument && got.instrument !== 'carillon',
+    `${sent.instrument} -> ${got.instrument}`
+  )
+  rec.assert(
+    'la division de chaque source traverse le lien',
+    JSON.stringify(got.divisions) === JSON.stringify(sent.divisions),
+    `${sent.divisions.join(',')} -> ${got.divisions.join(',')}`
+  )
+  await rec.shot(guest, 'partage-v2')
+  await guest.close()
+}
+
 async function runVernis(browser, url, rec) {
   // F1 — densité du HUD sur le plus petit écran courant.
   const small = await browser.newPage()
@@ -2124,6 +2203,7 @@ const SCENARIOS = {
   timbres: runTimbres,
   natures: runNatures,
   air: runAir,
+  partage: runPartageV2,
   edit: runEdit,
   touch: runTouch,
 }
