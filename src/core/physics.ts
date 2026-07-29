@@ -14,7 +14,7 @@ import type { BarNature } from './nature'
  * saturerait la scène, et le retour n'est pas une pulsation — c'est une reprise de motif.
  */
 const RECYCLE_DIVISION_INDEX = 0
-import type { Ball, Bar, Bounds, ImpactEvent, Vec2, World } from './types'
+import type { Ball, Bar, Bounds, Dropper, ImpactEvent, Vec2, World } from './types'
 import { dot, len2, normalize, perp, sub } from './vec'
 
 export const DT = 1 / 120
@@ -159,9 +159,35 @@ export function createWorld(bounds: Bounds): World {
     time: 0,
     bpm: DEFAULT_BPM,
     respawns: [],
+    droppers: [],
     nextBallId: 0,
+    nextDropperId: 0,
     nextBarId: 0,
     nextEmitterId: 0,
+  }
+}
+
+/** Pose un point de lâcher. C'est lui qui rend visible — et supprimable — une bille qui revient. */
+export function addDropper(world: World, pos: Vec2, hue: number): Dropper {
+  const dropper: Dropper = {
+    id: world.nextDropperId++,
+    pos: { x: pos.x, y: pos.y },
+    hue,
+  }
+  world.droppers.push(dropper)
+  return dropper
+}
+
+/**
+ * Retire un point de lâcher, ses retours en attente **et** le recyclage des billes qui en dépendent.
+ * Sans ces trois effets, supprimer le point laisserait la scène rejouer ce qu'on vient d'effacer.
+ */
+export function removeDropper(world: World, id: number): void {
+  const index = world.droppers.findIndex((dropper) => dropper.id === id)
+  if (index >= 0) world.droppers.splice(index, 1)
+  world.respawns = world.respawns.filter((respawn) => respawn.dropperId !== id)
+  for (const ball of world.balls) {
+    if (ball.dropperId === id) (ball as { recycle: boolean }).recycle = false
   }
 }
 
@@ -192,7 +218,7 @@ export function spawnBall(
   world: World,
   pos: Vec2,
   vel?: Vec2,
-  opts?: { radius?: number; hue?: number; recycle?: boolean; origin?: Vec2 },
+  opts?: { radius?: number; hue?: number; recycle?: boolean; origin?: Vec2; dropperId?: number },
 ): Ball {
   const v = vel ?? { x: 0, y: 0 }
   const origin = opts?.origin ?? pos
@@ -206,6 +232,7 @@ export function spawnBall(
     hue: opts?.hue ?? 0,
     origin: { x: origin.x, y: origin.y },
     launchVel: { x: v.x, y: v.y },
+    dropperId: opts?.dropperId ?? -1,
     recycle: opts?.recycle ?? false,
   }
   world.balls.push(ball)
@@ -244,12 +271,16 @@ export function stepWorld(world: World, dt: number = DT): ImpactEvent[] {
     // Une bille recyclée ne disparaît pas : elle est **reprogrammée** sur le prochain temps de la
     // grille. C'est ce qui fait qu'un seul geste suffit à créer un motif qui se répète, et l'alignement
     // sur la grille est ce qui le fait tomber en phase avec les sources déjà en place.
-    if (!ball.alive && ball.recycle) {
+    /*
+     * On programme le retour **par identifiant de point de lâcher**, pas par position. C'est ce qui rend
+     * le point manipulable : le déplacer déplace le retour, le supprimer l'annule. Une position figée au
+     * moment de la mort aurait gelé les deux.
+     */
+    if (!ball.alive && ball.recycle && ball.dropperId >= 0) {
       world.respawns.push({
         at: gridTimeAfter(world.time, divisionAt(RECYCLE_DIVISION_INDEX), world.bpm),
-        pos: { x: ball.origin.x, y: ball.origin.y },
+        dropperId: ball.dropperId,
         vel: { x: ball.launchVel.x, y: ball.launchVel.y },
-        hue: ball.hue,
       })
     }
     died = died || !ball.alive

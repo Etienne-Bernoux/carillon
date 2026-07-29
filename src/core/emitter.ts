@@ -116,7 +116,7 @@ export function runEmitters(world: World, spawn: (pos: Vec2, hue: number) => voi
  */
 export function runRespawns(
   world: World,
-  spawn: (pos: Vec2, hue: number, vel: Vec2) => void
+  spawn: (pos: Vec2, hue: number, vel: Vec2, dropperId: number) => void
 ): number {
   if (world.respawns.length === 0) return 0
 
@@ -124,8 +124,11 @@ export function runRespawns(
   const waiting: Respawn[] = []
   for (const respawn of world.respawns) {
     if (respawn.at <= world.time && returned < MAX_RESPAWNS_PER_STEP) {
-      spawn(respawn.pos, respawn.hue, respawn.vel)
-      returned += 1
+      // Position lue **maintenant**, sur le point de lâcher : c'est ce qui fait que le déplacer
+      // pendant qu'une bille est en attente déplace bien son retour.
+      const dropper = world.droppers.find((candidate) => candidate.id === respawn.dropperId)
+      if (dropper) spawn(dropper.pos, dropper.hue, respawn.vel, dropper.id)
+      if (world.droppers.some((candidate) => candidate.id === respawn.dropperId)) returned += 1
     } else if (respawn.at <= world.time) {
       // Dû mais hors budget : on le décale d'une mesure plutôt que de le perdre — une bille recyclée
       // qui disparaît silencieusement serait vécue comme un bug, pas comme une limite.

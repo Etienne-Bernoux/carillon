@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { barSeconds, divisionAt, divisionSeconds } from './clock'
 import { MAX_BALLS, MAX_RESPAWNS_PER_STEP, addEmitter, runEmitters, runRespawns } from './emitter'
-import { DT, createWorld, spawnBall, stepWorld } from './physics'
+import { DT, addDropper, createWorld, removeDropper, spawnBall, stepWorld } from './physics'
 import type { World } from './types'
 
 function world(): World {
@@ -10,12 +10,19 @@ function world(): World {
 }
 
 /** Avance la simulation en consommant les retours programmés, comme le fait `main.ts`. */
+/** Lâche une bille **avec** son point de lâcher, comme le fait l'application. */
+function drop(w: World, pos: { x: number; y: number }): number {
+  const dropper = addDropper(w, pos, 200)
+  spawnBall(w, pos, { x: 0, y: 0 }, { recycle: true, dropperId: dropper.id })
+  return dropper.id
+}
+
 function run(w: World, seconds: number): number {
   let returned = 0
   const steps = Math.round(seconds / DT)
   for (let i = 0; i < steps; i += 1) {
-    returned += runRespawns(w, (pos, hue) =>
-      spawnBall(w, pos, { x: 0, y: 0 }, { hue, recycle: true })
+    returned += runRespawns(w, (pos, hue, vel, dropperId) =>
+      spawnBall(w, pos, vel, { hue, recycle: true, dropperId })
     )
     runEmitters(w, (pos, hue) => spawnBall(w, pos, { x: 0, y: 0 }, { hue }))
     stepWorld(w, DT)
@@ -27,7 +34,7 @@ describe('G3 — une bille lâchée à la main revient', () => {
   it('revient à son point de lâcher, sur un temps de la grille', () => {
     const w = world()
     const origin = { x: 400, y: 120 }
-    spawnBall(w, origin, { x: 0, y: 0 }, { recycle: true })
+    drop(w, origin)
 
     // Rien à consommer tant qu'elle est en vol.
     expect(w.respawns).toHaveLength(0)
@@ -36,7 +43,7 @@ describe('G3 — une bille lâchée à la main revient', () => {
     run(w, 1.4)
     const scheduled = w.respawns[0]
     expect(scheduled).toBeDefined()
-    expect(scheduled?.pos).toEqual(origin)
+    expect(w.droppers[0]?.pos).toEqual(origin)
     const bar = barSeconds(w.bpm)
     expect(Math.abs((scheduled?.at ?? 0) / bar - Math.round((scheduled?.at ?? 0) / bar))).toBeLessThan(
       1e-9
@@ -67,7 +74,7 @@ describe('G3 — une bille lâchée à la main revient', () => {
 
   it('le retour se répète indéfiniment : un seul geste devient un motif', () => {
     const w = world()
-    spawnBall(w, { x: 400, y: 120 }, { x: 0, y: 0 }, { recycle: true })
+    drop(w, { x: 400, y: 120 })
     const returns = run(w, barSeconds(w.bpm) * 12)
     // Une bille par mesure environ : le motif tourne, il ne s'éteint pas.
     expect(returns).toBeGreaterThanOrEqual(8)
@@ -79,7 +86,7 @@ describe('G4 — le recyclage ne fuit pas', () => {
     const w = world()
     // 40 billes recyclées, toutes lâchées d'en haut : la scène tourne en boucle sans intervention.
     for (let i = 0; i < 40; i += 1) {
-      spawnBall(w, { x: 40 + i * 30, y: 60 }, { x: 0, y: 0 }, { recycle: true })
+      drop(w, { x: 40 + i * 30, y: 60 })
     }
     for (let i = 0; i < 6; i += 1) addEmitter(w, { x: 100 + i * 200, y: 80 }, { divisionIndex: 4 })
 
@@ -95,7 +102,8 @@ describe('G4 — le recyclage ne fuit pas', () => {
     const bar = barSeconds(w.bpm)
     // Un de plus que le budget : c'est le surplus qu'on veut voir survivre.
     for (let i = 0; i < MAX_RESPAWNS_PER_STEP + 6; i += 1) {
-      w.respawns.push({ at: 0, pos: { x: 100 + i * 4, y: 50 }, vel: { x: 0, y: 0 }, hue: 200 })
+      const dropper = addDropper(w, { x: 100 + i * 4, y: 50 }, 200)
+      w.respawns.push({ at: 0, dropperId: dropper.id, vel: { x: 0, y: 0 } })
     }
     w.time = bar * 2
 
@@ -126,7 +134,7 @@ describe('G4 — le recyclage ne fuit pas', () => {
   it('les retours tombent tous sur la grille de la mesure', () => {
     const w = world()
     for (let i = 0; i < 5; i += 1) {
-      spawnBall(w, { x: 200 + i * 150, y: 60 + i * 40 }, { x: 0, y: 0 }, { recycle: true })
+      drop(w, { x: 200 + i * 150, y: 60 + i * 40 })
     }
     run(w, 2)
     const step = divisionSeconds(divisionAt(0), w.bpm)
@@ -136,3 +144,105 @@ describe('G4 — le recyclage ne fuit pas', () => {
     }
   })
 })
+
+describe('le point de lâcher — l’état qui n’est plus caché', () => {
+  it('un lâcher crée un point visible dans la scène', () => {
+    const w = world()
+    expect(w.droppers).toHaveLength(0)
+    drop(w, { x: 400, y: 120 })
+    expect(w.droppers).toHaveLength(1)
+    expect(w.droppers[0]?.pos).toEqual({ x: 400, y: 120 })
+  })
+
+  it('chaque bille revient à **son** point, pas à celui d’un autre', () => {
+    // Deux points : avec un seul, prendre `droppers[0]` au lieu du bon fonctionnerait par accident.
+    // Vérifié par mutation.
+    const w = world()
+    const gauche = drop(w, { x: 200, y: 120 })
+    const droite = drop(w, { x: 900, y: 120 })
+    expect(gauche).not.toBe(droite)
+
+    run(w, 1.4)
+    expect(w.respawns).toHaveLength(2)
+
+    const origins = new Set<number>()
+    for (let i = 0; i < Math.round(4 / DT) && origins.size < 2; i += 1) {
+      run(w, DT)
+      for (const ball of w.balls) origins.add(Math.round(ball.origin.x))
+    }
+    // Les deux billes reviennent, chacune chez elle.
+    expect([...origins].sort((a, b) => a - b)).toEqual([200, 900])
+  })
+
+  it('déplacer le point déplace le retour, **même pendant l’attente**', () => {
+    /*
+     * C'est la propriété qui justifie de programmer le retour par **identifiant** et non par position :
+     * une position figée au moment de la mort aurait gelé le retour là où la bille est tombée la
+     * première fois, et déplacer le point n'aurait plus rien changé.
+     */
+    const w = world()
+    const id = drop(w, { x: 400, y: 120 })
+    run(w, 1.4)
+    expect(w.respawns).toHaveLength(1)
+
+    const dropper = w.droppers.find((candidate) => candidate.id === id)!
+    dropper.pos.x = 900
+
+    const before = w.nextBallId
+    let revenue: { origin: { x: number; y: number } } | undefined
+    for (let i = 0; i < Math.round(3 / DT) && !revenue; i += 1) {
+      run(w, DT)
+      revenue = w.balls.find((ball) => ball.id === before)
+    }
+    expect(revenue?.origin.x).toBe(900)
+  })
+
+  it('supprimer le point annule les retours en attente', () => {
+    const w = world()
+    const id = drop(w, { x: 400, y: 120 })
+    run(w, 1.4)
+    expect(w.respawns).toHaveLength(1)
+
+    removeDropper(w, id)
+
+    expect(w.droppers).toHaveLength(0)
+    expect(w.respawns).toHaveLength(0)
+    // Et plus rien ne revient : sans ça, la scène rejouerait ce qu'on vient d'effacer.
+    const before = w.nextBallId
+    run(w, barSeconds(w.bpm) * 3)
+    expect(w.nextBallId).toBe(before)
+  })
+
+  it('supprimer le point pendant qu’une bille est **en vol** l’empêche de revenir', () => {
+    const w = world()
+    const id = drop(w, { x: 400, y: 120 })
+    run(w, 0.5) // encore en vol
+    expect(w.balls).toHaveLength(1)
+
+    removeDropper(w, id)
+
+    /*
+     * On surveille la file **pendant** toute la course, pas seulement à la fin : un retour programmé
+     * pour un point disparu est consommé sans rien produire, donc l'état final est vide dans les deux
+     * cas. Vérifié par mutation — sans ce relevé continu, ne pas couper le recyclage de la bille en vol
+     * passait inaperçu.
+     */
+    let queuedEver = 0
+    for (let i = 0; i < Math.round((barSeconds(w.bpm) * 3) / DT); i += 1) {
+      run(w, DT)
+      queuedEver = Math.max(queuedEver, w.respawns.length)
+    }
+
+    expect(queuedEver).toBe(0)
+    expect(w.balls).toHaveLength(0)
+  })
+
+  it('une bille sans point de lâcher ne programme rien', () => {
+    const w = world()
+    // `recycle` sans `dropperId` : le cas d'une bille dont le point a disparu entre-temps.
+    spawnBall(w, { x: 400, y: 120 }, { x: 0, y: 0 }, { recycle: true })
+    run(w, 2)
+    expect(w.respawns).toHaveLength(0)
+  })
+})
+

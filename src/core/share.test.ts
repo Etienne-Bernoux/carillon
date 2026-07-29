@@ -28,6 +28,8 @@ function scene(barCount: number, emitterCount = 2, tuningId = DEFAULT_TUNING.id)
       y: rng(),
       divisionIndex: i % 5,
     })),
+    // Un point de lâcher, pour que l'aller-retour de la v3 soit exercé partout.
+    droppers: [{ x: 0.3, y: 0.2 }],
   }
 }
 
@@ -131,7 +133,7 @@ describe('E3 — robustesse d’un lien trafiqué', () => {
 describe('E4 — budget de taille', () => {
   it('tient sous 1 500 caractères pour 60 barres et 8 sources', () => {
     const encoded = encodeScene(scene(60, 8), TUNING_IDS, INSTRUMENT_IDS)
-    expect(encoded.length).toBe(encodedLength(60, 8))
+    expect(encoded.length).toBe(encodedLength(60, 8, 1))
     expect(encoded.length).toBeLessThan(1500)
   })
 
@@ -283,4 +285,41 @@ describe('E8 — la v2 transporte ce que la v1 perdait', () => {
     expect(decoded?.bars[0]?.natureIndex).toBe(0)
   })
 })
+
+describe('E9 — la v3 transporte les points de lâcher', () => {
+  it('les points de lâcher font l’aller-retour', () => {
+    const original = { ...scene(2, 1), droppers: [{ x: 0.2, y: 0.3 }, { x: 0.8, y: 0.15 }] }
+    const decoded = decodeScene(
+      encodeScene(original, TUNING_IDS, INSTRUMENT_IDS),
+      TUNING_IDS,
+      INSTRUMENT_IDS
+    )
+    expect(decoded?.droppers).toHaveLength(2)
+    expect(Math.abs((decoded?.droppers[0]?.x ?? -1) - 0.2)).toBeLessThan(1 / 4000)
+    expect(Math.abs((decoded?.droppers[1]?.y ?? -1) - 0.15)).toBeLessThan(1 / 4000)
+  })
+
+  it('un lien v2 se relit, sans point de lâcher', () => {
+    /*
+     * La v2 n'en portait pas : une scène partagée y perdait ses billes qui reviennent, donc un air
+     * composé — qui ne tient que par une bille recyclée — arrivait **silencieux**. Le lien reste
+     * lisible ; c'est son contenu qui était incomplet.
+     */
+    const encoded = encodeScene(scene(2, 1), TUNING_IDS, INSTRUMENT_IDS)
+    // On reconstruit un lien v2 : version 2, en-tête sans compte de points, et pas de bloc de points.
+    const withoutDroppers = `2${encoded.slice(1, 8)}${encoded.slice(10, encoded.length - 4)}`
+    const decoded = decodeScene(withoutDroppers, TUNING_IDS, INSTRUMENT_IDS)
+
+    expect(decoded).not.toBeNull()
+    expect(decoded?.droppers).toEqual([])
+    expect(decoded?.bars).toHaveLength(2)
+  })
+
+  it('un compte de points incohérent rend null plutôt qu’une scène tronquée', () => {
+    const encoded = encodeScene({ ...scene(1, 0), droppers: [{ x: 0.5, y: 0.5 }] }, TUNING_IDS, INSTRUMENT_IDS)
+    expect(decodeScene(encoded.slice(0, -1), TUNING_IDS, INSTRUMENT_IDS)).toBeNull()
+    expect(decodeScene(`${encoded}AB`, TUNING_IDS, INSTRUMENT_IDS)).toBeNull()
+  })
+})
+
 

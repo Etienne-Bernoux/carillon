@@ -52,6 +52,17 @@ export interface InputHandlers {
   onGesture(gesture: Gesture): void
 }
 
+/**
+ * Clé d'identité du survol : c'est elle qui évite de réémettre un `hover` à chaque pixel parcouru. Une
+ * fonction plutôt qu'une expression ternaire, parce qu'une troisième nature de cible a suffi à rendre
+ * le ternaire faux.
+ */
+function hoverKey(hit: Grab): string {
+  if (hit.target === 'bar') return `bar${hit.bar.id}:${hit.kind}`
+  if (hit.target === 'emitter') return `emit${hit.emitter.id}`
+  return `drop${hit.dropper.id}`
+}
+
 export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers): () => void {
   let activePointer: number | null = null
   let start: Vec2 | null = null
@@ -129,7 +140,7 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
       const hit = handlers.hitTest(point, radiiFor(event))
       // Clé d'identité du survol, valable pour les deux natures de cible : c'est elle qui évite de
       // réémettre un `hover` à chaque pixel parcouru.
-      const key = hit ? (hit.target === 'bar' ? `bar${hit.bar.id}:${hit.kind}` : `emit${hit.emitter.id}`) : ''
+      const key = hit ? hoverKey(hit) : ''
       if (key !== hoveredKey) {
         hoveredKey = key
         handlers.onGesture({ type: 'hover', hit })

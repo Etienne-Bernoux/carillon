@@ -12,7 +12,7 @@ import {
   tuningById,
 } from './core/music'
 import type { Tuning } from './core/music'
-import { DT, addBar, createWorld, spawnBall, stepWorld } from './core/physics'
+import { DT, addBar, addDropper, createWorld, removeDropper, spawnBall, stepWorld } from './core/physics'
 import type { Bar, Emitter, ImpactEvent, Vec2 } from './core/types'
 import {
   MAX_BALLS,
@@ -38,8 +38,15 @@ import type { Instrument } from './core/instruments'
 import { MAX_PARTICLES } from './core/particles'
 import { decodeScene, encodeScene } from './core/share'
 import type { SharedScene } from './core/share'
-import { placeSharedBar, placeSharedEmitter, toSharedBar, toSharedPoint } from './core/share-layout'
+import {
+  placeSharedBar,
+  placeSharedEmitter,
+  placeSharedPoint,
+  toSharedBar,
+  toSharedPoint,
+} from './core/share-layout'
 import { hitTestWorld } from './core/hit-test'
+import type { Grab } from './core/hit-test'
 import { attachInput } from './ui/input'
 import type { Gesture } from './ui/input'
 import { noteName } from './ui/notation'
@@ -172,7 +179,13 @@ function applyInstrument(next: Instrument): void {
 function dropBall(point: Vec2): number {
   // Teintes froides pour les billes : la couleur chaude est réservée aux barres, qui portent la hauteur.
   const hue = 190 + ((world.nextBallId * 37) % 90)
-  return spawnBall(world, point, { x: 0, y: 0 }, { hue, recycle: true }).id
+  /*
+   * Un lâcher à la main crée un **point de lâcher** visible. Avant, l'origine du retour vivait sur la
+   * bille : rien ne la montrait, rien ne permettait de la déplacer ni de la supprimer. Un seul geste
+   * créait donc une source de son permanente et invisible — ce que la stratégie du produit interdit.
+   */
+  const dropper = addDropper(world, point, hue)
+  return spawnBall(world, point, { x: 0, y: 0 }, { hue, recycle: true, dropperId: dropper.id }).id
 }
 
 /**
@@ -220,6 +233,8 @@ function clearAll(): void {
    * qui cesse de faire ce qu'il annonce.
    */
   world.respawns.length = 0
+  // Les points de lâcher aussi : ils sont de la scène, et c'était le sens de « Effacer ».
+  world.droppers.length = 0
   effects.clear()
   impactsTotal = 0
 }
@@ -297,8 +312,18 @@ function loadSurprise(options?: { compose?: boolean }): string | null {
      * lancement, donc l'air se rejoue à chaque mesure. Sans le recyclage de l'US7, on l'entendrait une
      * fois puis plus jamais.
      */
+    /*
+     * La bille de l'air a besoin d'un **point de lâcher**, comme toute bille recyclée : c'est lui qui la
+     * fait revenir, et c'est lui qui voyage dans le lien. Sans ça l'air se jouait une fois puis se
+     * taisait, et son lien arrivait silencieux — régression introduite en rendant le recyclage explicite.
+     */
     const hue = 190 + ((world.nextBallId * 37) % 90)
-    spawnBall(world, composed.drop, composed.velocity, { hue, recycle: true })
+    const dropper = addDropper(world, composed.drop, hue)
+    spawnBall(world, composed.drop, composed.velocity, {
+      hue,
+      recycle: true,
+      dropperId: dropper.id,
+    })
     composedMelody = { label: composed.melody.label, notes: composed.melody.degrees.length }
     return composed.melody.label
   }
@@ -339,6 +364,7 @@ function sharedScene(): SharedScene {
       ...toSharedPoint(emitter.pos, area, width),
       divisionIndex: emitter.divisionIndex,
     })),
+    droppers: world.droppers.map((dropper) => toSharedPoint(dropper.pos, area, width)),
   }
 }
 
@@ -366,6 +392,18 @@ function applyShared(shared: SharedScene): void {
       divisionIndex: emitter.divisionIndex,
     })
   }
+  /*
+   * Les points de lâcher, **avec leur bille**. Sans eux, une scène partagée arrivait muette dès qu'elle
+   * ne portait pas de source : un air composé ne tient que par une bille recyclée, donc son lien donnait
+   * une scène silencieuse jusqu'au premier clic du destinataire.
+   */
+  for (const point of shared.droppers) {
+    const pos = placeSharedPoint(point.x, point.y, area, width)
+    const hue = 190 + ((world.nextBallId * 37) % 90)
+    const dropper = addDropper(world, pos, hue)
+    spawnBall(world, pos, { x: 0, y: 0 }, { hue, recycle: true, dropperId: dropper.id })
+  }
+
   // La scène vient de quelqu'un d'autre : on ne la remplace pas par une scène surprise.
   userOwnsScene = true
   linkedScene = shared
@@ -505,13 +543,26 @@ function undo(): void {
   userOwnsScene = true
 }
 
+/**
+ * Mise en évidence pour une cible saisie ou survolée. Une seule fonction, parce que trois branches
+ * séparées (survol, saisie, glisser) divergeaient dès qu'une **troisième** cible est apparue — le
+ * compilateur les a d'ailleurs toutes signalées d'un coup.
+ */
+function interactionFor(hit: Grab | null): Interaction {
+  if (!hit) return { ...NO_INTERACTION }
+  if (hit.target === 'bar') {
+    return { ...NO_INTERACTION, hoveredBarId: hit.bar.id, hoveredKind: hit.kind }
+  }
+  if (hit.target === 'emitter') {
+    return { ...NO_INTERACTION, hoveredEmitterId: hit.emitter.id }
+  }
+  return { ...NO_INTERACTION, hoveredDropperId: hit.dropper.id }
+}
+
 function handleGesture(gesture: Gesture): void {
   switch (gesture.type) {
     case 'hover':
-      interaction =
-        gesture.hit?.target === 'bar'
-          ? { ...NO_INTERACTION, hoveredBarId: gesture.hit.bar.id, hoveredKind: gesture.hit.kind }
-          : { ...NO_INTERACTION, hoveredEmitterId: gesture.hit?.emitter.id ?? null }
+      interaction = interactionFor(gesture.hit)
       canvas.style.cursor = gesture.hit ? 'grab' : 'crosshair'
       break
 
@@ -588,10 +639,7 @@ function handleGesture(gesture: Gesture): void {
       // Zone mesurée une fois par geste, pas à chaque mouvement : lire le DOM à 120 Hz pendant un
       // glisser force un recalcul de mise en page à chaque frame.
       dragArea = measureSceneArea(world.bounds)
-      interaction =
-        gesture.hit.target === 'bar'
-          ? { ...NO_INTERACTION, hoveredBarId: gesture.hit.bar.id, hoveredKind: gesture.hit.kind }
-          : { ...NO_INTERACTION, hoveredEmitterId: gesture.hit.emitter.id }
+      interaction = interactionFor(gesture.hit)
       fadeHint()
       break
 
@@ -600,6 +648,19 @@ function handleGesture(gesture: Gesture): void {
       commitPending()
       detachFromLink()
       userOwnsScene = true
+
+      if (gesture.hit.target === 'dropper') {
+        const { dropper } = gesture.hit
+        dropper.pos.x = Math.max(area.left, Math.min(area.right, gesture.point.x))
+        dropper.pos.y = Math.max(area.top, Math.min(area.bottom, gesture.point.y))
+        const doomed = inDeleteZone(gesture.point)
+        interaction = {
+          ...NO_INTERACTION,
+          hoveredDropperId: dropper.id,
+          pendingDeleteDropperId: doomed ? dropper.id : null,
+        }
+        break
+      }
 
       if (gesture.hit.target === 'emitter') {
         const { emitter } = gesture.hit
@@ -678,6 +739,7 @@ function handleGesture(gesture: Gesture): void {
       } else if (inDeleteZone(gesture.point)) {
         commitPending()
         if (gesture.hit.target === 'bar') removeBar(gesture.hit.bar.id)
+        else if (gesture.hit.target === 'dropper') removeDropper(world, gesture.hit.dropper.id)
         else removeEmitter(world, gesture.hit.emitter.id)
       } else if (gesture.hit.target === 'bar') {
         playBar(gesture.hit.bar, 0.5)
@@ -694,6 +756,11 @@ function handleGesture(gesture: Gesture): void {
         // correspondance entre la couleur d'une barre et sa hauteur.
         playBar(gesture.hit.bar, 0.65)
         gesture.hit.bar.lastHitAt = world.time
+      } else if (gesture.hit.target === 'dropper') {
+        // Un point de lâcher n'a ni note à faire entendre ni rythme à cycler : le taper ne fait rien,
+        // et c'est mieux que d'inventer un effet pour remplir la branche.
+        fadeHint()
+        break
       } else {
         /*
          * Taper une source change son **rythme**. C'est le seul geste qui construise un motif — sans
@@ -716,7 +783,7 @@ attachInput(canvas, {
   onFirstGesture() {
     void audio.unlock()
   },
-  hitTest: (point, radii) => hitTestWorld(world.bars, world.emitters, point, radii),
+  hitTest: (point, radii) => hitTestWorld(world.bars, world.emitters, point, radii, world.droppers),
   onGesture: handleGesture,
 })
 
@@ -907,10 +974,11 @@ interface CarillonDebug {
   setTuning(id: string): void
   undo(): void
   /** Géométrie des barres : sans elle, toute assertion sur un déplacement passerait par des pixels. */
+  droppers(): Array<{ id: number; x: number; y: number }>
   bars(): Array<{ id: number; ax: number; ay: number; bx: number; by: number; midi: number; nature: string; hitsLeft: number; absentUntil: number }>
   addEmitter(x: number, y: number, divisionIndex?: number): number
   /** positions et vitesses des billes vivantes — pour prouver qu'une scène **bouge**, pas qu'elle existe */
-  balls(): { id: number; x: number; y: number; vx: number; vy: number }[]
+  balls(): { id: number; x: number; y: number; origin: number; vx: number; vy: number }[]
   lastImpact(): { x: number; y: number } | null
   /** air composé actuellement posé, ou `null` si la scène n'en porte pas */
   composedMelody(): { label: string; notes: number } | null
@@ -964,6 +1032,7 @@ interface CarillonDebug {
     bpm: number
     time: number
     pendingRespawns: number
+    droppers: number
     /** plafond de billes vivantes, exposé pour que le harnais n'ait pas à le deviner */
     maxBalls: number
     /** nombre de gestes annulables empilés */
@@ -996,6 +1065,7 @@ window.__carillon = {
       id: ball.id,
       x: ball.pos.x,
       y: ball.pos.y,
+      origin: ball.origin.x,
       vx: ball.vel.x,
       vy: ball.vel.y,
     })),
@@ -1045,6 +1115,7 @@ window.__carillon = {
       // navigateur sans deviner à partir des instants d'apparition des billes.
       nextAt: emitter.nextAt,
     })),
+  droppers: () => world.droppers.map((d) => ({ id: d.id, x: d.pos.x, y: d.pos.y })),
   bars: () =>
     world.bars.map((bar) => ({
       id: bar.id,
@@ -1079,6 +1150,7 @@ window.__carillon = {
     bpm: world.bpm,
     time: world.time,
     pendingRespawns: world.respawns.length,
+    droppers: world.droppers.length,
     maxBalls: MAX_BALLS,
     distinctPitches: new Set(world.bars.map((bar) => bar.midi)).size,
   }),
