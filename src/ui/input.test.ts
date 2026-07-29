@@ -53,6 +53,9 @@ function fakeHit(kind: 'body' | 'endA' | 'endB' = 'body'): Grab {
     a: { x: 0, y: 0 },
     b: { x: 100, y: 0 },
     restitution: 0.8,
+    nature: 'wall',
+    hitsLeft: 3,
+    absentUntil: -1,
     midi: 60,
     lastHitAt: -1,
   }

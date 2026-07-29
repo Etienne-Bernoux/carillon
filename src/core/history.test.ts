@@ -10,6 +10,9 @@ function makeBar(id: number, midi: number, ax = 0, ay = 0, bx = 100, by = 0): Ba
     a: { x: ax, y: ay },
     b: { x: bx, y: by },
     restitution: 0.8,
+    nature: 'wall',
+    hitsLeft: 3,
+    absentUntil: -1,
     midi,
     lastHitAt: -1,
   }
@@ -184,6 +187,9 @@ describe('déduplication et gamme — régressions de la revue US3', () => {
       a: { x: 0, y: 0 },
       b: { x: 100, y: 0 },
       restitution: 0.8,
+    nature: 'wall',
+    hitsLeft: 3,
+    absentUntil: -1,
       midi: 60,
       lastHitAt,
     }

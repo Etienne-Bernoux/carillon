@@ -1,4 +1,13 @@
 import { DEFAULT_BPM, divisionAt, gridTimeAfter } from './clock'
+import {
+  DEFAULT_NATURE,
+  EPHEMERAL_HITS,
+  isPresent,
+  maxBounceSpeed,
+  registerHit,
+  restitutionFor,
+} from './nature'
+import type { BarNature } from './nature'
 
 /**
  * Division sur laquelle revient une bille recyclée : la mesure. Une bille qui revient à la croche
@@ -156,12 +165,22 @@ export function createWorld(bounds: Bounds): World {
   }
 }
 
-export function addBar(world: World, a: Vec2, b: Vec2, midi: number, restitution?: number): Bar {
+export function addBar(
+  world: World,
+  a: Vec2,
+  b: Vec2,
+  midi: number,
+  restitution?: number,
+  nature: BarNature = DEFAULT_NATURE
+): Bar {
   const bar: Bar = {
     id: world.nextBarId++,
     a: { x: a.x, y: a.y },
     b: { x: b.x, y: b.y },
     restitution: restitution ?? DEFAULT_RESTITUTION,
+    nature,
+    hitsLeft: EPHEMERAL_HITS,
+    absentUntil: -1,
     midi,
     lastHitAt: -1,
   }
@@ -246,6 +265,8 @@ function stepBall(world: World, ball: Ball, dt: number, events: ImpactEvent[]): 
     let bestBar: Bar | null = null
 
     for (const bar of world.bars) {
+      // Une barre éphémère absente laisse passer les billes : elle n'existe pas pour la collision.
+      if (!isPresent(bar, world.time)) continue
       const hit = sweepCircleSegment(ball.pos, ball.vel, effectiveRadius, bar.a, bar.b, remaining)
       if (hit && (!bestHit || hit.t < bestHit.t)) {
         bestHit = hit
@@ -271,10 +292,23 @@ function stepBall(world: World, ball: Ball, dt: number, events: ImpactEvent[]): 
       ball.vel.x -= vn * normal.x
       ball.vel.y -= vn * normal.y
     } else {
-      const e = bestBar.restitution
+      const e = restitutionFor(bestBar.nature, bestBar.restitution)
       const j = (1 + e) * vn
       ball.vel.x -= j * normal.x
       ball.vel.y -= j * normal.y
+
+      /*
+       * Plafond de rebond, appliqué **après** la réflexion et sur la seule composante normale : un
+       * trampoline rend plus d'énergie qu'il n'en reçoit, donc la vitesse croîtrait à chaque rebond
+       * jusqu'à ce que la bille traverse l'écran par le haut. La borne est dérivée de la scène (cf.
+       * `maxBounceSpeed`), pas choisie.
+       */
+      const outgoing = dot(ball.vel, normal)
+      const cap = maxBounceSpeed(world.gravity.y, bestHit.point.y)
+      if (outgoing > cap) {
+        ball.vel.x += (cap - outgoing) * normal.x
+        ball.vel.y += (cap - outgoing) * normal.y
+      }
 
       const tangent = perp(normal)
       const vt = dot(ball.vel, tangent)
@@ -291,6 +325,7 @@ function stepBall(world: World, ball: Ball, dt: number, events: ImpactEvent[]): 
         at,
       })
       bestBar.lastHitAt = at
+      registerHit(bestBar, speed, at, world.bpm)
     }
 
     ball.pos.x += normal.x * SEPARATION_EPS

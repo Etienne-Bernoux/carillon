@@ -133,9 +133,18 @@ describe('panForX', () => {
 describe('B5 — retuneBars', () => {
   function bars(): Bar[] {
     return [
-      { id: 0, a: { x: 0, y: 0 }, b: { x: 60, y: 0 }, restitution: 0.8, midi: 0, lastHitAt: -1 },
-      { id: 1, a: { x: 0, y: 0 }, b: { x: 300, y: 0 }, restitution: 0.8, midi: 0, lastHitAt: -1 },
-      { id: 2, a: { x: 10, y: 10 }, b: { x: 10, y: 610 }, restitution: 0.8, midi: 0, lastHitAt: -1 },
+      { id: 0, a: { x: 0, y: 0 }, b: { x: 60, y: 0 }, restitution: 0.8,
+    nature: 'wall',
+    hitsLeft: 3,
+    absentUntil: -1, midi: 0, lastHitAt: -1 },
+      { id: 1, a: { x: 0, y: 0 }, b: { x: 300, y: 0 }, restitution: 0.8,
+    nature: 'wall',
+    hitsLeft: 3,
+    absentUntil: -1, midi: 0, lastHitAt: -1 },
+      { id: 2, a: { x: 10, y: 10 }, b: { x: 10, y: 610 }, restitution: 0.8,
+    nature: 'wall',
+    hitsLeft: 3,
+    absentUntil: -1, midi: 0, lastHitAt: -1 },
     ]
   }
 

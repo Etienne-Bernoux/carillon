@@ -3,7 +3,10 @@ import { MOUSE_RADII, TOUCH_RADII, hitTestBars, hitTestWorld } from './hit-test'
 import type { Bar, Emitter } from './types'
 
 function bar(id: number, ax: number, ay: number, bx: number, by: number, midi = 60): Bar {
-  return { id, a: { x: ax, y: ay }, b: { x: bx, y: by }, restitution: 0.8, midi, lastHitAt: -1 }
+  return { id, a: { x: ax, y: ay }, b: { x: bx, y: by }, restitution: 0.8,
+    nature: 'wall',
+    hitsLeft: 3,
+    absentUntil: -1, midi, lastHitAt: -1 }
 }
 
 describe('C1 — hitTestBars', () => {

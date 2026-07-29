@@ -1,3 +1,5 @@
+import type { BarNature } from './nature'
+
 /**
  * Contrat partagé du noyau. Ce fichier est la frontière entre la simulation, l'audio et le rendu :
  * il ne dépend de rien et n'importe aucun DOM.
@@ -34,8 +36,18 @@ export interface Bar {
   readonly id: number
   a: Vec2
   b: Vec2
-  /** coefficient de restitution, 0..1 */
+  /** coefficient de restitution, 0..1 — la nature peut le remplacer (cf. `nature.ts`) */
   restitution: number
+  /** mur, trampoline ou éphémère : ce que la physique fait de la barre */
+  nature: BarNature
+  /**
+   * Impacts audibles restants avant qu'une barre éphémère s'efface. **État transitoire** : exclu des
+   * instantanés d'historique, au même titre que `nextAt` d'une source — l'inclure tuerait la
+   * déduplication et ferait réapparaître un état de jeu périmé à l'annulation (leçon de l'US4).
+   */
+  hitsLeft: number
+  /** instant de simulation absolu jusqu'auquel la barre est absente ; transitoire, comme `hitsLeft` */
+  absentUntil: number
   /** note MIDI jouée à l'impact, figée à la création de la barre */
   midi: number
   /** temps de simulation du dernier impact, en secondes ; -1 si jamais touchée */
