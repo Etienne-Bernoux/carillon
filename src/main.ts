@@ -1,4 +1,5 @@
 import { createAudioEngine } from './audio/engine'
+import { measurePeak, measurePeakBeforeCompressor } from './audio/engine'
 import type { NoteRequest } from './audio/engine'
 import {
   DEFAULT_TUNING,
@@ -815,6 +816,12 @@ interface CarillonDebug {
   /** positions et vitesses des billes vivantes — pour prouver qu'une scène **bouge**, pas qu'elle existe */
   balls(): { id: number; x: number; y: number; vx: number; vy: number }[]
   lastImpact(): { x: number; y: number } | null
+  /**
+   * Rend hors ligne une salve dense sur l'instrument courant et renvoie ce qui en sort réellement.
+   * `notes > 0` compte des appels, pas des décibels : c'est la seule mesure qui puisse dire « ça ne
+   * sature pas » sans oreille humaine.
+   */
+  measureAudio(voices?: number): Promise<{ peak: number; rms: number; peakBeforeCompressor: number }>
   emitters(): Array<{
     id: number
     x: number
@@ -888,6 +895,26 @@ window.__carillon = {
       vy: ball.vel.y,
     })),
   lastImpact: () => (lastImpactPoint ? { ...lastImpactPoint } : null),
+  measureAudio: async (voices = 24) => {
+    // Une salve **simultanée** au gain maximal, étalée sur toute l'étendue : c'est le pire cas
+    // réaliste (une pluie de billes sur une rangée de barres), et c'est là que la saturation arrive.
+    const notes: NoteRequest[] = []
+    for (let i = 0; i < voices; i += 1) {
+      const midi = 45 + (i * 5) % 40
+      const voice = voiceForMidi(instrument, midi)
+      const freq = midiToFreq(midi)
+      notes.push({
+        barId: i,
+        freq,
+        gain: 1,
+        pan: ((i % 5) - 2) / 2.5,
+        voice,
+        decaySeconds: decayForNote(voice, freq),
+      })
+    }
+    const [after, before] = await Promise.all([measurePeak(notes, 3), measurePeakBeforeCompressor(notes, 3)])
+    return { ...after, peakBeforeCompressor: before }
+  },
   addEmitter: (x, y, divisionIndex) =>
     addEmitter(world, { x, y }, divisionIndex === undefined ? {} : { divisionIndex }).id,
   emitters: () =>

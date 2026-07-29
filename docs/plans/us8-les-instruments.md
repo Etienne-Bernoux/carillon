@@ -1,7 +1,7 @@
 # US8 — Les instruments
 
 > Statut : **livrée** · Branche `feat/us7-le-rythme` (voir l'écart de process ci-dessous) · 238 tests,
-> 162 assertions navigateur
+> 174 assertions navigateur
 
 ## Écart de process, assumé
 
@@ -95,10 +95,40 @@ avant de comparer.
 
 ## Risques
 
-- **Quatre timbres, aucun jugé à l'oreille par un humain.** Les tests prouvent qu'ils *diffèrent* et
-  qu'ils *sonnent*, pas qu'ils sont *beaux*. Le verre à `filterQ: 2,6` et la corde en dent de scie
-  peuvent être agressifs à forte densité. C'est le seul critère de cette US qu'une machine ne peut pas
-  trancher, et il reste ouvert.
-- **L'écrêtage n'est toujours pas mesuré** (G6 de l'US7). Le verre a une décroissance de 2,6 s dans le
-  grave contre 0,9 s au carillon : à densité égale, il y a donc bien plus de voix simultanées, et le
-  risque de saturation augmente. À mesurer par rendu hors ligne avant d'aller plus loin sur les timbres.
+- **Quatre timbres, aucun jugé à l'oreille par un humain.** Les tests prouvent qu'ils *diffèrent*, qu'ils
+  *sonnent* et qu'ils *ne saturent pas*, pas qu'ils sont *beaux*. C'est le seul critère de cette US
+  qu'une machine ne peut pas trancher, et il reste ouvert.
+
+## H9 — l'écrêtage, mesuré (le G6 de l'US7, enfin fermé)
+
+« Ça sonne bien » n'est pas mesurable ; « ça sature » l'est. La construction de voix a été extraite sur
+un `BaseAudioContext`, ce qui permet de rendre **hors ligne exactement la chaîne réelle** — mêmes voix,
+même réverbe procédurale, même limiteur. Sans cette identité, la mesure porterait sur autre chose que ce
+qu'on entend, et l'assertion serait creuse.
+
+**Un vrai défaut trouvé, présent depuis l'US1.** À 24 notes simultanées au gain maximal :
+
+| Instrument | Crête de sortie **avant** correction | Après | Avant limiteur |
+|---|---|---|---|
+| Carillon | **1,383** | 0,813 | 14,8 |
+| Bois | **1,243** | 0,766 | 8,8 |
+| Verre | **1,447** | 0,833 | 18,0 |
+| Corde | **1,261** | 0,792 | 11,9 |
+
+Les quatre écrêtaient. Le `DynamicsCompressor` était dans la chaîne depuis l'US1 mais n'avait **jamais
+été réglé** : ses valeurs par défaut (attaque 3 ms) laissent passer le transitoire. Réglé en vrai
+limiteur (seuil −14 dB, coude 4, ratio 20, attaque 1 ms), la crête retombe sous 0,84 — et le RMS bouge à
+peine (0,1197 → 0,1155 au carillon), donc **sans perte de volume**.
+
+Trois assertions par instrument, parce qu'une seule aurait pu être satisfaite en coupant le son :
+
+1. crête < 0,95 à 24 voix — pas d'écrêtage ;
+2. une note seule culmine au-dessus de 0,15 — elle reste franchement audible (mesuré 0,38 à 0,59) ;
+3. la crête dense dépasse la crête d'une note de 20 % au moins — le limiteur n'aplatit pas la dynamique.
+
+### Un aléa de scénario, corrigé à la cause
+
+L'assertion « cet instrument produit des notes » attendait **1400 ms** en espérant que les billes soient
+tombées (~1,1 s de chute). Une itération sur cinq sortait à 0 note, sans reproductibilité. Une attente
+fixe pour une propriété observable est une erreur : le scénario attend maintenant la **condition** (le
+compteur de notes augmente), avec un plafond de 6 s. Stable sur deux exécutions consécutives.

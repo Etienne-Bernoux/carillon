@@ -1269,7 +1269,17 @@ async function runTimbres(browser, url, rec) {
       c.addBar(120, 620, 1160, 660)
       for (let k = 0; k < 8; k += 1) c.dropBall(180 + k * 130, 120)
     })
-    await wait(1400)
+    // On attend la **condition**, pas une durée : les billes mettent ~1,1 s à tomber, et une attente
+    // fixe de 1,4 s rendait l'assertion instable dès qu'une frame traînait (mesuré : une itération sur
+    // cinq à 0 note, de façon non reproductible).
+    await page
+      .waitForFunction(
+        (baseline) => window.__carillon.stats().notes > baseline,
+        { timeout: 6000 },
+        state.notesBefore
+      )
+      .catch(() => {})
+    await wait(250)
     const after = await page.evaluate(() => window.__carillon.stats())
     seen.push({ id: state.id, label: state.label, notes: after.notes - state.notesBefore })
     rec.assert(
@@ -1312,6 +1322,48 @@ async function runTimbres(browser, url, rec) {
     new Set(pitches.before).size >= 4 &&
       JSON.stringify(pitches.before) === JSON.stringify(pitches.after),
     `${pitches.before.join(',')} vs ${pitches.after.join(',')}`
+  )
+
+  /*
+   * « Ça sonne bien » n'est pas mesurable, mais « ça sature » l'est. Rendu **hors ligne** de la même
+   * chaîne audio que la sortie réelle — mêmes voix, même réverbe, même limiteur : 24 notes simultanées
+   * au gain maximal, le pire cas réaliste (une pluie de billes sur une rangée de barres).
+   *
+   * Mesuré avant correction : la crête de sortie valait 1,38 au carillon et 1,45 au verre, donc en
+   * écrêtage franc sur les quatre instruments. Le `DynamicsCompressor` était là depuis l'US1 mais n'avait
+   * jamais été réglé — ses valeurs par défaut (attaque 3 ms) laissent passer le transitoire.
+   */
+  const audio = []
+  for (const target of ['carillon', 'bois', 'verre', 'corde']) {
+    const m = await page.evaluate(async (id) => {
+      const btn = document.querySelector('[data-control="instrument"]')
+      let guard = 0
+      while (window.__carillon.stats().instrument !== id && guard++ < 8) btn.click()
+      const dense = await window.__carillon.measureAudio(24)
+      const sparse = await window.__carillon.measureAudio(1)
+      return { id: window.__carillon.stats().instrument, dense, sparse }
+    }, target)
+    audio.push(m)
+    rec.assert(
+      `aucun écrêtage sur « ${m.id} » à 24 voix simultanées`,
+      m.dense.peak < 0.95,
+      `crête=${m.dense.peak.toFixed(3)}`
+    )
+    // Le limiteur ne doit pas non plus tout aplatir : une note seule reste franchement audible, et une
+    // scène dense reste plus forte qu'une note seule. Sans ces deux bornes, couper le son passerait.
+    rec.assert(
+      `une note seule reste audible sur « ${m.id} »`,
+      m.sparse.peak > 0.15,
+      `crête=${m.sparse.peak.toFixed(3)}`
+    )
+    rec.assert(
+      `la densité s'entend encore sur « ${m.id} » (le limiteur n'aplatit pas)`,
+      m.dense.peak > m.sparse.peak * 1.2,
+      `${m.sparse.peak.toFixed(3)} -> ${m.dense.peak.toFixed(3)}`
+    )
+  }
+  console.log(
+    `  [timbres] audio : ${audio.map((m) => `${m.id} ${m.sparse.peak.toFixed(2)}→${m.dense.peak.toFixed(2)} (avant limiteur ${m.dense.peakBeforeCompressor.toFixed(1)})`).join(' | ')}`
   )
 
   await rec.shot(page, 'timbres')
