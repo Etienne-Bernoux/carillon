@@ -214,9 +214,19 @@ export function spawnBall(
 export function stepWorld(world: World, dt: number = DT): ImpactEvent[] {
   const events: ImpactEvent[] = []
 
+  /*
+   * Barres présentes calculées **une fois par pas**. La présence ne dépend que de `world.time`, donc la
+   * tester dans la boucle interne la rééavaluait 200 × 25 fois par pas — mesuré, le garde-fou de perf du
+   * cœur passait de 350 à 560-1050 ms pour un budget de 500. C'est la ligne la plus chaude du dépôt.
+   */
+  const present = world.bars.filter((bar) => isPresent(bar, world.time))
+  // Conséquence assumée : une barre qui s'efface **pendant** ce pas reste heurtable jusqu'à sa fin, soit
+  // 8 ms. Elle était bien là quand le pas a commencé — c'est plus juste que de la faire disparaître au
+  // milieu d'une trajectoire déjà calculée.
+
   for (const ball of world.balls) {
     if (!ball.alive) continue
-    stepBall(world, ball, dt, events)
+    stepBall(world, ball, present, dt, events)
     ball.age += dt
   }
 
@@ -250,7 +260,13 @@ export function stepWorld(world: World, dt: number = DT): ImpactEvent[] {
   return events
 }
 
-function stepBall(world: World, ball: Ball, dt: number, events: ImpactEvent[]): void {
+function stepBall(
+  world: World,
+  ball: Ball,
+  bars: readonly Bar[],
+  dt: number,
+  events: ImpactEvent[]
+): void {
   ball.vel.x += world.gravity.x * dt
   ball.vel.y += world.gravity.y * dt
 
@@ -264,9 +280,7 @@ function stepBall(world: World, ball: Ball, dt: number, events: ImpactEvent[]): 
     let bestHit: SweepHit | null = null
     let bestBar: Bar | null = null
 
-    for (const bar of world.bars) {
-      // Une barre éphémère absente laisse passer les billes : elle n'existe pas pour la collision.
-      if (!isPresent(bar, world.time)) continue
+    for (const bar of bars) {
       const hit = sweepCircleSegment(ball.pos, ball.vel, effectiveRadius, bar.a, bar.b, remaining)
       if (hit && (!bestHit || hit.t < bestHit.t)) {
         bestHit = hit

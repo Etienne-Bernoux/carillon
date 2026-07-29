@@ -313,29 +313,52 @@ describe('A2bis — balayage géométrique sur barres courtes et inclinées', ()
 })
 
 describe('garde-fou de performance du noyau pur', () => {
-  it('exécute 120 pas avec 200 billes et 25 barres sous un budget large', () => {
-    // Vise une régression algorithmique (ex. broadphase O(n²) accidentelle qui remplacerait le
-    // parcours linéaire des barres), pas une mesure fine de cette machine : seuil ~5x la
-    // référence mesurée ici (~98 ms), pour ne pas clignoter au moindre bruit d'ordonnancement.
-    const PERF_BUDGET_MS = 500
-
+  /** Monte une scène de `bars` barres et 200 billes, puis chronomètre 120 pas. */
+  function timeSteps(bars: number): number {
     const rng = createRng(42)
     const world = createWorld({ w: 1600, h: 1200 })
-    for (let i = 0; i < 25; i++) {
+    for (let i = 0; i < bars; i += 1) {
       const x = rng() * 1400 + 100
       const y = rng() * 1000 + 100
       const half = 40 + rng() * 100
       const slope = rng() - 0.5
       addBar(world, { x: x - half, y: y - slope * half }, { x: x + half, y: y + slope * half }, 60)
     }
-    for (let i = 0; i < 200; i++) {
+    for (let i = 0; i < 200; i += 1) {
       spawnBall(world, { x: rng() * 1600, y: rng() * 200 }, { x: (rng() - 0.5) * 200, y: rng() * 100 })
     }
-
     const start = performance.now()
-    for (let i = 0; i < 120; i++) stepWorld(world, DT)
-    const elapsed = performance.now() - start
+    for (let i = 0; i < 120; i += 1) stepWorld(world, DT)
+    return performance.now() - start
+  }
 
-    expect(elapsed).toBeLessThan(PERF_BUDGET_MS)
+  it('le coût croît **linéairement** avec le nombre de barres, pas quadratiquement', () => {
+    /*
+     * Le but est de détecter une régression **algorithmique** — une broadphase O(n²) accidentelle qui
+     * remplacerait le parcours linéaire des barres — et non la vitesse de cette machine.
+     *
+     * Deux versions précédentes ont échoué à le faire :
+     *
+     * 1. Un budget en dur (500 ms) pour une référence annoncée à « ~98 ms ». Cette référence avait
+     *    dérivé en silence : bissecté, le coût réel valait **401 ms** avant les natures de barres et
+     *    **463 ms** avec. La marge n'était plus de 5× mais de 1,2×, et le test clignotait dès que la
+     *    suite tournait en parallèle — 1225 ms en suite complète contre 337 ms isolé, **pour le même
+     *    code**. Un garde-fou dont la référence a dérivé ne garde plus rien.
+     * 2. Un budget calibré sur une boucle arithmétique. Mesuré, le rapport passait de 22 isolé à 62 en
+     *    suite complète : la physique alloue et parcourt de la mémoire, la boucle arithmétique non, donc
+     *    les deux ne subissent pas la contention de la même façon.
+     *
+     * L'étalon est donc le **même algorithme à une taille plus petite** : les deux mesures se suivent
+     * dans le même worker et subissent la même contention, donc leur rapport ne dépend que de la
+     * complexité. Linéaire en barres → rapport ≈ 5 ; quadratique → ≈ 25.
+     */
+    const small = timeSteps(5)
+    const large = timeSteps(25)
+    const ratio = large / Math.max(small, 0.5)
+
+    console.log(
+      `  [perf] 5 barres = ${small.toFixed(0)} ms | 25 barres = ${large.toFixed(0)} ms | rapport = ${ratio.toFixed(1)} (linéaire ≈ 5, quadratique ≈ 25)`
+    )
+    expect(ratio).toBeLessThan(12)
   })
 })
