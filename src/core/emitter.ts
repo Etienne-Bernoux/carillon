@@ -116,7 +116,7 @@ export function runEmitters(world: World, spawn: (pos: Vec2, hue: number) => voi
  */
 export function runRespawns(
   world: World,
-  spawn: (pos: Vec2, hue: number) => void
+  spawn: (pos: Vec2, hue: number, vel: Vec2) => void
 ): number {
   if (world.respawns.length === 0) return 0
 
@@ -124,7 +124,7 @@ export function runRespawns(
   const waiting: Respawn[] = []
   for (const respawn of world.respawns) {
     if (respawn.at <= world.time && returned < MAX_RESPAWNS_PER_STEP) {
-      spawn(respawn.pos, respawn.hue)
+      spawn(respawn.pos, respawn.hue, respawn.vel)
       returned += 1
     } else if (respawn.at <= world.time) {
       // Dû mais hors budget : on le décale d'une mesure plutôt que de le perdre — une bille recyclée

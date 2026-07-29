@@ -24,7 +24,7 @@ const ROOT = path.resolve(__dirname, '..')
 const PROOFS_DIR = path.join(ROOT, 'docs', 'proofs')
 const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
-const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis', 'rythme', 'timbres', 'natures']
+const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis', 'rythme', 'timbres', 'natures', 'air']
 
 const rawArgs = process.argv.slice(2)
 const flags = new Set(rawArgs.filter((a) => a.startsWith('--')))
@@ -486,10 +486,16 @@ async function runControls(browser, url, rec) {
     tuningBefore.midis.length > 0 && retuned >= tuningBefore.midis.length / 3,
     `${retuned}/${tuningBefore.midis.length} barres ont changé de hauteur`
   )
+  /*
+   * La propriété est la **préservation**, pas un seuil absolu. Un seuil de 8 supposait que la scène
+   * testée soit la scène stratifiée ; depuis que « Scène surprise » compose un air (3 ou 4 hauteurs par
+   * nature), il mesurait la mauvaise scène. La richesse absolue de la scène d'accueil est déjà assertée
+   * par le scénario `resize`, à sept largeurs.
+   */
   rec.assert(
-    'la scène reste musicalement riche après réaccordage',
-    tuningAfter.pitches >= 8,
-    `hauteurs distinctes=${tuningAfter.pitches}`
+    'le réaccordage ne détruit pas la richesse musicale',
+    tuningAfter.pitches >= tuningBefore.pitches - 1,
+    `${tuningBefore.pitches} -> ${tuningAfter.pitches} hauteurs distinctes`
   )
 
   // Un seul clic ne prouve pas le cycle : un modulo cassé pourrait faire du ping-pong entre deux
@@ -509,10 +515,13 @@ async function runControls(browser, url, rec) {
     back.id === tuningBefore.id,
     `départ=${tuningBefore.id} arrivée=${back.id}`
   )
+  // Le nombre vient de l'app, pas d'une constante recopiée : ajouter une gamme ne doit pas casser
+  // l'assertion, mais en oublier une dans le cycle doit la casser.
+  const catalogue = await page.evaluate(() => window.__carillon.stats().tuningIds)
   rec.assert(
-    'le cycle traverse les 5 gammes du catalogue',
-    new Set(seen).size === 5,
-    `gammes vues=${new Set(seen).size} (${[...new Set(seen)].join(', ')})`
+    'le cycle traverse tout le catalogue de gammes',
+    new Set(seen).size === catalogue.length,
+    `gammes vues=${new Set(seen).size}/${catalogue.length} (${[...new Set(seen)].join(', ')})`
   )
 
   // Bouton son : bascule aria-pressed et le libellé.
@@ -1614,6 +1623,77 @@ async function runNatures(browser, url, rec) {
   await page.close()
 }
 
+/**
+ * « Scène surprise » doit mener à un air **connu**, pas à un miroitement. La suite exacte de hauteurs est
+ * prouvée dans le cœur (`melody.test.ts`, par rejeu déterministe) — ici on vérifie ce que seul le
+ * navigateur peut dire : que le bouton pose bien un air, qu'il l'annonce, et que la scène le rejoue.
+ */
+async function runAir(browser, url, rec) {
+  const page = await browser.newPage()
+  rec.attachConsoleListeners(page)
+  await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await page.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(page)
+  await page.mouse.click(640, 740)
+
+  const before = await page.evaluate(() => window.__carillon.composedMelody())
+  rec.assert(
+    'la scène d’accueil n’est pas un air composé (elle reste musicalement riche)',
+    before === null,
+    `${before?.label ?? 'aucun'}`
+  )
+
+  // Plusieurs clics : la composition peut légitimement échouer et se replier, mais pas toujours.
+  const airs = []
+  for (let i = 0; i < 6; i += 1) {
+    await page.click('[data-control="surprise"]')
+    await wait(250)
+    const state = await page.evaluate(() => ({
+      melody: window.__carillon.composedMelody(),
+      hint: document.querySelector('#hint')?.textContent?.trim() ?? '',
+      bars: window.__carillon.stats().bars,
+      balls: window.__carillon.stats().balls,
+      tuning: window.__carillon.stats().tuning,
+    }))
+    if (state.melody) airs.push({ ...state.melody, hint: state.hint, tuning: state.tuning })
+  }
+  console.log(
+    `  [air] ${airs.length}/6 clics ont composé un air : ${[...new Set(airs.map((a) => a.label))].join(', ')}`
+  )
+  rec.assert(
+    'le bouton compose réellement un air',
+    airs.length > 0,
+    `${airs.length}/6 clics`
+  )
+  rec.assert(
+    'l’air posé est annoncé par son nom',
+    airs.every((air) => air.hint.includes(air.label)),
+    airs.map((air) => `"${air.hint}"`).slice(0, 2).join(' ')
+  )
+  rec.assert(
+    'l’incipit fait entre 4 et 8 notes',
+    airs.every((air) => air.notes >= 4 && air.notes <= 8),
+    airs.map((air) => air.notes).join(', ')
+  )
+
+  // La scène rejoue l'air : la bille est recyclée, donc elle revient et le motif reboucle.
+  const played = await page.evaluate(() => {
+    const c = window.__carillon
+    const before = c.stats().impacts
+    c.advance(12)
+    return { impacts: c.stats().impacts - before, balls: c.stats().balls, bars: c.stats().bars }
+  })
+  console.log(`  [air] sur 12 s : ${played.impacts} impacts, ${played.bars} barres`)
+  rec.assert(
+    'la scène composée rejoue l’air au lieu de s’éteindre',
+    played.impacts >= 8,
+    `${played.impacts} impacts sur 12 s`
+  )
+
+  await rec.shot(page, 'air')
+  await page.close()
+}
+
 async function runResize(browser, url, rec) {
   const page = await browser.newPage()
   rec.attachConsoleListeners(page)
@@ -1970,6 +2050,7 @@ const SCENARIOS = {
   rythme: runRythme,
   timbres: runTimbres,
   natures: runNatures,
+  air: runAir,
   edit: runEdit,
   touch: runTouch,
 }

@@ -95,7 +95,7 @@ describe('G4 — le recyclage ne fuit pas', () => {
     const bar = barSeconds(w.bpm)
     // Un de plus que le budget : c'est le surplus qu'on veut voir survivre.
     for (let i = 0; i < MAX_RESPAWNS_PER_STEP + 6; i += 1) {
-      w.respawns.push({ at: 0, pos: { x: 100 + i * 4, y: 50 }, hue: 200 })
+      w.respawns.push({ at: 0, pos: { x: 100 + i * 4, y: 50 }, vel: { x: 0, y: 0 }, hue: 200 })
     }
     w.time = bar * 2
 

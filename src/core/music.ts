@@ -60,6 +60,15 @@ export const TUNINGS: readonly Tuning[] = [
     scale: [0, 2, 4, 6, 7, 9, 11],
     rootMidi: 57,
   },
+  {
+    // Ajoutée **en fin** de catalogue (l'ordre est figé) pour les airs connus : aucune des cinq gammes
+    // précédentes ne contient à la fois la tierce majeure et la quarte, que la plupart exigent.
+    id: 'major',
+    label: 'Majeure',
+    short: 'Majeure',
+    scale: [0, 2, 4, 5, 7, 9, 11],
+    rootMidi: 57,
+  },
 ] as const
 
 export const DEFAULT_TUNING: Tuning = PENTATONIC_MINOR

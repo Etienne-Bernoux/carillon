@@ -42,6 +42,7 @@ import { attachInput } from './ui/input'
 import type { Gesture } from './ui/input'
 import { noteName } from './ui/notation'
 import { NO_INTERACTION, createEffects, createRenderer } from './ui/renderer'
+import { composeMelody } from './core/melody'
 import { buildSurpriseScene } from './ui/scene'
 import { measureSceneArea, segmentIntersectsRect } from './ui/scene-area'
 import type { SceneArea } from './ui/scene'
@@ -103,6 +104,12 @@ let interaction: Interaction = { ...NO_INTERACTION }
  * comme le silence — alors que la gamme, elle, réaccorde les barres et fait partie de l'état.
  */
 let instrument: Instrument = DEFAULT_INSTRUMENT
+
+/**
+ * Air actuellement posé par le compositeur, ou `null`. Sert à l'annonce et à la vérification : sans lui,
+ * « le bouton a posé un air » ne serait observable que par l'oreille.
+ */
+let composedMelody: { label: string; notes: number } | null = null
 
 /**
  * Temps de simulation jusqu'auquel les poignées de toutes les barres restent visibles. Déclenché par
@@ -189,8 +196,8 @@ function handleImpacts(events: readonly ImpactEvent[]): void {
 function advance(seconds: number): void {
   const steps = Math.max(0, Math.round(seconds / DT))
   for (let i = 0; i < steps; i++) {
-    runRespawns(world, (pos, hue) => {
-      spawnBall(world, { x: pos.x, y: pos.y }, { x: 0, y: 0 }, { hue, recycle: true })
+    runRespawns(world, (pos, hue, vel) => {
+      spawnBall(world, { x: pos.x, y: pos.y }, { x: vel.x, y: vel.y }, { hue, recycle: true })
     })
     runEmitters(world, (pos, hue) => {
       spawnBall(world, { x: pos.x, y: pos.y }, { x: 0, y: 0 }, { hue })
@@ -250,8 +257,48 @@ function countOutOfBounds(): number {
   return count
 }
 
-function loadSurprise(): void {
+/**
+ * Pose une scène **surprise**.
+ *
+ * `compose` : tenter d'abord un air connu. Réservé au **bouton**, pas à la scène d'accueil ni au
+ * redimensionnement, et pour deux raisons mesurées :
+ *
+ * - la scène est régénérée à chaque redimensionnement, or composer coûte 60 à 330 ms — mesuré, les fps
+ *   du scénario de charge tombaient à 16 ;
+ * - un incipit n'utilise que trois ou quatre hauteurs distinctes, alors que la scène d'accueil doit
+ *   rester **musicalement riche** (garde-fou de l'US2 : un téléphone n'y jouait que deux hauteurs).
+ *
+ * Faire de la scène d'accueil un air demande de la **redimensionner** au lieu de la régénérer, comme une
+ * scène reçue par lien. C'est une tranche à part.
+ *
+ * Renvoie le nom de l'air posé, ou `null` si l'on a produit la scène stratifiée.
+ */
+function loadSurprise(options?: { compose?: boolean }): string | null {
   clearAll()
+  composedMelody = null
+
+  const area = measureSceneArea(world.bounds)
+  const composed = options?.compose
+    ? composeMelody({ bounds: world.bounds, seed: sceneSeed })
+    : null
+  if (composed) {
+    applyTuning(tuningById(composed.tuningId))
+    for (const bar of composed.bars) {
+      // On passe par `addBar` et non par `placeBar` : la hauteur est **déjà** décidée par le
+      // générateur, et la recalculer depuis la longueur la ferait dévier de l'air.
+      addBar(world, bar.a, bar.b, bar.midi)
+    }
+    /*
+     * La bille qui joue l'air est **recyclée** : elle revient à son point de lâcher avec sa vitesse de
+     * lancement, donc l'air se rejoue à chaque mesure. Sans le recyclage de l'US7, on l'entendrait une
+     * fois puis plus jamais.
+     */
+    const hue = 190 + ((world.nextBallId * 37) % 90)
+    spawnBall(world, composed.drop, composed.velocity, { hue, recycle: true })
+    composedMelody = { label: composed.melody.label, notes: composed.melody.degrees.length }
+    return composed.melody.label
+  }
+
   buildSurpriseScene(
     world.bounds,
     sceneSeed,
@@ -263,8 +310,9 @@ function loadSurprise(): void {
         addEmitter(world, pos)
       },
     },
-    measureSceneArea(world.bounds),
+    area,
   )
+  return null
 }
 
 /** Préfixe du fragment d'URL qui porte une scène. */
@@ -719,13 +767,17 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-control
       case 'undo':
         undo()
         break
-      case 'surprise':
+      case 'surprise': {
         history.push(world.bars, world.emitters, tuning.id)
         detachFromLink()
         sceneSeed += 1
         userOwnsScene = false
-        loadSurprise()
+        const air = loadSurprise({ compose: true })
+        // Annoncé : sans nom, la reconnaissance n'a aucun repère — on entend « quelque chose de connu »
+        // sans savoir quoi, ce qui gâche exactement l'effet cherché.
+        announce(air ? `Scène : ${air}` : 'Scène surprise')
         break
+      }
       case 'clear':
         history.push(world.bars, world.emitters, tuning.id)
         detachFromLink()
@@ -782,8 +834,8 @@ function frame(now: number): void {
     steps++
     // Les sources émettent avant l'intégration du pas : une bille créée doit être simulée dès le pas
     // où elle apparaît, sinon elle « saute » d'un pas au premier affichage.
-    runRespawns(world, (pos, hue) => {
-      spawnBall(world, { x: pos.x, y: pos.y }, { x: 0, y: 0 }, { hue, recycle: true })
+    runRespawns(world, (pos, hue, vel) => {
+      spawnBall(world, { x: pos.x, y: pos.y }, { x: vel.x, y: vel.y }, { hue, recycle: true })
     })
     runEmitters(world, (pos, hue) => {
       spawnBall(world, { x: pos.x, y: pos.y }, { x: 0, y: 0 }, { hue })
@@ -845,6 +897,8 @@ interface CarillonDebug {
   /** positions et vitesses des billes vivantes — pour prouver qu'une scène **bouge**, pas qu'elle existe */
   balls(): { id: number; x: number; y: number; vx: number; vy: number }[]
   lastImpact(): { x: number; y: number } | null
+  /** air composé actuellement posé, ou `null` si la scène n'en porte pas */
+  composedMelody(): { label: string; notes: number } | null
   /**
    * Rend hors ligne une salve dense sur l'instrument courant et renvoie ce qui en sort réellement.
    * `notes > 0` compte des appels, pas des décibels : c'est la seule mesure qui puisse dire « ça ne
@@ -875,6 +929,7 @@ interface CarillonDebug {
     barsUnderHud: number
     /** identifiant de la gamme courante */
     tuning: string
+    tuningIds: readonly string[]
     instrument: string
     /** nombre de sources périodiques posées */
     emitters: number
@@ -925,6 +980,7 @@ window.__carillon = {
       vy: ball.vel.y,
     })),
   lastImpact: () => (lastImpactPoint ? { ...lastImpactPoint } : null),
+  composedMelody: () => (composedMelody ? { ...composedMelody } : null),
   measureAudio: async (voices = 24) => {
     // Une salve **simultanée** au gain maximal, étalée sur toute l'étendue : c'est le pire cas
     // réaliste (une pluie de billes sur une rangée de barres), et c'est là que la saturation arrive.
@@ -980,6 +1036,7 @@ window.__carillon = {
     barsOutOfBounds: countOutOfBounds(),
     barsUnderHud: countUnderHud(),
     tuning: tuning.id,
+    tuningIds: TUNING_IDS,
     instrument: instrument.id,
     undoDepth: history.depth(),
     emitters: world.emitters.length,

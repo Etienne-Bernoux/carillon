@@ -204,6 +204,9 @@ describe('ordre figé du catalogue de gammes', () => {
       'dorian',
       'hirajoshi',
       'lydian',
+      // Ajoutée à l'US10 pour les airs connus. **En fin** de catalogue : les liens déjà émis, qui
+      // encodent un index, continuent de désigner la même gamme.
+      'major',
     ])
   })
 
