@@ -26,6 +26,12 @@ export interface Ball {
    */
   readonly origin: Vec2
   /**
+   * Vitesse au lâcher. Une bille recyclée doit revenir **comme elle a été lancée**, sinon une scène
+   * composée pour jouer un air ne le rejoue pas : la bille repartirait à vitesse nulle et manquerait
+   * la première barre.
+   */
+  readonly launchVel: Vec2
+  /**
    * Une bille lâchée à la main **revient** quand elle sort de l'écran ; une bille née d'une source,
    * non — sa source la ré-émet déjà, et la recycler doublerait sa cadence.
    */
@@ -97,6 +103,7 @@ export interface Bounds {
 export interface Respawn {
   at: number
   pos: Vec2
+  vel: Vec2
   hue: number
 }
 

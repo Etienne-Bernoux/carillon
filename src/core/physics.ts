@@ -205,6 +205,7 @@ export function spawnBall(
     age: 0,
     hue: opts?.hue ?? 0,
     origin: { x: origin.x, y: origin.y },
+    launchVel: { x: v.x, y: v.y },
     recycle: opts?.recycle ?? false,
   }
   world.balls.push(ball)
@@ -247,6 +248,7 @@ export function stepWorld(world: World, dt: number = DT): ImpactEvent[] {
       world.respawns.push({
         at: gridTimeAfter(world.time, divisionAt(RECYCLE_DIVISION_INDEX), world.bpm),
         pos: { x: ball.origin.x, y: ball.origin.y },
+        vel: { x: ball.launchVel.x, y: ball.launchVel.y },
         hue: ball.hue,
       })
     }
