@@ -4,6 +4,7 @@
  * dans music.ts et budget.ts ; ici on ne fait que router le son.
  */
 
+import type { Voice } from '../core/instruments'
 import { createRng } from '../core/rng'
 import { VoiceBudget } from './budget'
 
@@ -13,6 +14,13 @@ export interface NoteRequest {
   pan: number
   /** identifiant de la barre source, utilisé par le budget de polyphonie */
   barId: number
+  /**
+   * Timbre à jouer. Décrit **hors** de ce fichier (`core/instruments.ts`) : le moteur reste mince et
+   * ne décide rien, il route. C'est ce qui rend un timbre assertable sans navigateur.
+   */
+  voice: Voice
+  /** durée de la décroissance, calculée par le cœur — le moteur ne recalcule pas de musique */
+  decaySeconds: number
 }
 
 export interface AudioEngine {
@@ -29,15 +37,6 @@ const REVERB_SEED = 0x5eed
 
 /** durée de la queue de réverbe procédurale, en secondes */
 const REVERB_SECONDS = 1.8
-
-/** attaque très courte : évite le clic sans être perceptible comme un fondu */
-const ATTACK_SECONDS = 0.003
-
-/** décroissance de base ; raccourcie dans l'aigu pour un rendu carillon plutôt que cloche longue */
-const BASE_DECAY_SECONDS = 0.9
-
-/** léger désaccord entre l'oscillateur sine et le triangle, pour l'épaisseur (battements) */
-const DETUNE_CENTS = 6
 
 export function createAudioEngine(budget: VoiceBudget = new VoiceBudget()): AudioEngine {
   let context: AudioContext | null = null
@@ -113,9 +112,10 @@ export function createAudioEngine(budget: VoiceBudget = new VoiceBudget()): Audi
     if (!ctx || !dryGain || !convolver) return
 
     const now = ctx.currentTime
-    // décroissance plus courte dans l'aigu : un carillon aigu sonne plus sec qu'un grave
-    const decaySeconds = BASE_DECAY_SECONDS * clamp(880 / Math.max(note.freq, 1), 0.35, 1)
-    const lifetimeSeconds = ATTACK_SECONDS + decaySeconds + 0.05
+    // La décroissance vient du cœur (`decayForNote`) : elle dépend du timbre **et** du registre, et
+    // c'est une décision musicale — elle n'a donc rien à faire dans l'adaptateur.
+    const { voice, decaySeconds } = note
+    const lifetimeSeconds = voice.attackSeconds + decaySeconds + 0.05
 
     // La durée réservée doit être la durée réelle de la voix : une constante de 1 s retenait un
     // slot 2,7× trop longtemps dans l'aigu, ce qui plafonnait le débit à 24 notes/s et faisait
@@ -124,44 +124,48 @@ export function createAudioEngine(budget: VoiceBudget = new VoiceBudget()): Audi
 
     const peakGain = clamp(note.gain, 0, 1)
 
-    const sine = ctx.createOscillator()
-    sine.type = 'sine'
-    sine.frequency.value = note.freq
+    const carrier = ctx.createOscillator()
+    carrier.type = voice.wave
+    carrier.frequency.value = note.freq
 
-    const triangle = ctx.createOscillator()
-    triangle.type = 'triangle'
-    triangle.frequency.value = note.freq
-    triangle.detune.value = DETUNE_CENTS
+    // Seconde couche **optionnelle** : une voix nue (le marimba aigu) doit pouvoir l'être vraiment.
+    // Créer un oscillateur muet à la place coûterait du CPU pour rien à chaque note.
+    const layer = voice.layer ? ctx.createOscillator() : null
+    if (layer && voice.layer) {
+      layer.type = voice.layer
+      layer.frequency.value = note.freq
+      layer.detune.value = voice.detuneCents
+    }
 
     const voiceGain = ctx.createGain()
     voiceGain.gain.setValueAtTime(0.0001, now)
-    voiceGain.gain.exponentialRampToValueAtTime(Math.max(peakGain, 0.0001), now + ATTACK_SECONDS)
-    voiceGain.gain.exponentialRampToValueAtTime(0.0001, now + ATTACK_SECONDS + decaySeconds)
+    voiceGain.gain.exponentialRampToValueAtTime(Math.max(peakGain, 0.0001), now + voice.attackSeconds)
+    voiceGain.gain.exponentialRampToValueAtTime(0.0001, now + voice.attackSeconds + decaySeconds)
 
     const filter = ctx.createBiquadFilter()
     filter.type = 'lowpass'
-    filter.frequency.value = clamp(note.freq * 4, 400, 8000)
-    filter.Q.value = 0.7
+    filter.frequency.value = clamp(note.freq * voice.filterRatio, 400, 12000)
+    filter.Q.value = voice.filterQ
 
     const panner = ctx.createStereoPanner()
     panner.pan.value = clamp(note.pan, -1, 1)
 
-    sine.connect(voiceGain)
-    triangle.connect(voiceGain)
+    carrier.connect(voiceGain)
+    layer?.connect(voiceGain)
     voiceGain.connect(filter)
     filter.connect(panner)
     panner.connect(dryGain)
     panner.connect(convolver)
 
     const stopAt = now + lifetimeSeconds
-    sine.start(now)
-    triangle.start(now)
-    sine.stop(stopAt)
-    triangle.stop(stopAt)
+    carrier.start(now)
+    carrier.stop(stopAt)
+    layer?.start(now)
+    layer?.stop(stopAt)
 
-    sine.onended = () => {
-      sine.disconnect()
-      triangle.disconnect()
+    carrier.onended = () => {
+      carrier.disconnect()
+      layer?.disconnect()
       voiceGain.disconnect()
       filter.disconnect()
       panner.disconnect()

@@ -232,19 +232,26 @@ body {
 /*
  * Deux rangées **assumées** : jusqu'à 740 px, et seulement là où l'on empile (cf. la règle suivante).
  *
- * Dans cette plage, les six contrôles ne tiennent pas sur une rangée — que ce soit six libellés en toutes
- * lettres (~690 px) ou cinq pictogrammes plus le nom court de la gamme. Le retour à la ligne éjectait
- * alors le **dernier** bouton, seul, sous les autres : ça se lit comme un bug de mise en page, pas
- * comme une décision. On donne donc sa propre rangée à la gamme — le seul bouton dont le texte porte
- * l'état, donc le seul qui ne peut pas se réduire — et les autres s'alignent dessous.
+ * Dans cette plage, les sept contrôles ne tiennent pas sur une rangée. Le retour à la ligne éjectait le
+ * **dernier** bouton, seul, sous les autres : ça se lit comme un bug de mise en page, pas comme une
+ * décision. On regroupe donc en tête les deux boutons **porteurs d'état** — la gamme et l'instrument,
+ * les seuls dont le texte ne peut pas se réduire à un pictogramme — et les cinq pictogrammes s'alignent
+ * dessous.
  *
- * Le seuil est mesuré, pas choisi : à 800 px les six tiennent sur une rangée (34 px de haut), à 700 px
- * non (76 px). Au-delà de 740, cette règle coûterait donc une rangée au lieu d'en économiser une.
+ * `flex: 1 1 45%` et non `flex-basis: 100%` chacun : avec une rangée entière par bouton d'état, le
+ * septième contrôle faisait passer le HUD de 29 % à **36 %** d'un 320×568, effaçant le gain de l'US6
+ * (mesuré, l'assertion du scénario `vernis` l'a attrapé). À 45 % chacun, ils partagent la première
+ * rangée et occupent 90 % de sa largeur — donc aucun pictogramme ne peut s'y glisser, et le regroupement
+ * reste lisible comme une intention.
+ *
+ * Le seuil de 740 px est mesuré, pas choisi : à 800 px tout tient sur une rangée (34 px de haut), à
+ * 700 px non (76 px). Au-delà, cette règle coûterait une rangée au lieu d'en économiser une.
  */
 @media (max-width: 640px), (max-width: 740px) and (min-height: 481px) {
-  .toolbar button[data-control='tuning'] {
+  .toolbar button[data-control='tuning'],
+  .toolbar button[data-control='instrument'] {
     order: -1;
-    flex-basis: 100%;
+    flex: 1 1 45%;
     justify-content: center;
   }
 }

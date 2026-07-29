@@ -24,7 +24,7 @@ const ROOT = path.resolve(__dirname, '..')
 const PROOFS_DIR = path.join(ROOT, 'docs', 'proofs')
 const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
-const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis', 'rythme']
+const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis', 'rythme', 'timbres']
 
 const rawArgs = process.argv.slice(2)
 const flags = new Set(rawArgs.filter((a) => a.startsWith('--')))
@@ -1231,6 +1231,123 @@ async function runRythme(browser, url, rec) {
   await page.close()
 }
 
+/**
+ * Les timbres. Un instrument est une **paire de voix** (grave/aigu) : chaque scène combine donc deux
+ * sons sans qu'on ait rien à choisir. Ce que ce scénario vérifie n'est pas « ça sonne bien » — l'oreille
+ * en juge — mais que chaque instrument **produit réellement du son** : quatre combinaisons de formes
+ * d'onde, dont une voix nue sans seconde couche, passent toutes par le même chemin audio.
+ */
+async function runTimbres(browser, url, rec) {
+  const page = await browser.newPage()
+  rec.attachConsoleListeners(page)
+  await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await page.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(page)
+  // Vrai geste : sans lui l'AudioContext reste verrouillé et `notes` resterait à 0 pour tout le monde.
+  await page.mouse.click(640, 740)
+
+  const button = '[data-control="instrument"]'
+  const seen = []
+  for (let i = 0; i < 5; i += 1) {
+    const state = await page.evaluate((sel) => {
+      const el = document.querySelector(sel)
+      const label = el.querySelector('.label')
+      return {
+        id: window.__carillon.stats().instrument,
+        label: (label?.textContent ?? '').trim(),
+        notesBefore: window.__carillon.stats().notes,
+      }
+    }, button)
+
+    // Une scène fraîche à chaque instrument, et de vraies chutes : c'est le seul moyen de prouver que
+    // ce timbre-là passe par le moteur, et pas seulement qu'un libellé a changé.
+    await page.evaluate(() => {
+      const c = window.__carillon
+      c.reset()
+      for (let b = 0; b < 5; b += 1) c.addBar(160 + b * 190, 400, 300 + b * 190, 440)
+      // Barres courtes ET longues : la bascule grave/aigu doit être exercée, pas seulement une voix.
+      c.addBar(120, 620, 1160, 660)
+      for (let k = 0; k < 8; k += 1) c.dropBall(180 + k * 130, 120)
+    })
+    await wait(1400)
+    const after = await page.evaluate(() => window.__carillon.stats())
+    seen.push({ id: state.id, label: state.label, notes: after.notes - state.notesBefore })
+    rec.assert(
+      `l'instrument « ${state.label} » produit réellement des notes`,
+      after.notes - state.notesBefore > 0,
+      `${after.notes - state.notesBefore} notes`
+    )
+    await page.click(button)
+    await tick(page)
+  }
+
+  console.log(
+    `  [timbres] ${seen.map((s) => `${s.label}=${s.notes} notes`).join(' | ')}`
+  )
+  const ids = seen.map((s) => s.id)
+  rec.assert(
+    'le bouton parcourt tout le catalogue et revient au début',
+    ids.length === 5 && new Set(ids.slice(0, 4)).size === 4 && ids[4] === ids[0],
+    ids.join(' -> ')
+  )
+  rec.assert(
+    'le libellé visible suit l’instrument courant',
+    seen.every((s) => s.label.length > 2),
+    seen.map((s) => s.label).join(', ')
+  )
+
+  // Le timbre est un réglage de **lecture** : il ne touche aucune hauteur.
+  const pitches = await page.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    // Longueurs **variées** : six barres identiques donnent six fois la même note, et l'assertion
+    // comparerait alors deux listes constantes — vraie quoi qu'il arrive.
+    for (let b = 0; b < 6; b += 1) c.addBar(120 + b * 180, 400, 120 + b * 180 + 40 + b * 45, 440)
+    const before = c.bars().map((bar) => bar.midi)
+    document.querySelector('[data-control="instrument"]').click()
+    return { before, after: c.bars().map((bar) => bar.midi) }
+  })
+  rec.assert(
+    'changer d’instrument ne change aucune hauteur',
+    new Set(pitches.before).size >= 4 &&
+      JSON.stringify(pitches.before) === JSON.stringify(pitches.after),
+    `${pitches.before.join(',')} vs ${pitches.after.join(',')}`
+  )
+
+  await rec.shot(page, 'timbres')
+  await page.close()
+
+  // Sept contrôles sur un petit écran : les deux boutons porteurs d'état partagent une rangée.
+  const small = await browser.newPage()
+  rec.attachConsoleListeners(small)
+  await small.setViewport({ width: 320, height: 568, deviceScaleFactor: 2, isMobile: true, hasTouch: true })
+  await small.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(small)
+  await small.touchscreen.tap(160, 300)
+  await wait(150)
+  const rows = await small.evaluate(() => {
+    const tops = [...document.querySelectorAll('.toolbar button')].map((b) =>
+      Math.round(b.getBoundingClientRect().top)
+    )
+    const state = [...document.querySelectorAll('[data-control="tuning"], [data-control="instrument"]')]
+      .map((b) => Math.round(b.getBoundingClientRect().top))
+    return { rows: new Set(tops).size, stateRows: new Set(state).size, count: tops.length }
+  })
+  console.log(`  [timbres] petit écran : ${rows.count} contrôles sur ${rows.rows} rangées`)
+  rec.assert(
+    'les sept contrôles tiennent sur deux rangées',
+    rows.count === 7 && rows.rows === 2,
+    `${rows.count} contrôles, ${rows.rows} rangées`
+  )
+  rec.assert(
+    'les deux boutons porteurs d’état partagent la même rangée',
+    rows.stateRows === 1,
+    `${rows.stateRows} rangée(s)`
+  )
+  await rec.shot(small, 'timbres-petit-ecran')
+  await small.close()
+}
+
 async function runResize(browser, url, rec) {
   const page = await browser.newPage()
   rec.attachConsoleListeners(page)
@@ -1585,6 +1702,7 @@ const SCENARIOS = {
   share: runShare,
   vernis: runVernis,
   rythme: runRythme,
+  timbres: runTimbres,
   edit: runEdit,
   touch: runTouch,
 }

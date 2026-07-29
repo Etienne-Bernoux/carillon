@@ -1,4 +1,5 @@
 import { createAudioEngine } from './audio/engine'
+import type { NoteRequest } from './audio/engine'
 import {
   DEFAULT_TUNING,
   TUNINGS,
@@ -23,6 +24,13 @@ import {
 } from './core/emitter'
 import { divisionAt, divisionLabel, gridTimeAfter, nearestDivisionIndex } from './core/clock'
 import { createHistory } from './core/history'
+import {
+  DEFAULT_INSTRUMENT,
+  INSTRUMENTS,
+  decayForNote,
+  voiceForMidi,
+} from './core/instruments'
+import type { Instrument } from './core/instruments'
 import { MAX_PARTICLES } from './core/particles'
 import { decodeScene, encodeScene } from './core/share'
 import type { SharedScene } from './core/share'
@@ -66,6 +74,8 @@ const canvas = requireElement<HTMLCanvasElement>('#stage')
 const hint = document.querySelector<HTMLParagraphElement>('#hint')
 const tuningLabel = document.querySelector<HTMLSpanElement>('#tuning-label')
 const tuningLabelShort = document.querySelector<HTMLSpanElement>('#tuning-label-short')
+const instrumentLabel = document.querySelector<HTMLSpanElement>('#instrument-label')
+const instrumentLabelShort = document.querySelector<HTMLSpanElement>('#instrument-label-short')
 const muteLabel = document.querySelector<HTMLSpanElement>('#mute-label')
 
 const renderer = createRenderer(canvas)
@@ -89,6 +99,13 @@ let interaction: Interaction = { ...NO_INTERACTION }
  * Temps de simulation jusqu'auquel les poignées de toutes les barres restent visibles. Déclenché par
  * le premier contact tactile : sans survol au doigt, rien n'annonçait qu'une barre s'attrape.
  */
+/**
+ * Instrument courant. C'est un réglage de **lecture**, pas une donnée de scène : il ne change aucune
+ * hauteur, seulement le timbre. Il vit donc hors de l'historique et hors du lien de partage, exactement
+ * comme le silence — alors que la gamme, elle, réaccorde les barres et fait partie de l'état.
+ */
+let instrument: Instrument = DEFAULT_INSTRUMENT
+
 let revealHandlesUntil = -1
 const REVEAL_HANDLES_SECONDS = 5
 let dragArea: SceneArea | null = null
@@ -128,6 +145,17 @@ function applyTuning(next: Tuning): void {
   retuneBars(world.bars, tuning, world.bounds.w)
 }
 
+/**
+ * Change d'instrument. Rien à réaccorder, contrairement à la gamme : le timbre ne touche aucune
+ * hauteur. Les notes déjà en vol gardent le leur — une note est construite à l'attaque, et la
+ * réécrire en cours de route produirait un saut audible sur une décroissance de cloche.
+ */
+function applyInstrument(next: Instrument): void {
+  instrument = next
+  if (instrumentLabel) instrumentLabel.textContent = instrument.label
+  if (instrumentLabelShort) instrumentLabelShort.textContent = instrument.short
+}
+
 function dropBall(point: Vec2): number {
   // Teintes froides pour les billes : la couleur chaude est réservée aux barres, qui portent la hauteur.
   const hue = 190 + ((world.nextBallId * 37) % 90)
@@ -150,12 +178,7 @@ function handleImpacts(events: readonly ImpactEvent[]): void {
     impactsTotal++
     const gain = gainForImpact(event.speed)
     if (gain <= 0) continue
-    audio.play({
-      barId: bar.id,
-      freq: midiToFreq(bar.midi),
-      gain,
-      pan: panForX(event.point.x, world.bounds.w),
-    })
+    audio.play(noteFor(bar, gain, panForX(event.point.x, world.bounds.w)))
     effects.addImpact(event, bar.midi, gain)
     lastImpactPoint = { x: event.point.x, y: event.point.y }
   }
@@ -341,13 +364,19 @@ function inDeleteZone(point: Vec2): boolean {
   )
 }
 
+/**
+ * Assemble une note. Un seul endroit décide du timbre : deux chemins (impact et écoute au tap)
+ * dupliquaient déjà la fréquence et le panoramique, et auraient divergé sur la voix — le genre d'écart
+ * qui fait qu'une barre sonne différemment selon la façon dont on la fait sonner.
+ */
+function noteFor(bar: Bar, gain: number, pan: number): NoteRequest {
+  const voice = voiceForMidi(instrument, bar.midi)
+  const freq = midiToFreq(bar.midi)
+  return { barId: bar.id, freq, gain, pan, voice, decaySeconds: decayForNote(voice, freq) }
+}
+
 function playBar(bar: Bar, gain: number): void {
-  audio.play({
-    barId: bar.id,
-    freq: midiToFreq(bar.midi),
-    gain,
-    pan: panForX((bar.a.x + bar.b.x) / 2, world.bounds.w),
-  })
+  audio.play(noteFor(bar, gain, panForX((bar.a.x + bar.b.x) / 2, world.bounds.w)))
 }
 
 function removeBar(id: number): void {
@@ -620,6 +649,17 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-control
         }
         break
       }
+      case 'instrument': {
+        const index = INSTRUMENTS.findIndex((candidate) => candidate.id === instrument.id)
+        const next = INSTRUMENTS[(index + 1) % INSTRUMENTS.length]
+        if (next) {
+          applyInstrument(next)
+          // Annoncé : le changement de timbre ne s'entend qu'au prochain impact, donc sans retour
+          // immédiat on ne sait pas si le bouton a fait quelque chose.
+          announce(`Instrument : ${next.label}`)
+        }
+        break
+      }
       case 'share': {
         if (world.bars.length === 0 && world.emitters.length === 0) {
           // Un lien vers une scène vide ouvre une page définitivement blanche chez le destinataire,
@@ -799,6 +839,7 @@ interface CarillonDebug {
     barsUnderHud: number
     /** identifiant de la gamme courante */
     tuning: string
+    instrument: string
     /** nombre de sources périodiques posées */
     emitters: number
     /** poignées de toutes les barres visibles (révélation tactile) — assertable sans passer par des pixels */
@@ -879,6 +920,7 @@ window.__carillon = {
     barsOutOfBounds: countOutOfBounds(),
     barsUnderHud: countUnderHud(),
     tuning: tuning.id,
+    instrument: instrument.id,
     undoDepth: history.depth(),
     emitters: world.emitters.length,
     revealHandles: world.time < revealHandlesUntil,
