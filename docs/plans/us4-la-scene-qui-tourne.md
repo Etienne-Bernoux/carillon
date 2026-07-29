@@ -1,6 +1,6 @@
 # US4 — La scène qui tourne
 
-> Statut : en cours · Branche `feat/us4-la-scene-qui-tourne`
+> Statut : **livrée** · Branche `feat/us4-la-scene-qui-tourne`
 
 ## Intent
 
