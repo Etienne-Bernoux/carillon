@@ -1,5 +1,21 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_PERIOD, MAX_BALLS, MIN_PERIOD, addEmitter, removeEmitter, runEmitters } from './emitter'
+
+import {
+  DEFAULT_DIVISION_INDEX,
+  DIVISIONS,
+  barSeconds,
+  divisionAt,
+  divisionSeconds,
+} from './clock'
+import {
+  MAX_BALLS,
+  addEmitter,
+  clampDivisionIndex,
+  cycleDivision,
+  emitterPeriod,
+  removeEmitter,
+  runEmitters,
+} from './emitter'
 import { DT, addBar, createWorld, spawnBall, stepWorld } from './physics'
 import type { Vec2, World } from './types'
 
@@ -22,10 +38,12 @@ function simulate(w: World, seconds: number, dt = DT): number[] {
 }
 
 describe('D1 — cadence d’émission', () => {
-  for (const period of [MIN_PERIOD, 0.5, DEFAULT_PERIOD, 3]) {
-    it(`lâche une bille tous les ${period} s, ni plus ni moins`, () => {
+  for (let index = 0; index < DIVISIONS.length; index += 1) {
+    const division = divisionAt(index)
+    it(`émet à la division ${division.toFixed(3)} de mesure, ni plus ni moins`, () => {
       const w = world()
-      addEmitter(w, { x: 640, y: 100 }, { period })
+      addEmitter(w, { x: 640, y: 100 }, { divisionIndex: index })
+      const period = emitterPeriod(w.emitters[0]!, w.bpm)
 
       const times = simulate(w, 30)
 
@@ -34,21 +52,84 @@ describe('D1 — cadence d’émission', () => {
       // franchie. Comparer à `floor(30 / period)` ferait échouer le test d'une bille pour une raison
       // qui n'a rien à voir avec la cadence.
       expect(times.length).toBe(Math.floor(w.time / period))
-      // La cadence est réellement contrainte : première émission à une période près, à un pas de
-      // simulation près — l'échéance est détectée au pas qui la franchit, donc jamais avant.
       expect(times[0] ?? 0).toBeGreaterThanOrEqual(period)
       expect(times[0] ?? 0).toBeLessThan(period + DT * 1.5)
     })
   }
 
-  it('ne dérive pas : les écarts entre émissions restent égaux à la période', () => {
+  it('les émissions tombent **sur la grille**, pas seulement à intervalle régulier', () => {
+    // Propriété plus forte que « les écarts sont égaux » : une suite d'écarts égaux peut être
+    // entièrement décalée par rapport à la mesure. C'est cette différence qui fait qu'un motif se
+    // répète en phase au lieu de flotter.
     const w = world()
-    addEmitter(w, { x: 640, y: 100 }, { period: DEFAULT_PERIOD })
-    const times = simulate(w, 30)
+    const index = 3 // 1/4 de mesure
+    addEmitter(w, { x: 640, y: 100 }, { divisionIndex: index })
+    const step = divisionSeconds(divisionAt(index), w.bpm)
 
-    for (let i = 1; i < times.length; i++) {
-      // Tolérance d'un pas de simulation : l'émission est détectée au pas qui franchit l'échéance.
-      expect(Math.abs((times[i] ?? 0) - (times[i - 1] ?? 0) - DEFAULT_PERIOD)).toBeLessThan(DT * 1.5)
+    for (const time of simulate(w, 20)) {
+      // L'émission est détectée au pas qui franchit l'échéance : l'instant de grille est donc dans le
+      // pas qui précède.
+      const previousGrid = Math.floor(time / step + 1e-9) * step
+      expect(time - previousGrid).toBeLessThan(DT * 1.5)
+    }
+  })
+
+  it('deux sources de même division émettent exactement en phase, sur 200 mesures', () => {
+    const w = world()
+    addEmitter(w, { x: 200, y: 100 }, { divisionIndex: 1 })
+    // La seconde source est posée **au milieu** d'un pas : c'est le cas qui distingue une échéance
+    // recalculée depuis la grille d'une échéance cumulée depuis l'instant de création.
+    w.time += divisionSeconds(divisionAt(1), w.bpm) * 0.37
+    addEmitter(w, { x: 900, y: 100 }, { divisionIndex: 1 })
+
+    const byEmitter = new Map<number, number[]>()
+    const steps = Math.round((barSeconds(w.bpm) * 200) / DT)
+    for (let i = 0; i < steps; i += 1) {
+      w.time += DT
+      for (const emitter of w.emitters) {
+        if (emitter.nextAt <= w.time) {
+          const list = byEmitter.get(emitter.id) ?? []
+          list.push(emitter.nextAt)
+          byEmitter.set(emitter.id, list)
+        }
+      }
+      runEmitters(w, (pos) => spawnBall(w, pos))
+    }
+
+    const [first, second] = [...byEmitter.values()]
+    expect(first?.length).toBeGreaterThan(300)
+    // Égalité **exacte** des échéances, pas « écart faible » : un écart faible laisserait passer une
+    // dérive lente, qui est précisément ce qu'on veut interdire.
+    expect(second).toEqual(first?.slice(first.length - (second?.length ?? 0)))
+  })
+
+  it('un changement de tempo raccroche la source à la NOUVELLE grille', () => {
+    /*
+     * C'est **la** propriété qui distingue une échéance recalculée depuis la grille d'une échéance
+     * cumulée (`nextAt += période`). Depuis une échéance déjà alignée, l'accumulation retombe sur les
+     * mêmes instants : les deux versions sont indiscernables… jusqu'au changement de tempo, où
+     * l'accumulation reste sur l'**ancienne** grille pour toujours. Vérifié par mutation : sans cette
+     * assertion, remplacer le recalcul par une accumulation passait les 19 autres tests.
+     */
+    const w = world()
+    addEmitter(w, { x: 640, y: 100 }, { divisionIndex: 1 })
+    simulate(w, 5)
+
+    w.bpm = 132
+    // On avance jusqu'à la prochaine émission, qui doit se poser sur la grille du nouveau tempo.
+    // On relève l'échéance **après** `runEmitters`, donc celle qui vient d'être recalculée : le callback
+    // d'émission, lui, est appelé avant la mise à jour et rendrait l'ancienne échéance.
+    const deadlines: number[] = []
+    const steps = Math.round(4 / DT)
+    for (let i = 0; i < steps && deadlines.length < 3; i += 1) {
+      w.time += DT
+      if (runEmitters(w, () => {}) > 0) deadlines.push(w.emitters[0]!.nextAt)
+    }
+
+    expect(deadlines.length).toBe(3)
+    const step = divisionSeconds(divisionAt(1), 132)
+    for (const deadline of deadlines) {
+      expect(Math.abs(deadline / step - Math.round(deadline / step))).toBeLessThan(1e-9)
     }
   })
 
@@ -60,32 +141,38 @@ describe('D1 — cadence d’émission', () => {
 
   it('honore plusieurs échéances dans un pas long, dans la limite du garde-fou', () => {
     const w = world()
-    addEmitter(w, { x: 640, y: 100 }, { period: 0.2 })
+    addEmitter(w, { x: 640, y: 100 }, { divisionIndex: 3 })
 
-    // Un seul pas de 2 s : 10 échéances dues, mais le garde-fou en autorise 4.
-    w.time += 2
+    w.time += 4
     const spawned = runEmitters(w, (pos) => spawnBall(w, pos))
 
     expect(spawned).toBe(4)
-    // Le reliquat n'est pas traîné comme une dette : la source repart de maintenant.
+    // Le reliquat n'est pas traîné comme une dette : la source repart de la grille.
     expect(w.emitters[0]?.nextAt).toBeGreaterThan(w.time)
+  })
+
+  it('après un très gros saut de temps, la source reste sur la grille', () => {
+    const w = world()
+    addEmitter(w, { x: 640, y: 100 }, { divisionIndex: 1 })
+    w.time += 600
+    runEmitters(w, () => {})
+    const step = divisionSeconds(divisionAt(1), w.bpm)
+    const next = w.emitters[0]!.nextAt
+    expect(next).toBeGreaterThan(w.time)
+    expect(Math.abs(next / step - Math.round(next / step))).toBeLessThan(1e-9)
   })
 })
 
 describe('D2 — déterminisme', () => {
   it('produit la même **trace d’impacts** à monde identique, sur 30 s', () => {
-    // Le critère parle de la trace d'impacts, pas des instants d'émission. Une version antérieure de
-    // ce test comparait deux mondes sans barres et sans appeler `stepWorld` : elle comparait donc deux
-    // fois le même calcul arithmétique pur, et restait verte quelle que soit la régression. Ici la
-    // musique elle-même est comparée — c'est ce déterminisme dont dépendra le partage par URL.
     function run(): string[] {
       const w = createWorld({ w: 1280, h: 800 })
       for (let i = 0; i < 6; i++) {
         const x = 120 + i * 180
         addBar(w, { x: x - 90, y: 250 + (i % 3) * 130 }, { x: x + 90, y: 300 + (i % 3) * 130 }, 60 + i)
       }
-      addEmitter(w, { x: 300, y: 80 }, { period: 0.37 })
-      addEmitter(w, { x: 900, y: 120 }, { period: 0.61 })
+      addEmitter(w, { x: 300, y: 80 }, { divisionIndex: 2 })
+      addEmitter(w, { x: 900, y: 120 }, { divisionIndex: 3 })
 
       const trace: string[] = []
       const steps = Math.round(30 / DT)
@@ -109,36 +196,76 @@ describe('D3 — plafond de billes', () => {
     const w = world()
     // Gravité coupée : on veut voir le plafond agir, pas les billes sortir par le bas.
     w.gravity = { x: 0, y: 0 }
-    for (const x of [200, 640, 1000]) addEmitter(w, { x, y: 100 }, { period: MIN_PERIOD })
+    for (const x of [200, 640, 1000]) addEmitter(w, { x, y: 100 }, { divisionIndex: 3 })
 
     simulate(w, 300)
 
     expect(w.balls.length).toBeLessThanOrEqual(MAX_BALLS)
-    // Les survivantes sont les dernières créées : les identifiants forment une suite croissante qui
-    // se termine au dernier id attribué.
     const ids = w.balls.map((ball) => ball.id)
     expect(ids).toEqual([...ids].sort((a, b) => a - b))
     expect(ids.at(-1)).toBe(w.nextBallId - 1)
   })
 })
 
-describe('bornes et suppression', () => {
-  it('borne une période nulle ou négative au minimum', () => {
+describe('divisions', () => {
+  it('un index hors catalogue retombe sur le défaut, sans lever', () => {
     const w = world()
-    expect(addEmitter(w, { x: 0, y: 0 }, { period: 0 }).period).toBe(MIN_PERIOD)
-    expect(addEmitter(w, { x: 0, y: 0 }, { period: -5 }).period).toBe(MIN_PERIOD)
+    expect(addEmitter(w, { x: 0, y: 0 }, { divisionIndex: -1 }).divisionIndex).toBe(
+      DEFAULT_DIVISION_INDEX
+    )
+    expect(addEmitter(w, { x: 0, y: 0 }, { divisionIndex: 99 }).divisionIndex).toBe(
+      DEFAULT_DIVISION_INDEX
+    )
+    expect(addEmitter(w, { x: 0, y: 0 }, { divisionIndex: 1.5 }).divisionIndex).toBe(
+      DEFAULT_DIVISION_INDEX
+    )
+    expect(clampDivisionIndex(Number.NaN)).toBe(DEFAULT_DIVISION_INDEX)
   })
 
-  it('ne boucle pas sans fin si la période est écrasée à zéro après la création', () => {
+  it('ne boucle pas sans fin si la division est écrasée après la création', () => {
     const w = world()
     const emitter = addEmitter(w, { x: 0, y: 0 })
-    emitter.period = 0
+    emitter.divisionIndex = -7
     w.time += 10
 
     // Le garde-fou doit borner, sinon ce test ne termine jamais.
     expect(runEmitters(w, () => {})).toBe(4)
   })
 
+  it('le cycle parcourt tout le catalogue et boucle', () => {
+    const w = world()
+    const emitter = addEmitter(w, { x: 0, y: 0 }, { divisionIndex: 0 })
+    const seen = [emitter.divisionIndex]
+    for (let i = 0; i < DIVISIONS.length; i += 1) seen.push(cycleDivision(w, emitter))
+    expect(seen).toEqual([0, 1, 2, 3, 4, 0])
+  })
+
+  it('changer de division ré-arme sur la grille, sans rafale ni trou', () => {
+    const w = world()
+    const emitter = addEmitter(w, { x: 0, y: 0 }, { divisionIndex: 0 })
+    w.time += 3.7
+    cycleDivision(w, emitter)
+
+    // Devant nous (pas de rafale à rattraper), et sur la grille de la **nouvelle** division.
+    expect(emitter.nextAt).toBeGreaterThan(w.time)
+    const step = divisionSeconds(divisionAt(emitter.divisionIndex), w.bpm)
+    expect(Math.abs(emitter.nextAt / step - Math.round(emitter.nextAt / step))).toBeLessThan(1e-9)
+    // Et pas plus loin qu'une division : la source ne se tait pas en changeant de rythme.
+    expect(emitter.nextAt - w.time).toBeLessThanOrEqual(step + 1e-9)
+  })
+
+  it('la période est **dérivée** du tempo, jamais stockée', () => {
+    const w = world()
+    const emitter = addEmitter(w, { x: 0, y: 0 }, { divisionIndex: 1 })
+    const slow = emitterPeriod(emitter, 60)
+    const fast = emitterPeriod(emitter, 120)
+    expect(slow).toBeCloseTo(fast * 2, 10)
+    // Doubler le tempo change la cadence sans qu'aucun champ de la source ait bougé.
+    expect(emitter.divisionIndex).toBe(1)
+  })
+})
+
+describe('suppression et teintes', () => {
   it('retire une source par son identifiant, et ignore un identifiant inconnu', () => {
     const w = world()
     const emitter = addEmitter(w, { x: 10, y: 10 })

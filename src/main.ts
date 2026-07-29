@@ -12,7 +12,16 @@ import {
 import type { Tuning } from './core/music'
 import { DT, addBar, createWorld, spawnBall, stepWorld } from './core/physics'
 import type { Bar, Emitter, ImpactEvent, Vec2 } from './core/types'
-import { MAX_BALLS, addEmitter, removeEmitter, runEmitters } from './core/emitter'
+import {
+  MAX_BALLS,
+  addEmitter,
+  cycleDivision,
+  emitterPeriod,
+  removeEmitter,
+  runEmitters,
+  runRespawns,
+} from './core/emitter'
+import { divisionAt, divisionLabel, gridTimeAfter, nearestDivisionIndex } from './core/clock'
 import { createHistory } from './core/history'
 import { MAX_PARTICLES } from './core/particles'
 import { decodeScene, encodeScene } from './core/share'
@@ -122,7 +131,7 @@ function applyTuning(next: Tuning): void {
 function dropBall(point: Vec2): number {
   // Teintes froides pour les billes : la couleur chaude est réservée aux barres, qui portent la hauteur.
   const hue = 190 + ((world.nextBallId * 37) % 90)
-  return spawnBall(world, point, { x: 0, y: 0 }, { hue }).id
+  return spawnBall(world, point, { x: 0, y: 0 }, { hue, recycle: true }).id
 }
 
 /**
@@ -155,6 +164,9 @@ function handleImpacts(events: readonly ImpactEvent[]): void {
 function advance(seconds: number): void {
   const steps = Math.max(0, Math.round(seconds / DT))
   for (let i = 0; i < steps; i++) {
+    runRespawns(world, (pos, hue) => {
+      spawnBall(world, { x: pos.x, y: pos.y }, { x: 0, y: 0 }, { hue, recycle: true })
+    })
     runEmitters(world, (pos, hue) => {
       spawnBall(world, { x: pos.x, y: pos.y }, { x: 0, y: 0 }, { hue })
     })
@@ -235,7 +247,7 @@ function sharedScene(): SharedScene {
     bars: world.bars.map((bar) => toSharedBar(bar.a, bar.b, area, width)),
     emitters: world.emitters.map((emitter) => ({
       ...toSharedPoint(emitter.pos, area, width),
-      period: emitter.period,
+      period: emitterPeriod(emitter, world.bpm),
     })),
   }
 }
@@ -252,7 +264,11 @@ function applyShared(shared: SharedScene): void {
     placeBar(...placeSharedBar(bar, area, width, MIN_BAR_LENGTH))
   }
   for (const emitter of shared.emitters) {
-    addEmitter(world, placeSharedEmitter(emitter, area, width), { period: emitter.period })
+    addEmitter(world, placeSharedEmitter(emitter, area, width), {
+      // Les liens déjà émis portent une période libre en secondes : on la rapproche de la division la
+      // plus voisine. Un lien ancien reste donc lisible, à la grille près.
+      divisionIndex: nearestDivisionIndex(emitter.period, world.bpm),
+    })
   }
   // La scène vient de quelqu'un d'autre : on ne la remplace pas par une scène surprise.
   userOwnsScene = true
@@ -376,7 +392,9 @@ function undo(): void {
   world.emitters.push(...restored.emitters)
   // Réarmer les échéances : un instantané ne porte pas de temps (cf. history.cloneEmitter), sinon
   // annuler ferait cracher une rafale de billes pour rattraper un retard fictif.
-  for (const emitter of world.emitters) emitter.nextAt = world.time + emitter.period
+  for (const emitter of world.emitters) {
+    emitter.nextAt = gridTimeAfter(world.time, divisionAt(emitter.divisionIndex), world.bpm)
+  }
   // La gamme fait partie de l'état : sans ça, annuler un changement de gamme réaccordait les barres
   // mais laissait le libellé — donc l'interface annonçait une gamme que l'instrument ne jouait plus.
   if (restored.tuningId !== tuning.id) applyTuning(tuningById(restored.tuningId))
@@ -546,14 +564,26 @@ function handleGesture(gesture: Gesture): void {
       interaction = { ...NO_INTERACTION }
       break
 
-    case 'tap-bar':
+    case 'tap':
       // Aucun instantané validé : écouter une barre ne modifie rien.
       pendingSnapshot = null
-      // Taper une barre la fait sonner sans rien modifier : c'est comment on apprend la
-      // correspondance entre la couleur d'une barre et sa hauteur.
       if (gesture.hit.target === 'bar') {
+        // Taper une barre la fait sonner sans rien modifier : c'est comment on apprend la
+        // correspondance entre la couleur d'une barre et sa hauteur.
         playBar(gesture.hit.bar, 0.65)
         gesture.hit.bar.lastHitAt = world.time
+      } else {
+        /*
+         * Taper une source change son **rythme**. C'est le seul geste qui construise un motif — sans
+         * lui, toutes les sources partagent la même division et la scène n'a qu'une seule pulsation.
+         * Aucun mode ajouté : une source est déjà une cible de geste (on la déplace en la glissant),
+         * donc la toucher lui parle à elle. Et taper une source ne faisait **rien** jusqu'ici.
+         */
+        history.push(world.bars, world.emitters, tuning.id)
+        detachFromLink()
+        const index = cycleDivision(world, gesture.hit.emitter)
+        announce(`Source : ${divisionLabel(index)}`)
+        userOwnsScene = true
       }
       fadeHint()
       break
@@ -682,6 +712,9 @@ function frame(now: number): void {
     steps++
     // Les sources émettent avant l'intégration du pas : une bille créée doit être simulée dès le pas
     // où elle apparaît, sinon elle « saute » d'un pas au premier affichage.
+    runRespawns(world, (pos, hue) => {
+      spawnBall(world, { x: pos.x, y: pos.y }, { x: 0, y: 0 }, { hue, recycle: true })
+    })
     runEmitters(world, (pos, hue) => {
       spawnBall(world, { x: pos.x, y: pos.y }, { x: 0, y: 0 }, { hue })
     })
@@ -738,11 +771,18 @@ interface CarillonDebug {
   undo(): void
   /** Géométrie des barres : sans elle, toute assertion sur un déplacement passerait par des pixels. */
   bars(): Array<{ id: number; ax: number; ay: number; bx: number; by: number; midi: number }>
-  addEmitter(x: number, y: number, period?: number): number
+  addEmitter(x: number, y: number, divisionIndex?: number): number
   /** positions et vitesses des billes vivantes — pour prouver qu'une scène **bouge**, pas qu'elle existe */
   balls(): { id: number; x: number; y: number; vx: number; vy: number }[]
   lastImpact(): { x: number; y: number } | null
-  emitters(): Array<{ id: number; x: number; y: number; period: number }>
+  emitters(): Array<{
+    id: number
+    x: number
+    y: number
+    divisionIndex: number
+    period: number
+    nextAt: number
+  }>
   stats(): {
     fps: number
     balls: number
@@ -769,6 +809,8 @@ interface CarillonDebug {
     trailPoints: number
     particles: number
     maxParticles: number
+    bpm: number
+    pendingRespawns: number
     /** plafond de billes vivantes, exposé pour que le harnais n'ait pas à le deviner */
     maxBalls: number
     /** nombre de gestes annulables empilés */
@@ -805,14 +847,18 @@ window.__carillon = {
       vy: ball.vel.y,
     })),
   lastImpact: () => (lastImpactPoint ? { ...lastImpactPoint } : null),
-  addEmitter: (x, y, period) =>
-    addEmitter(world, { x, y }, period === undefined ? {} : { period }).id,
+  addEmitter: (x, y, divisionIndex) =>
+    addEmitter(world, { x, y }, divisionIndex === undefined ? {} : { divisionIndex }).id,
   emitters: () =>
     world.emitters.map((emitter) => ({
       id: emitter.id,
       x: emitter.pos.x,
       y: emitter.pos.y,
-      period: emitter.period,
+      divisionIndex: emitter.divisionIndex,
+      period: emitterPeriod(emitter, world.bpm),
+      // Échéance absolue : c'est la seule façon d'asserter « ces deux sources sont en phase » depuis le
+      // navigateur sans deviner à partir des instants d'apparition des billes.
+      nextAt: emitter.nextAt,
     })),
   bars: () =>
     world.bars.map((bar) => ({
@@ -840,6 +886,8 @@ window.__carillon = {
     trailPoints: renderer.trailPointCount(),
     particles: effects.particles.length,
     maxParticles: MAX_PARTICLES,
+    bpm: world.bpm,
+    pendingRespawns: world.respawns.length,
     maxBalls: MAX_BALLS,
     distinctPitches: new Set(world.bars.map((bar) => bar.midi)).size,
   }),

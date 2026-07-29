@@ -99,7 +99,7 @@ describe('machine à gestes', () => {
     h.down(50, 0)
     h.up(52, 1)
 
-    expect(h.types()).toEqual(['grab', 'tap-bar'])
+    expect(h.types()).toEqual(['grab', 'tap'])
     expect(h.types()).not.toContain('drop-ball')
   })
 
@@ -254,6 +254,6 @@ describe('machine à gestes', () => {
     h.up(50, 0)
 
     expect(h.types()).not.toContain('long-press')
-    expect(h.types()).toEqual(['grab', 'tap-bar'])
+    expect(h.types()).toEqual(['grab', 'tap'])
   })
 })

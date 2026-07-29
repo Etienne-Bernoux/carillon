@@ -73,7 +73,7 @@ function cloneEmitter(emitter: Emitter): Emitter {
   return {
     id: emitter.id,
     pos: cloneVec2(emitter.pos),
-    period: emitter.period,
+    divisionIndex: emitter.divisionIndex,
     nextAt: 0,
     hue: emitter.hue,
   }
@@ -87,7 +87,11 @@ function emittersEqual(a: readonly Emitter[], b: readonly Emitter[]): boolean {
     // `nextAt` est exclu : c'est une échéance qui avance toute seule, comme `lastHitAt` pour une
     // barre. L'inclure désactiverait la déduplication dès qu'une source tourne.
     if (!first || !second) return false
-    if (first.id !== second.id || first.period !== second.period || !vecEqual(first.pos, second.pos)) {
+    if (
+      first.id !== second.id ||
+      first.divisionIndex !== second.divisionIndex ||
+      !vecEqual(first.pos, second.pos)
+    ) {
       return false
     }
   }

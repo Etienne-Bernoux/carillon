@@ -100,7 +100,7 @@ describe('D4 — préhension générique (barres et sources)', () => {
   const horizontal = bar(0, 100, 200, 500, 200)
 
   function emitter(id: number, x: number, y: number): Emitter {
-    return { id, pos: { x, y }, period: 0.9, nextAt: 0.9, hue: 200 }
+    return { id, pos: { x, y }, divisionIndex: 1, nextAt: 0.9, hue: 200 }
   }
 
   it('ne touche rien loin de tout', () => {

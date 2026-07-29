@@ -1,3 +1,10 @@
+import { DEFAULT_BPM, divisionAt, gridTimeAfter } from './clock'
+
+/**
+ * Division sur laquelle revient une bille recyclée : la mesure. Une bille qui revient à la croche
+ * saturerait la scène, et le retour n'est pas une pulsation — c'est une reprise de motif.
+ */
+const RECYCLE_DIVISION_INDEX = 0
 import type { Ball, Bar, Bounds, ImpactEvent, Vec2, World } from './types'
 import { dot, len2, normalize, perp, sub } from './vec'
 
@@ -141,6 +148,8 @@ export function createWorld(bounds: Bounds): World {
     gravity: { x: DEFAULT_GRAVITY.x, y: DEFAULT_GRAVITY.y },
     bounds,
     time: 0,
+    bpm: DEFAULT_BPM,
+    respawns: [],
     nextBallId: 0,
     nextBarId: 0,
     nextEmitterId: 0,
@@ -164,9 +173,10 @@ export function spawnBall(
   world: World,
   pos: Vec2,
   vel?: Vec2,
-  opts?: { radius?: number; hue?: number },
+  opts?: { radius?: number; hue?: number; recycle?: boolean; origin?: Vec2 },
 ): Ball {
   const v = vel ?? { x: 0, y: 0 }
+  const origin = opts?.origin ?? pos
   const ball: Ball = {
     id: world.nextBallId++,
     pos: { x: pos.x, y: pos.y },
@@ -175,6 +185,8 @@ export function spawnBall(
     alive: true,
     age: 0,
     hue: opts?.hue ?? 0,
+    origin: { x: origin.x, y: origin.y },
+    recycle: opts?.recycle ?? false,
   }
   world.balls.push(ball)
   return ball
@@ -198,6 +210,16 @@ export function stepWorld(world: World, dt: number = DT): ImpactEvent[] {
       ball.alive = false
     } else if (ball.pos.x < -SIDE_MARGIN || ball.pos.x > world.bounds.w + SIDE_MARGIN) {
       ball.alive = false
+    }
+    // Une bille recyclée ne disparaît pas : elle est **reprogrammée** sur le prochain temps de la
+    // grille. C'est ce qui fait qu'un seul geste suffit à créer un motif qui se répète, et l'alignement
+    // sur la grille est ce qui le fait tomber en phase avec les sources déjà en place.
+    if (!ball.alive && ball.recycle) {
+      world.respawns.push({
+        at: gridTimeAfter(world.time, divisionAt(RECYCLE_DIVISION_INDEX), world.bpm),
+        pos: { x: ball.origin.x, y: ball.origin.y },
+        hue: ball.hue,
+      })
     }
     died = died || !ball.alive
   }

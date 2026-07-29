@@ -33,7 +33,8 @@ export type Gesture =
   | { type: 'drag'; hit: Grab; point: Vec2; delta: Vec2 }
   /** `cancelled` : le système a repris le pointeur, l'utilisateur n'a rien décidé. */
   | { type: 'release'; hit: Grab; point: Vec2; cancelled: boolean }
-  | { type: 'tap-bar'; hit: Grab }
+  /** relâchement sans mouvement sur une cible — barre **ou** source */
+  | { type: 'tap'; hit: Grab }
 
 export interface InputHandlers {
   /** premier geste de la session : c'est là qu'on déverrouille l'audio */
@@ -159,7 +160,7 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
       if (moved || cancelled) {
         handlers.onGesture({ type: 'release', hit: grabbed, point, cancelled })
       } else {
-        handlers.onGesture({ type: 'tap-bar', hit: grabbed })
+        handlers.onGesture({ type: 'tap', hit: grabbed })
       }
     } else {
       handlers.onGesture({ type: 'draft-cancel' })
