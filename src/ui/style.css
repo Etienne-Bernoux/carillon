@@ -38,7 +38,19 @@ body {
   position: fixed;
   inset: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  /*
+   * Le **plancher** de la colonne du titre est ce qui compte ici, pas son `1fr`. Avec
+   * `minmax(0, 1fr) auto`, la piste `auto` de la barre d'outils se dimensionne à son max-content
+   * (~690 px avec six libellés) et la colonne du titre tombe à **0 px** : mesuré de 641 px à ~860 px
+   * de large, « Carillon » était tronqué en « Caril » et passait sous les boutons, la tagline
+   * s'empilait à un mot par ligne (80 px de haut), et le dernier bouton se retrouvait seul sur une
+   * deuxième rangée. Exactement le blowout de grille que la règle `minmax(0, 1fr)` corrige d'un côté
+   * et que la piste `auto` reproduisait de l'autre.
+   *
+   * `min-content` comme minimum : le titre ne descend jamais sous la largeur de son mot le plus long,
+   * et c'est la barre d'outils qui se replie — elle sait le faire (`flex-wrap`), le titre non.
+   */
+  grid-template-columns: minmax(min-content, 1fr) auto;
   grid-template-rows: auto 1fr auto;
   gap: 12px;
   padding: clamp(14px, 2.4vw, 26px);
@@ -81,6 +93,12 @@ body {
 .toolbar button {
   pointer-events: auto;
   appearance: none;
+  display: inline-flex;
+  /* `baseline` grandissait la boîte : l'icône (1 rem) et le libellé (0,84 rem) ont des lignes de base
+     différentes, ce qui ajoutait ~8 px par bouton — le HUD du paysage passait de 36 % à 48 %. */
+  align-items: center;
+  gap: 6px;
+  line-height: 1.15;
   border: 1px solid var(--edge);
   border-radius: 999px;
   padding: 8px 15px;
@@ -91,6 +109,31 @@ body {
   backdrop-filter: blur(10px);
   cursor: pointer;
   transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+
+/* Le nom court de gamme ne sert qu'au mode icône. */
+.toolbar .label-short {
+  display: none;
+}
+
+.toolbar .icon {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+/*
+ * En mode texte, le pictogramme **disparaît** : afficher les deux élargissait chaque bouton d'environ
+ * 20 px, ce qui faisait passer la barre d'outils de deux à trois rangées sur un écran bas et large.
+ * Seule la gamme garde sa note de musique — elle était déjà là avant, et elle dit de quoi parle le
+ * bouton dont le texte change.
+ */
+.toolbar button:not([data-control='tuning']) .icon {
+  display: none;
+}
+
+/* Son coupé : le même pictogramme, barré. Deux glyphes différents se confondraient. */
+.toolbar button[data-control='mute'][aria-pressed='true'] .icon {
+  text-decoration: line-through;
 }
 
 .toolbar button:hover {
@@ -138,7 +181,89 @@ body {
   opacity: 0.35;
 }
 
-@media (max-width: 640px) {
+/*
+ * Sur petit écran, l'indice **disparaît** une fois lu au lieu de rester en filigrane : c'est un
+ * dispositif d'apprentissage à usage unique, et il coûtait 8 points de surface de jeu sur un 320×568.
+ * `announce()` le fait réapparaître le temps d'un message, puis le remasque.
+ */
+@media (max-width: 640px), (max-height: 480px) {
+  .hint[data-faded='true'] {
+    display: none;
+  }
+}
+
+/*
+ * Mode icône. Mesuré avant : le HUD occupait 44 % d'un 320×568 et 31 % d'un 375×740, parce que six
+ * libellés en toutes lettres ne tiennent pas sur une rangée et en imposaient trois. On garde les
+ * pictogrammes, les `aria-label` et les infobulles ; seul le texte visible disparaît — sauf le nom
+ * court de la gamme, qui est le seul texte porteur d'état.
+ */
+/*
+ * Mode icône : écran étroit **ou** écran bas. Un téléphone en paysage a le même problème qu'un
+ * téléphone en portrait — six libellés ne tiennent pas sur une rangée, et chaque rangée
+ * supplémentaire est prise sur une hauteur déjà rare.
+ */
+@media (max-width: 640px), (max-height: 480px) {
+  .toolbar {
+    gap: 6px;
+  }
+
+  .toolbar button {
+    padding: 9px 12px;
+  }
+
+  /* Même spécificité que la règle qui masque l'icône en mode texte, et placée après : une media query
+     n'ajoute **aucune** spécificité, donc un sélecteur plus court y perdrait. C'est ce qui a produit
+     cinq boutons parfaitement vides à la première tentative. */
+  .toolbar button:not([data-control='tuning']) .icon {
+    display: inline;
+  }
+
+  .toolbar .label {
+    display: none;
+  }
+
+  .toolbar .label-short {
+    display: inline;
+    font-size: 0.78rem;
+  }
+}
+
+/*
+ * Deux rangées **assumées** : jusqu'à 740 px, et seulement là où l'on empile (cf. la règle suivante).
+ *
+ * Dans cette plage, les six contrôles ne tiennent pas sur une rangée — que ce soit six libellés en toutes
+ * lettres (~690 px) ou cinq pictogrammes plus le nom court de la gamme. Le retour à la ligne éjectait
+ * alors le **dernier** bouton, seul, sous les autres : ça se lit comme un bug de mise en page, pas
+ * comme une décision. On donne donc sa propre rangée à la gamme — le seul bouton dont le texte porte
+ * l'état, donc le seul qui ne peut pas se réduire — et les autres s'alignent dessous.
+ *
+ * Le seuil est mesuré, pas choisi : à 800 px les six tiennent sur une rangée (34 px de haut), à 700 px
+ * non (76 px). Au-delà de 740, cette règle coûterait donc une rangée au lieu d'en économiser une.
+ */
+@media (max-width: 640px), (max-width: 740px) and (min-height: 481px) {
+  .toolbar button[data-control='tuning'] {
+    order: -1;
+    flex-basis: 100%;
+    justify-content: center;
+  }
+}
+
+/*
+ * Empilement en une colonne : écran **étroit** (toute hauteur), ou écran moyen **et haut**.
+ *
+ * Deux conditions, parce que deux problèmes différents. Sous 641 px, six contrôles ne tiennent jamais à
+ * côté du titre. Entre 641 et 860 px, ça ne dépend que du **mode** : en mode texte la barre d'outils
+ * fait ~690 px de large et étranglait la colonne du titre à 83 px (tagline à un mot par ligne) ; en
+ * mode icône elle fait ~280 px et tient sans gêner personne.
+ *
+ * Or le mode icône s'active aussi sur écran **bas** (`max-height: 480px`), c'est-à-dire un téléphone en
+ * paysage. D'où le `min-height: 481px` : sur ces écrans, la barre d'outils doit rester **à côté** du
+ * titre, où elle partage la hauteur au lieu de s'ajouter à elle. Mesuré à l'US6 : l'empiler y coûtait
+ * 14 points de surface de jeu, et la première version de cette règle — sans condition de hauteur —
+ * faisait passer une barre de la scène derrière le HUD à 740×375.
+ */
+@media (max-width: 640px), (max-width: 860px) and (min-height: 481px) {
   .overlay {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto 1fr auto auto;
@@ -156,6 +281,13 @@ body {
 
   .hint {
     grid-row: 4;
+  }
+}
+
+/* Le reste du traitement « petit écran » reste borné au mode icône. */
+@media (max-width: 640px) {
+
+  .hint {
     font-size: 0.76rem;
   }
 }
