@@ -19,6 +19,8 @@ const TRAIL_SECONDS = 0.22
 const GLOW_MS = 420
 /** longueur de la traînée d'une étincelle, exprimée en secondes de sa propre vitesse */
 const STREAK_SECONDS = 0.05
+/** graine du hasard des étincelles ; rembobinée à chaque `clear()` pour rendre une capture comparable */
+const PARTICLE_SEED = 0x5eed
 
 interface Ripple {
   x: number
@@ -42,9 +44,15 @@ export interface Effects {
 export function createEffects(): Effects {
   const ripples: Ripple[] = []
   const field = createParticleField()
-  // Seed fixe : deux sessions qui jouent la même scène doivent produire la même gerbe. C'est la même
-  // règle que la réverbe, et c'est ce qui rend une capture comparable d'une exécution à l'autre.
-  const rand = createRng(0x5eed)
+  /*
+   * Graine fixe, **rembobinée à chaque `clear()`**. Le flux est partagé par tous les impacts (deux
+   * tirages par étincelle), donc la gerbe d'un impact donné dépend de tout l'historique depuis le
+   * dernier `clear()` — et non de la scène seule. Ce qui est garanti est précis : *à partir d'une scène
+   * remise à zéro*, la même suite d'impacts produit les mêmes gerbes. Sans le rembobinage, deux
+   * exécutions identiques du même scénario divergeaient de 36 % sur la signature en pixels de la zone
+   * d'impact — une capture n'était donc pas un artefact reproductible.
+   */
+  let rand = createRng(PARTICLE_SEED)
   let reduced = false
   return {
     ripples,
@@ -80,6 +88,7 @@ export function createEffects(): Effects {
     clear() {
       ripples.length = 0
       clearParticles(field)
+      rand = createRng(PARTICLE_SEED)
     },
   }
 }
@@ -89,6 +98,13 @@ export interface Draft {
   b: Vec2
   label: string
 }
+
+/**
+ * Deux façons de montrer les poignées, nommées plutôt que dosées par un facteur : le **survol** (une
+ * barre désignée, réglage d'origine) et la **révélation** tactile (toutes les barres, faute de survol).
+ * Un simple facteur d'intensité mélangeait les deux et avait silencieusement changé le rayon du survol.
+ */
+type HandleMode = 'hover' | 'reveal'
 
 /** État d'interaction courant : ce que le rendu doit montrer, sans que le monde en sache rien. */
 export interface Interaction {
@@ -126,6 +142,12 @@ export interface Renderer {
    * mesurait en réalité que le cœur des billes.
    */
   trailPointCount(): number
+  /**
+   * Ce que le **rendu** croit de la préférence de mouvement. `stats()` lisait la média-requête
+   * directement, donc l'assertion navigateur comparait l'émulation Chrome à elle-même : elle passait
+   * même si `syncReducedMotion` n'avait jamais propagé la valeur.
+   */
+  isReducedMotion(): boolean
 }
 
 /**
@@ -219,8 +241,8 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
       base.lineWidth = 1.6
       strokeBar(bar.a, bar.b)
 
-      if (bar.id === interaction.hoveredBarId) drawGrabHandles(bar, interaction.hoveredKind)
-      else if (interaction.revealHandles) drawGrabHandles(bar, null, 0.45)
+      if (bar.id === interaction.hoveredBarId) drawGrabHandles(bar, interaction.hoveredKind, 'hover')
+      else if (interaction.revealHandles) drawGrabHandles(bar, null, 'reveal')
     }
   }
 
@@ -228,8 +250,9 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
    * Poignées de préhension au survol. Elles ne sont pas décoratives : sans elles, rien n'indique
    * qu'une extrémité s'attrape pour accorder la barre, et le geste central du produit reste invisible.
    */
-  function drawGrabHandles(bar: { a: Vec2; b: Vec2 }, kind: GrabKind | null, strength = 1): void {
-    base.strokeStyle = `rgba(232, 240, 255, ${0.55 * strength})`
+  function drawGrabHandles(bar: { a: Vec2; b: Vec2 }, kind: GrabKind | null, mode: HandleMode): void {
+    const reveal = mode === 'reveal'
+    base.strokeStyle = `rgba(232, 240, 255, ${reveal ? 0.3 : 0.55})`
     base.lineWidth = 1.4
     strokeBar(bar.a, bar.b)
 
@@ -237,12 +260,39 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
       [bar.a, 'endA'],
       [bar.b, 'endB'],
     ] as const) {
-      const active = kind === own
+      if (kind === own) {
+        base.beginPath()
+        base.arc(point.x, point.y, 8, 0, Math.PI * 2)
+        base.fillStyle = 'rgba(255, 255, 255, 0.95)'
+        base.fill()
+        continue
+      }
+
+      if (reveal) {
+        /*
+         * Révélation tactile : un **anneau** plus large que le bout de barre, pas un disque pâle.
+         * Première version : un disque de 4,5 px à 22 % d'opacité posé sur un bout de barre déjà rond
+         * de 3,5 px (`BAR_THICKNESS / 2`, `lineCap: 'round'`) et lumineux — ça ne se lisait pas « cette
+         * barre a des poignées » mais « les barres ont un peu éclairci ». Un anneau qui **dépasse** du
+         * bout de barre est la seule forme qui se distingue de la barre elle-même.
+         */
+        base.beginPath()
+        base.arc(point.x, point.y, 8, 0, Math.PI * 2)
+        base.strokeStyle = 'rgba(232, 240, 255, 0.8)'
+        base.lineWidth = 2
+        base.stroke()
+        base.beginPath()
+        base.arc(point.x, point.y, 2.5, 0, Math.PI * 2)
+        base.fillStyle = 'rgba(255, 255, 255, 0.9)'
+        base.fill()
+        continue
+      }
+
+      // Survol : réglage d'origine, inchangé. Le `5.5 * strength + 2` de la première version faisait
+      // passer ce rayon de 5,5 à 7,5 px — +36 % sur un réglage existant, sans que ce soit voulu.
       base.beginPath()
-      base.arc(point.x, point.y, active ? 8 : 5.5 * strength + 2, 0, Math.PI * 2)
-      base.fillStyle = active
-        ? 'rgba(255, 255, 255, 0.95)'
-        : `rgba(232, 240, 255, ${0.5 * strength})`
+      base.arc(point.x, point.y, 5.5, 0, Math.PI * 2)
+      base.fillStyle = 'rgba(232, 240, 255, 0.5)'
       base.fill()
     }
   }
@@ -424,6 +474,9 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
 
   return {
     resize,
+    isReducedMotion() {
+      return reducedMotion
+    },
     trailPointCount() {
       let total = 0
       for (const points of trails.values()) total += points.length / 3

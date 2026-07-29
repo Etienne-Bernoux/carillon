@@ -53,9 +53,48 @@ qu'en points. Le commentaire du code garde les anciennes valeurs et la raison de
 - Corollaire du même run : le passage du bouton « son » seul sur une deuxième rangée à 320 px n'a été
   vu **que** sur la capture. La métrique (29 % de HUD) était bonne avant comme après.
 
+## Suite : ce que la review a ajouté à cette leçon
+
+La leçon ci-dessus était **écrite** mais pas **gardée** : rien dans le harnais ne mesurait la
+visibilité, et restaurer le réglage « invisible » repassait 15 tests sur 15 et 15 assertions sur 15.
+Trois précisions en sont sorties.
+
+### Une métrique peut *récompenser* le défaut
+
+En cassant la spécificité du sélecteur d'icône, cinq boutons devenaient **parfaitement vides** — et la
+métrique de densité du HUD **s'améliorait** (26 % au lieu de 29 %, pour un seuil à 30 %). L'assertion ne
+se contentait pas de rater le défaut : elle le notait mieux que le code correct.
+
+> **Règle** : pour toute métrique « moins, c'est mieux », se demander ce qui l'optimiserait *le plus* —
+> et vérifier qu'un contrôle vide, une page blanche ou une scène gelée ne sont pas la meilleure note.
+
+### La mesure de pixels ne marche que si le reste est figé
+
+Deux tentatives, le même outil, deux résultats opposés :
+
+| | Étincelles d'impact | Poignées de préhension |
+|---|---|---|
+| Scène | billes en vol, onde qui s'étend, halo de barre qui s'éteint sur 420 ms | une barre, zéro bille, zéro source |
+| Mesure | couronne 26–80 px : **15 364 → 13 751** pixels clairs (elle *baisse*) | **0 → 845** pixels blancs |
+| Verdict | inutilisable, noyée par le décor | exacte, la seule différence **est** la poignée |
+
+> **Règle** : une mesure de pixels exige un **contrôle** — deux états qui ne diffèrent que par la chose
+> mesurée. Sinon, chercher la propriété exacte ailleurs : pour les étincelles, c'était une grandeur
+> **géométrique et pure** (quitter le halo de 28 px en 70 ms), assertable en test unitaire.
+
+### Un seuil dérivé du rendu, pas estimé
+
+« Quitter le halo » demandait un nombre. Estimé à 30 px, il faisait échouer le code correct (29,4 px
+mesurés). Le vrai nombre est **28** : le sprite de lueur est dessiné sur `ball.radius * 7` px de côté,
+donc 8 × 7 / 2, et son dégradé atteint alpha 0 exactement là. La marge de 1,4 px est mince et
+**voulue** — le cœur est déterministe, donc la valeur est exacte et reproductible, et un seuil posé au
+vrai bord du halo tombe au moindre affaiblissement du réglage.
+
 ## Voir aussi
 
 - [tester-la-propriete-pas-son-proxy.md](tester-la-propriete-pas-son-proxy.md) — l'étiquette d'une
   assertion n'est pas son contrat
 - [harnais-de-capture-qui-ment-sur-la-perf.md](harnais-de-capture-qui-ment-sur-la-perf.md) — quand
   c'est le harnais lui-même qui fabrique le symptôme
+- [blowout-de-grille-sur-la-piste-auto.md](blowout-de-grille-sur-la-piste-auto.md) — le défaut produit
+  trouvé dans la même review, invisible à onze largeurs de test

@@ -60,7 +60,10 @@ Pièges déjà connus (issus des règles cortex, à ne pas réapprendre) :
 - **Lire le DOM après le re-render**, pas synchroniquement après un `.click()`.
 - **Vrai reload** = redémarrer le serveur, pas un `location.reload()` téléguidé.
 - **Exercer les deux chemins** quand ils existent (temps réel *et* rattrapage).
-- Grid CSS : `minmax(0, 1fr)` pour éviter le blowout au min-content.
+- Grid CSS : `minmax(0, 1fr)` évite le blowout de la piste flexible — **et autorise son écrasement**.
+  Une piste `auto` voisine se dimensionne à son max-content et peut réduire le `1fr` à 0 px : il faut
+  alors un **plancher** (`minmax(min-content, 1fr)`). Déjà payé, en production
+  (`docs/solutions/blowout-de-grille-sur-la-piste-auto.md`).
 - Booster une constante pour exercer un chemin lent → **revert avant commit**, systématiquement.
 - **Un flag de navigateur dans le harnais est une hypothèse de perf.** `--use-gl=swiftshader`,
   `--disable-gpu` et compagnie forcent le rendu logiciel et invalident toute assertion de fps
@@ -99,6 +102,19 @@ Pièges déjà connus (issus des règles cortex, à ne pas réapprendre) :
   négatif ressemble trait pour trait à un rendu cassé.
 - **La sonde jetable doit devenir un scénario.** Une preuve qui vit dans un fichier supprimé en fin de
   tour n'est pas une preuve. Si elle a servi une fois à trancher, elle sert au prochain run.
+- **Pour toute métrique « moins, c'est mieux », chercher ce qui l'optimiserait le plus.** Une assertion
+  peut *récompenser* le défaut : vider cinq boutons de la barre d'outils **améliorait** la densité du
+  HUD (26 % contre 29 %). Vérifier qu'un contrôle vide, une page blanche ou une scène gelée n'obtiennent
+  pas la meilleure note.
+- **Une mesure de pixels exige un contrôle** : deux états qui ne diffèrent que par la chose mesurée.
+  Sur une scène figée elle est exacte (poignées : 0 → 845 pixels blancs) ; sur une scène vivante elle est
+  noyée par le décor (étincelles : 15 364 → 13 751, elle *baisse*). Dans le second cas, chercher la
+  propriété exacte ailleurs — souvent une grandeur géométrique assertable dans le cœur pur.
+- **Un seuil se dérive du code, pas de l'intuition.** « Quitter le halo » estimé à 30 px faisait échouer
+  le code correct ; le vrai nombre était 28 (`ball.radius * 7 / 2`, la demi-taille du sprite de lueur).
+- **Un seuil de mise en page se vérifie de part et d'autre de sa bascule, et sur les deux axes.** Une
+  media query réglée sur la largeur seule a fait passer une barre derrière le HUD sur un téléphone en
+  paysage. La largeur et la hauteur posent deux problèmes différents.
 
 Une US n'est close qu'après avoir **regardé** les captures. Le jeu accepté est archivé dans
 `docs/proofs/us<N>/` ; `docs/proofs/<scénario>/` ne contient que l'état courant, écrasé à chaque run.

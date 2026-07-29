@@ -21,8 +21,8 @@ export const PARTICLE_LIFE = 0.45
  * naissait au centre du halo de la bille — déjà blanc saturé — et le freinage l'empêchait d'en sortir
  * avant de mourir. Il faut donc qu'elles **quittent le halo** (~30 px) pour exister.
  */
-const SPEED_MIN = 150
-const SPEED_MAX = 520
+export const SPEED_MIN = 150
+export const SPEED_MAX = 520
 /** demi-angle du cône d'éjection autour de la normale, en radians (~50°) */
 const SPREAD = 0.9
 /** freinage exponentiel : les étincelles ralentissent au lieu de filer en ligne droite */

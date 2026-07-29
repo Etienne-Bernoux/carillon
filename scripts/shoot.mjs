@@ -787,6 +787,18 @@ async function runVernis(browser, url, rec) {
         const label = el.querySelector('.label')
         return label ? getComputedStyle(label).display === 'none' : false
       })(),
+      // Le libellé masqué ne prouve **rien** sur le pictogramme. La règle qui l'affiche ne tient que
+      // par une spécificité égale : la casser rendait cinq boutons parfaitement vides, et la seule
+      // assertion existante passait quand même — en *améliorant* même la métrique de densité du HUD.
+      iconVisible: (() => {
+        const icon = el.querySelector('.icon')
+        return !!icon && getComputedStyle(icon).display !== 'none'
+      })(),
+      // Filet indépendant du balisage : le bouton a-t-il **quelque chose** de visible à montrer ?
+      visibleInk: [...el.children].some(
+        (child) =>
+          getComputedStyle(child).display !== 'none' && (child.textContent ?? '').trim().length > 0
+      ),
     }))
   )
   rec.assert(
@@ -803,17 +815,86 @@ async function runVernis(browser, url, rec) {
     iconMode === labels.length,
     `${iconMode}/${labels.length} libellés masqués`
   )
+  const withIcon = labels.filter((l) => l.iconVisible).length
+  rec.assert(
+    'en mode icône, le pictogramme de chaque contrôle est réellement affiché',
+    withIcon === labels.length,
+    `${withIcon}/${labels.length} pictogrammes visibles`
+  )
+  const withInk = labels.filter((l) => l.visibleInk).length
+  rec.assert(
+    'aucun contrôle n’est visuellement vide',
+    withInk === labels.length,
+    `${withInk}/${labels.length} contrôles avec du contenu visible`
+  )
 
   // F3 — au doigt, les poignées se révèlent au premier contact (il n'existe pas de survol tactile).
   const revealed = await small.evaluate(() => window.__carillon.stats().revealHandles)
   rec.assert('un contact tactile révèle les poignées de préhension', revealed, `revealHandles=${revealed}`)
   // Capture **pendant** la révélation : après l'estompage, elle ne montrerait plus ce qu'elle prouve.
+  /*
+   * La révélation doit se **voir**, pas seulement être vraie dans `stats()`. Ici la mesure en pixels
+   * est légitime, là où elle échouait pour les étincelles : la scène est figée (une barre, zéro bille,
+   * zéro source), donc la seule différence entre les deux relevés **est** la poignée.
+   *
+   * Défaut trouvé en review : la première version dessinait un disque de 4,5 px à 22 % d'opacité sur un
+   * bout de barre déjà rond et lumineux — 570 pixels de différence sur 181 760, dont l'essentiel venait
+   * du liseré de la barre. Ça se lisait « les barres ont éclairci », pas « les barres ont des poignées ».
+   */
+  const endpointInk = (page, ax, ay, bx, by) =>
+    page.evaluate(
+      ([ax, ay, bx, by]) => {
+        const stage = document.getElementById('stage')
+        const scale = stage.width / stage.clientWidth
+        const ctx = stage.getContext('2d')
+        const radius = 14
+        let bright = 0
+        for (const [cx, cy] of [
+          [ax, ay],
+          [bx, by],
+        ]) {
+          const size = Math.round(radius * 2 * scale)
+          const { data } = ctx.getImageData(
+            Math.round((cx - radius) * scale),
+            Math.round((cy - radius) * scale),
+            size,
+            size
+          )
+          for (let i = 0; i < data.length; i += 4) {
+            // Blanc quasi pur : la poignée est blanche, la barre est colorée. C'est la saturation qui
+            // les sépare, pas la luminosité — une barre jaune est plus lumineuse qu'une poignée.
+            const [r, g, b] = [data[i], data[i + 1], data[i + 2]]
+            const min = Math.min(r, g, b)
+            if (min > 150) bright += 1
+          }
+        }
+        return bright
+      },
+      [ax, ay, bx, by]
+    )
+
   await rec.shot(small, 'petit-ecran-poignees')
   await small.evaluate(() => window.__carillon.advance(6))
   await tick(small)
   const faded = await small.evaluate(() => window.__carillon.stats().revealHandles)
   rec.assert('la révélation s’estompe ensuite', !faded, `revealHandles=${faded}`)
   await rec.shot(small, 'petit-ecran-repos')
+
+  /*
+   * La révélation est **à usage unique** : `touchHinted` (dans `input.ts`) ne se déclenche qu'au premier
+   * contact de la session. C'est voulu — c'est un dispositif d'apprentissage, et le rejouer à chaque
+   * contact en ferait du bruit visuel sur quinze barres. Cette unicité n'était vérifiée nulle part, et
+   * elle est ce qui a d'abord fait échouer la mesure de pixels : le second tap ne révélait rien, à raison.
+   */
+  await small.touchscreen.tap(160, 200)
+  await wait(120)
+  const revealedTwice = await small.evaluate(() => window.__carillon.stats().revealHandles)
+  rec.assert(
+    'un second contact ne rejoue pas la révélation (dispositif à usage unique)',
+    !revealedTwice,
+    `revealHandles=${revealedTwice}`
+  )
+
   await small.close()
 
   // À la souris, pas de révélation globale : le survol suffit, et l'afficher en permanence serait du bruit.
@@ -858,10 +939,44 @@ async function runVernis(browser, url, rec) {
       `points=${stats.trailPoints}`
     )
     // Le point clé : on raccourcit, on ne fige pas. Une scène immobile ne serait plus un instrument.
+    // Deux relevés, pas un. `balls > 0` mesurait la **présence** de billes : geler entièrement le
+    // monde en mouvement réduit laissait passer les quatre assertions de cette branche.
+    const before = await page.evaluate(() => ({
+      impacts: window.__carillon.stats().impacts,
+      positions: window.__carillon.balls().map((b) => [b.id, b.x, b.y]),
+    }))
+    await wait(350)
+    const after = await page.evaluate(() => ({
+      impacts: window.__carillon.stats().impacts,
+      positions: window.__carillon.balls().map((b) => [b.id, b.x, b.y]),
+    }))
+    const stillThere = after.positions.filter(([id]) =>
+      before.positions.some(([other]) => other === id)
+    )
+    const moved = stillThere.filter(([id, x, y]) => {
+      const was = before.positions.find(([other]) => other === id)
+      return was && Math.hypot(x - was[1], y - was[2]) > 1
+    })
+    const meanMove =
+      stillThere.reduce((sum, [id, x, y]) => {
+        const was = before.positions.find(([other]) => other === id)
+        return sum + (was ? Math.hypot(x - was[1], y - was[2]) : 0)
+      }, 0) / Math.max(stillThere.length, 1)
+    /*
+     * Déplacement **moyen**, pas « toutes les billes ont bougé » : une bille au sommet de son rebond
+     * parcourt légitimement moins d'un pixel en 350 ms (mesuré : 21 sur 22). Le seuil vient du domaine
+     * — en 350 ms de chute libre une bille couvre ~86 px, donc 20 px est très en dessous de tout
+     * mouvement réel et très au-dessus de zéro. Un monde figé donne exactement 0.
+     */
     rec.assert(
       `les billes continuent de tomber (reduce=${reduce})`,
-      stats.balls > 0,
-      `billes=${stats.balls}`
+      stats.balls > 0 && stillThere.length > 0 && meanMove > 20,
+      `déplacement moyen ${meanMove.toFixed(1)} px sur ${stillThere.length} billes`
+    )
+    rec.assert(
+      `la simulation continue de produire des impacts (reduce=${reduce})`,
+      after.impacts > before.impacts,
+      `${before.impacts} -> ${after.impacts} impacts`
     )
     rec.assert(
       reduce ? 'le mouvement réduit supprime les étincelles' : 'les impacts produisent des étincelles',
@@ -871,6 +986,46 @@ async function runVernis(browser, url, rec) {
     if (reduce) await rec.shot(page, 'mouvement-reduit')
     await page.close()
   }
+
+  /*
+   * F3 en pixels — la révélation doit se **voir**, pas seulement être vraie dans `stats()`.
+   *
+   * Ici la mesure de pixels est légitime là où elle échouait pour les étincelles : la scène est figée
+   * (une barre, zéro bille, zéro source), donc la seule différence entre les deux relevés **est** la
+   * poignée. Défaut trouvé en review : la première version dessinait un disque de 4,5 px à 22 %
+   * d'opacité sur un bout de barre déjà rond et lumineux — 570 pixels de différence sur 181 760, dont
+   * l'essentiel venait du liseré de la barre. Ça se lisait « les barres ont éclairci », pas « les barres
+   * ont des poignées ».
+   *
+   * Page **fraîche** : la révélation est à usage unique (cf. plus haut).
+   */
+  const ink = await browser.newPage()
+  rec.attachConsoleListeners(ink)
+  await ink.setViewport({ width: 320, height: 568, deviceScaleFactor: 2, isMobile: true, hasTouch: true })
+  await ink.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(ink)
+  const inkBar = await ink.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    c.addBar(70, 250, 240, 290)
+    return c.bars()[0]
+  })
+  // `wait`, pas `tick` : lire le canvas juste après un geste le lit **avant** le repaint qui contient
+  // la poignée — même piège que lire le DOM après un `.click()`.
+  await wait(150)
+  const inkAtRest = await endpointInk(ink, inkBar.ax, inkBar.ay, inkBar.bx, inkBar.by)
+  await ink.touchscreen.tap(160, 180)
+  await wait(150)
+  const inkRevealed = await endpointInk(ink, inkBar.ax, inkBar.ay, inkBar.bx, inkBar.by)
+  console.log(
+    `  [vernis] pixels blancs aux extrémités : ${inkAtRest} au repos, ${inkRevealed} pendant la révélation`
+  )
+  rec.assert(
+    'la révélation se voit réellement aux extrémités de la barre',
+    inkRevealed > inkAtRest * 3 + 200,
+    `${inkAtRest} -> ${inkRevealed} pixels blancs`
+  )
+  await ink.close()
 
   // F5 — les étincelles, en gros plan. Une gerbe se photographie **peu après** l'impact : à l'âge 0
   // toutes les étincelles sont encore au point de contact, cachées dans le halo de la bille, et la
@@ -886,6 +1041,16 @@ async function runVernis(browser, url, rec) {
     c.addBar(300, 420, 700, 470)
     c.dropBall(420, 60)
   })
+  /*
+   * Pas de mesure de pixels ici, et c'est un choix mesuré, pas un renoncement. Une couronne de 26 à
+   * 80 px autour du contact donnait 15 364 pixels clairs à l'impact et 13 751 après 70 ms — elle
+   * *baisse*, parce qu'elle est dominée par le halo de la barre qui s'éteint (420 ms) et par l'onde
+   * d'impact qui la traverse en s'étendant. Les étincelles y pèsent trop peu pour être isolées.
+   *
+   * La propriété qui les rendait invisibles est **géométrique et pure** : avec l'ancien réglage elles
+   * mouraient sans quitter le halo de la bille. Elle est donc assertée là où elle est exacte, en test
+   * unitaire (« la gerbe quitte le halo en 70 ms »), et la capture ci-dessous reste la preuve à l'œil.
+   */
   await spark.waitForFunction(() => window.__carillon.stats().impacts > 0, { timeout: 5000 })
   await wait(70)
   const sparkStats = await spark.evaluate(() => window.__carillon.stats())
@@ -938,6 +1103,40 @@ async function runResize(browser, url, rec) {
       stats.distinctPitches >= minPitches,
       `hauteurs=${stats.distinctPitches}`
     )
+
+    /*
+     * Le titre ne doit jamais être écrasé par la barre d'outils. Défaut trouvé en review : avec
+     * `minmax(0, 1fr) auto`, la piste `auto` se dimensionnait à son max-content (~690 px) et la colonne
+     * du titre tombait à **0 px** de 641 à ~860 px de large — « Carillon » tronqué en « Caril », passant
+     * sous les boutons, tagline à un mot par ligne. Aucune largeur du harnais n'entrait dans la bande.
+     *
+     * Corollaire qui rendait le défaut muet : `countUnderHud` ignore les rectangles de largeur nulle,
+     * donc `barsUnderHud` devenait structurellement aveugle au titre exactement là où il chevauchait
+     * l'aire de jeu.
+     */
+    const layout = await page.evaluate(() => {
+      const h1 = document.querySelector('.brand h1')
+      const tagline = document.querySelector('.tagline')
+      const rect = h1.getBoundingClientRect()
+      const lineHeight = Number.parseFloat(getComputedStyle(tagline).lineHeight)
+      const fontSize = Number.parseFloat(getComputedStyle(tagline).fontSize)
+      const line = Number.isFinite(lineHeight) ? lineHeight : fontSize * 1.2
+      return {
+        width: rect.width,
+        needed: h1.scrollWidth,
+        taglineLines: Math.round(tagline.getBoundingClientRect().height / line),
+      }
+    })
+    rec.assert(
+      `le titre n'est pas tronqué à ${width}x${height}`,
+      layout.needed <= Math.ceil(layout.width) + 1,
+      `${Math.round(layout.width)} px disponibles pour ${layout.needed} px nécessaires`
+    )
+    rec.assert(
+      `la tagline tient sur deux lignes au plus à ${width}x${height}`,
+      layout.taglineLines <= 2,
+      `${layout.taglineLines} lignes`
+    )
   }
 
   // C'est le chemin exact d'une rotation de téléphone ou d'un redimensionnement de fenêtre :
@@ -947,6 +1146,12 @@ async function runResize(browser, url, rec) {
   // Téléphone en paysage : la hauteur fond mais le HUD garde sa taille. C'est le viewport où les
   // barres passaient derrière le titre et les boutons.
   await assertAfterResize(844, 390, 5)
+  // La bande 641–859 px : c'est là que la colonne du titre s'effondrait. Trois points, dont les deux
+  // bords, parce qu'un seuil de mise en page se vérifie **de part et d'autre** de sa bascule.
+  await assertAfterResize(641, 800, 8)
+  await assertAfterResize(700, 800, 8)
+  await assertAfterResize(859, 800, 8)
+  await assertAfterResize(861, 800, 8)
 
   await rec.shot(page, 'resize')
   await page.close()

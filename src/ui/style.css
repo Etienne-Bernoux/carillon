@@ -38,7 +38,19 @@ body {
   position: fixed;
   inset: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  /*
+   * Le **plancher** de la colonne du titre est ce qui compte ici, pas son `1fr`. Avec
+   * `minmax(0, 1fr) auto`, la piste `auto` de la barre d'outils se dimensionne à son max-content
+   * (~690 px avec six libellés) et la colonne du titre tombe à **0 px** : mesuré de 641 px à ~860 px
+   * de large, « Carillon » était tronqué en « Caril » et passait sous les boutons, la tagline
+   * s'empilait à un mot par ligne (80 px de haut), et le dernier bouton se retrouvait seul sur une
+   * deuxième rangée. Exactement le blowout de grille que la règle `minmax(0, 1fr)` corrige d'un côté
+   * et que la piste `auto` reproduisait de l'autre.
+   *
+   * `min-content` comme minimum : le titre ne descend jamais sous la largeur de son mot le plus long,
+   * et c'est la barre d'outils qui se replie — elle sait le faire (`flex-wrap`), le titre non.
+   */
+  grid-template-columns: minmax(min-content, 1fr) auto;
   grid-template-rows: auto 1fr auto;
   gap: 12px;
   padding: clamp(14px, 2.4vw, 26px);
@@ -218,11 +230,40 @@ body {
 }
 
 /*
- * Empilement en une colonne : **seulement** sur écran étroit. Sur un écran bas et large, la barre
- * d'outils reste à côté du titre, où elle partage la hauteur au lieu de s'ajouter à elle — mesuré :
- * l'empiler y coûtait 14 points de surface de jeu.
+ * Deux rangées **assumées** : jusqu'à 740 px, et seulement là où l'on empile (cf. la règle suivante).
+ *
+ * Dans cette plage, les six contrôles ne tiennent pas sur une rangée — que ce soit six libellés en toutes
+ * lettres (~690 px) ou cinq pictogrammes plus le nom court de la gamme. Le retour à la ligne éjectait
+ * alors le **dernier** bouton, seul, sous les autres : ça se lit comme un bug de mise en page, pas
+ * comme une décision. On donne donc sa propre rangée à la gamme — le seul bouton dont le texte porte
+ * l'état, donc le seul qui ne peut pas se réduire — et les autres s'alignent dessous.
+ *
+ * Le seuil est mesuré, pas choisi : à 800 px les six tiennent sur une rangée (34 px de haut), à 700 px
+ * non (76 px). Au-delà de 740, cette règle coûterait donc une rangée au lieu d'en économiser une.
  */
-@media (max-width: 640px) {
+@media (max-width: 640px), (max-width: 740px) and (min-height: 481px) {
+  .toolbar button[data-control='tuning'] {
+    order: -1;
+    flex-basis: 100%;
+    justify-content: center;
+  }
+}
+
+/*
+ * Empilement en une colonne : écran **étroit** (toute hauteur), ou écran moyen **et haut**.
+ *
+ * Deux conditions, parce que deux problèmes différents. Sous 641 px, six contrôles ne tiennent jamais à
+ * côté du titre. Entre 641 et 860 px, ça ne dépend que du **mode** : en mode texte la barre d'outils
+ * fait ~690 px de large et étranglait la colonne du titre à 83 px (tagline à un mot par ligne) ; en
+ * mode icône elle fait ~280 px et tient sans gêner personne.
+ *
+ * Or le mode icône s'active aussi sur écran **bas** (`max-height: 480px`), c'est-à-dire un téléphone en
+ * paysage. D'où le `min-height: 481px` : sur ces écrans, la barre d'outils doit rester **à côté** du
+ * titre, où elle partage la hauteur au lieu de s'ajouter à elle. Mesuré à l'US6 : l'empiler y coûtait
+ * 14 points de surface de jeu, et la première version de cette règle — sans condition de hauteur —
+ * faisait passer une barre de la scène derrière le HUD à 740×375.
+ */
+@media (max-width: 640px), (max-width: 860px) and (min-height: 481px) {
   .overlay {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto 1fr auto auto;
@@ -238,21 +279,15 @@ body {
     justify-content: center;
   }
 
-  /*
-   * Deux rangées **assumées**. Les cinq pictogrammes tiennent largement sur une ligne, mais le bouton
-   * de gamme garde son nom court (seul texte porteur d'état) et ne rentre pas avec eux : à 320 px le
-   * retour à la ligne éjectait le dernier bouton, seul, sous les autres — ça se lit comme un bug de
-   * mise en page. On donne donc sa propre rangée à la gamme, au-dessus, et les icônes s'alignent
-   * dessous. Même hauteur totale, intention lisible.
-   */
-  .toolbar button[data-control='tuning'] {
-    order: -1;
-    flex-basis: 100%;
-    justify-content: center;
-  }
-
   .hint {
     grid-row: 4;
+  }
+}
+
+/* Le reste du traitement « petit écran » reste borné au mode icône. */
+@media (max-width: 640px) {
+
+  .hint {
     font-size: 0.76rem;
   }
 }

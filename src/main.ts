@@ -125,6 +125,12 @@ function dropBall(point: Vec2): number {
   return spawnBall(world, point, { x: 0, y: 0 }, { hue }).id
 }
 
+/**
+ * Dernier impact **audible**, exposé au harnais. C'est l'ancre d'une assertion de visibilité : sans un
+ * point de référence, « la gerbe se voit » ne peut se mesurer que par un œil humain sur une capture.
+ */
+let lastImpactPoint: Vec2 | null = null
+
 function handleImpacts(events: readonly ImpactEvent[]): void {
   for (const event of events) {
     // Résolution directe dans `world.bars` (quelques dizaines d'entrées, quelques impacts par
@@ -142,6 +148,7 @@ function handleImpacts(events: readonly ImpactEvent[]): void {
       pan: panForX(event.point.x, world.bounds.w),
     })
     effects.addImpact(event, bar.midi, gain)
+    lastImpactPoint = { x: event.point.x, y: event.point.y }
   }
 }
 
@@ -732,6 +739,9 @@ interface CarillonDebug {
   /** Géométrie des barres : sans elle, toute assertion sur un déplacement passerait par des pixels. */
   bars(): Array<{ id: number; ax: number; ay: number; bx: number; by: number; midi: number }>
   addEmitter(x: number, y: number, period?: number): number
+  /** positions et vitesses des billes vivantes — pour prouver qu'une scène **bouge**, pas qu'elle existe */
+  balls(): { id: number; x: number; y: number; vx: number; vy: number }[]
+  lastImpact(): { x: number; y: number } | null
   emitters(): Array<{ id: number; x: number; y: number; period: number }>
   stats(): {
     fps: number
@@ -786,6 +796,15 @@ window.__carillon = {
   setMuted: (muted) => audio.setMuted(muted),
   setTuning: (id) => applyTuning(tuningById(id)),
   undo,
+  balls: () =>
+    world.balls.map((ball) => ({
+      id: ball.id,
+      x: ball.pos.x,
+      y: ball.pos.y,
+      vx: ball.vel.x,
+      vy: ball.vel.y,
+    })),
+  lastImpact: () => (lastImpactPoint ? { ...lastImpactPoint } : null),
   addEmitter: (x, y, period) =>
     addEmitter(world, { x, y }, period === undefined ? {} : { period }).id,
   emitters: () =>
@@ -817,7 +836,7 @@ window.__carillon = {
     undoDepth: history.depth(),
     emitters: world.emitters.length,
     revealHandles: world.time < revealHandlesUntil,
-    reducedMotion: reducedMotionQuery.matches,
+    reducedMotion: renderer.isReducedMotion(),
     trailPoints: renderer.trailPointCount(),
     particles: effects.particles.length,
     maxParticles: MAX_PARTICLES,
