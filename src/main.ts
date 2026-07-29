@@ -23,14 +23,15 @@ import {
   runEmitters,
   runRespawns,
 } from './core/emitter'
-import { divisionAt, divisionLabel, gridTimeAfter, nearestDivisionIndex } from './core/clock'
+import { clampBpm, divisionAt, divisionLabel, gridTimeAfter } from './core/clock'
 import { createHistory } from './core/history'
-import { NATURES, cycleNature, natureLabel, rearm } from './core/nature'
+import { DEFAULT_NATURE, NATURES, cycleNature, natureLabel, rearm } from './core/nature'
 import type { BarNature } from './core/nature'
 import {
   DEFAULT_INSTRUMENT,
   INSTRUMENTS,
   decayForNote,
+  instrumentById,
   voiceForMidi,
 } from './core/instruments'
 import type { Instrument } from './core/instruments'
@@ -98,6 +99,8 @@ let userOwnsScene = false
 let tuning: Tuning = DEFAULT_TUNING
 /** Ordre **figé** : l'index de gamme voyage dans l'URL, le réordonner casserait les liens existants. */
 const TUNING_IDS = TUNINGS.map((candidate) => candidate.id)
+/** Ordre **figé** aussi : l'index d'instrument voyage dans l'URL depuis le format v2. */
+const INSTRUMENT_IDS = INSTRUMENTS.map((candidate) => candidate.id)
 let interaction: Interaction = { ...NO_INTERACTION }
 /**
  * Instrument courant. C'est un réglage de **lecture**, pas une donnée de scène : il ne change aucune
@@ -324,10 +327,17 @@ function sharedScene(): SharedScene {
   const width = world.bounds.w
   return {
     tuningId: tuning.id,
-    bars: world.bars.map((bar) => toSharedBar(bar.a, bar.b, area, width)),
+    // Le timbre et le tempo voyagent désormais avec la scène. Ils étaient restés dehors aux US7 et US8
+    // sans qu'on l'ait décidé : une scène reçue se rejouait à 96 BPM au carillon, quoi qu'ait choisi
+    // celui qui l'a partagée.
+    instrumentId: instrument.id,
+    bpm: world.bpm,
+    bars: world.bars.map((bar) =>
+      toSharedBar(bar.a, bar.b, area, width, Math.max(0, NATURES.indexOf(bar.nature)))
+    ),
     emitters: world.emitters.map((emitter) => ({
       ...toSharedPoint(emitter.pos, area, width),
-      period: emitterPeriod(emitter, world.bpm),
+      divisionIndex: emitter.divisionIndex,
     })),
   }
 }
@@ -335,21 +345,25 @@ function sharedScene(): SharedScene {
 function applyShared(shared: SharedScene): void {
   clearAll()
   applyTuning(tuningById(shared.tuningId))
+  applyInstrument(instrumentById(shared.instrumentId))
+  world.bpm = clampBpm(shared.bpm)
 
   const area = measureSceneArea(world.bounds)
   const width = world.bounds.w
   // Toute la géométrie vit dans `core/share-layout`, pur et testé : c'est là qu'on garantit qu'une
   // barre garde sa note, remplit l'écran et ne passe pas derrière le HUD.
   for (const bar of shared.bars) {
-    placeBar(...placeSharedBar(bar, area, width, MIN_BAR_LENGTH))
+    const placed = placeBar(...placeSharedBar(bar, area, width, MIN_BAR_LENGTH))
+    // La nature suit la barre. Un lien v1 n'en portait pas : son index vaut 0, donc « mur ».
+    if (placed) placed.nature = NATURES[bar.natureIndex] ?? DEFAULT_NATURE
   }
   // Scène neuve : les retours programmés par l'ancienne n'ont plus de point d'origine valide.
   world.respawns.length = 0
   for (const emitter of shared.emitters) {
+    // Le rapprochement d'une période v1 vers une division est fait par le décodeur : ici l'index est
+    // déjà celui de la grille, quelle que soit la version du lien.
     addEmitter(world, placeSharedEmitter(emitter, area, width), {
-      // Les liens déjà émis portent une période libre en secondes : on la rapproche de la division la
-      // plus voisine. Un lien ancien reste donc lisible, à la grille près.
-      divisionIndex: nearestDivisionIndex(emitter.period, world.bpm),
+      divisionIndex: emitter.divisionIndex,
     })
   }
   // La scène vient de quelqu'un d'autre : on ne la remplace pas par une scène surprise.
@@ -371,14 +385,14 @@ function detachFromLink(): void {
 }
 
 function shareLink(): string {
-  return `${location.origin}${location.pathname}${SHARE_KEY}${encodeScene(sharedScene(), TUNING_IDS)}`
+  return `${location.origin}${location.pathname}${SHARE_KEY}${encodeScene(sharedScene(), TUNING_IDS, INSTRUMENT_IDS)}`
 }
 
 /** Scène portée par l'URL, ou `null`. Un lien illisible rend `null`, jamais une erreur. */
 function sceneFromUrl(): SharedScene | null {
   const hash = location.hash
   if (!hash.startsWith(SHARE_KEY)) return null
-  return decodeScene(hash.slice(SHARE_KEY.length), TUNING_IDS)
+  return decodeScene(hash.slice(SHARE_KEY.length), TUNING_IDS, INSTRUMENT_IDS)
 }
 
 let announceTimer: ReturnType<typeof setTimeout> | null = null

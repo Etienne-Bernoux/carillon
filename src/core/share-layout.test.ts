@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { INSTRUMENTS } from './instruments'
 import { DEFAULT_TUNING, midiForLength } from './music'
 import { createRng } from './rng'
 import { decodeScene, encodeScene } from './share'
@@ -7,6 +8,7 @@ import type { LayoutArea } from './share-layout'
 import type { Vec2 } from './types'
 
 const MIN_BAR_LENGTH = 24
+const INSTRUMENT_IDS = INSTRUMENTS.map((instrument) => instrument.id)
 const TUNING_IDS = [DEFAULT_TUNING.id]
 
 /** Écrans réels, avec leurs zones de jeu mesurées (cf. `scene-area.ts`). */
@@ -42,8 +44,19 @@ function roundTrip(
 ): Array<[Vec2, Vec2]> {
   const shared = drawn.map(([a, b]) => toSharedBar(a, b, from.area, from.width))
   const decoded = decodeScene(
-    encodeScene({ tuningId: DEFAULT_TUNING.id, bars: shared, emitters: [] }, TUNING_IDS),
+    encodeScene(
+      {
+        tuningId: DEFAULT_TUNING.id,
+        instrumentId: INSTRUMENT_IDS[0] ?? '',
+        bpm: 96,
+        bars: shared,
+        emitters: [],
+      },
+      TUNING_IDS,
+      INSTRUMENT_IDS,
+    ),
     TUNING_IDS,
+    INSTRUMENT_IDS,
   )
   expect(decoded).not.toBeNull()
   return (decoded?.bars ?? []).map((bar) => placeSharedBar(bar, to.area, to.width, MIN_BAR_LENGTH))
@@ -136,7 +149,7 @@ describe('recadrage : rien ne sort de la zone', () => {
   it('étire AVANT de recadrer : une barre courte collée au bord haut reste dans la zone', () => {
     // C'est le défaut trouvé en revue : recadrer puis étirer faisait ressortir la barre sous le HUD.
     // Milieu au sommet de la zone, longueur minuscule.
-    const bar = { mx: 0.5, my: 0, len: 0.005, angle: Math.PI / 2 }
+    const bar = { mx: 0.5, my: 0, len: 0.005, angle: Math.PI / 2 , natureIndex: 0}
     const [a, b] = placeSharedBar(bar, PHONE.area, PHONE.width, MIN_BAR_LENGTH)
 
     expect(Math.min(a.y, b.y)).toBeGreaterThanOrEqual(PHONE.area.top - 0.5)
@@ -144,7 +157,7 @@ describe('recadrage : rien ne sort de la zone', () => {
   })
 
   it('garde une barre plus longue que la zone plutôt que de la raccourcir', () => {
-    const bar = { mx: 0.5, my: 0.5, len: 0.98, angle: 0 }
+    const bar = { mx: 0.5, my: 0.5, len: 0.98, angle: 0 , natureIndex: 0}
     const [a, b] = placeSharedBar(bar, PHONE.area, PHONE.width, MIN_BAR_LENGTH)
     // Elle dépasse la zone en largeur : on ne peut pas la rentrer, mais sa longueur — donc sa note —
     // ne doit pas être sacrifiée.
@@ -157,7 +170,7 @@ describe('sources', () => {
     const point: Vec2 = { x: 640, y: 300 }
     const shared = toSharedPoint(point, DESKTOP.area, DESKTOP.width)
 
-    const onPhone = placeSharedEmitter({ ...shared, period: 0.9 }, PHONE.area, PHONE.width)
+    const onPhone = placeSharedEmitter({ ...shared, divisionIndex: 1 }, PHONE.area, PHONE.width)
     // Milieu horizontal chez l'auteur ⇒ milieu horizontal chez le destinataire.
     expect(onPhone.x / PHONE.width).toBeCloseTo(point.x / DESKTOP.width, 6)
     // Et la même fraction de hauteur de zone.
@@ -173,7 +186,7 @@ describe('sources', () => {
       [0, 0],
       [1, 1],
     ]) {
-      const placed = placeSharedEmitter({ x: x ?? 0, y: y ?? 0, period: 0.9 }, PHONE.area, PHONE.width)
+      const placed = placeSharedEmitter({ x: x ?? 0, y: y ?? 0, divisionIndex: 1 }, PHONE.area, PHONE.width)
       expect(placed.x).toBeGreaterThanOrEqual(PHONE.area.left)
       expect(placed.x).toBeLessThanOrEqual(PHONE.area.right)
       expect(placed.y).toBeGreaterThanOrEqual(PHONE.area.top)

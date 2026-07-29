@@ -28,12 +28,21 @@ function areaHeight(area: LayoutArea): number {
  * note se conserve d'un écran à l'autre ; l'ordonnée du milieu suit la hauteur disponible, donc la
  * scène remplit l'écran du destinataire au lieu de s'écraser en bandeau.
  */
-export function toSharedBar(a: Vec2, b: Vec2, area: LayoutArea, width: number): SharedBar {
+export function toSharedBar(
+  a: Vec2,
+  b: Vec2,
+  area: LayoutArea,
+  width: number,
+  natureIndex = 0
+): SharedBar {
   return {
     mx: (a.x + b.x) / 2 / width,
     my: ((a.y + b.y) / 2 - area.top) / areaHeight(area),
     len: Math.hypot(b.x - a.x, b.y - a.y) / width,
     angle: Math.atan2(b.y - a.y, b.x - a.x),
+    // La nature voyage avec la barre. Par défaut « mur », l'index 0 — donc une barre construite sans
+    // précision reste ce qu'elle a toujours été.
+    natureIndex,
   }
 }
 

@@ -1,3 +1,6 @@
+import { DEFAULT_BPM, DIVISIONS, MAX_BPM, MIN_BPM, clampBpm, nearestDivisionIndex } from './clock'
+import { NATURES } from './nature'
+
 
 /**
  * Encodage d'une scène pour la mettre dans une URL. Pur, déterministe, sans DOM.
@@ -17,8 +20,17 @@
  *    permettrait un lien incohérent, où une barre sonnerait autre chose que sa longueur.
  */
 
-/** Version du format. Un lien d'une autre version est ignoré, jamais une erreur. */
-const VERSION = '1'
+/**
+ * Version du format.
+ *
+ * On **écrit** toujours la version courante et on **lit** toutes les versions connues : un lien déjà émis
+ * doit continuer de s'ouvrir, sinon partager une scène serait une promesse à durée limitée. La v1
+ * n'encodait ni la nature des barres, ni le tempo, ni l'instrument — un lien v1 se relit donc avec des
+ * murs, le tempo par défaut et l'instrument par défaut. Ce qui manque prend sa valeur par défaut ;
+ * jamais une valeur inventée.
+ */
+const VERSION = '2'
+const KNOWN_VERSIONS = ['1', '2']
 /** 12 bits par coordonnée : 1/4096 de la zone, soit 0,3 px sur un écran de 1280. */
 const QUANTUM = 4096
 const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
@@ -30,10 +42,16 @@ const PERIOD_STEPS = 64
 const PERIOD_MAX = 4
 /** Une longueur peut valoir jusqu'à une largeur d'écran entière. */
 const LEN_RANGE = 1
-/** version (1) + gamme (1) + compte de barres (2) + compte de sources (2) */
-const HEADER = 6
+/** v1 : version (1) + gamme (1) + compte de barres (2) + compte de sources (2) */
+const HEADER_V1 = 6
+/** v2 : + instrument (1) + tempo (1) */
+const HEADER_V2 = 8
+/** 6 bits de tempo entre MIN_BPM et MAX_BPM, soit une résolution d'environ 1,7 BPM */
+const TEMPO_STEPS = 64
 
 export interface SharedBar {
+  /** index dans `NATURES` (cf. `nature.ts`) ; absent d'un lien v1, qui vaut alors « mur » */
+  natureIndex: number
   /** milieu : fraction de la largeur du viewport */
   mx: number
   /** milieu : fraction de la hauteur de la zone de jeu */
@@ -47,11 +65,20 @@ export interface SharedBar {
 export interface SharedEmitter {
   x: number
   y: number
-  period: number
+  /**
+   * Index dans `DIVISIONS` (cf. `clock.ts`). Un lien v1 encodait une **période libre en secondes** : à la
+   * relecture on la rapproche de la division la plus voisine, ce qui garde le lien lisible à la grille
+   * près plutôt que de le rejeter.
+   */
+  divisionIndex: number
 }
 
 export interface SharedScene {
   tuningId: string
+  /** identifiant d'instrument ; par défaut sur un lien v1 */
+  instrumentId: string
+  /** tempo en battements par minute ; par défaut sur un lien v1 */
+  bpm: number
   bars: SharedBar[]
   emitters: SharedEmitter[]
 }
@@ -108,12 +135,22 @@ function decode6(text: string, at: number): number | null {
  */
 const MIN_PERIOD = 0.15
 
-function encodePeriod(period: number): string {
-  const span = PERIOD_MAX - MIN_PERIOD
-  const ratio = (Math.max(MIN_PERIOD, Math.min(PERIOD_MAX, period)) - MIN_PERIOD) / span
-  return encode6(ratio * (PERIOD_STEPS - 1))
+function encodeTempo(bpm: number): string {
+  const span = MAX_BPM - MIN_BPM
+  const ratio = (clampBpm(bpm) - MIN_BPM) / span
+  return encode6(ratio * (TEMPO_STEPS - 1))
 }
 
+function decodeTempo(text: string, at: number): number | null {
+  const raw = decode6(text, at)
+  if (raw === null) return null
+  return MIN_BPM + (raw / (TEMPO_STEPS - 1)) * (MAX_BPM - MIN_BPM)
+}
+
+/*
+ * `encodePeriod` a été retiré : la v2 n'écrit plus de période libre, seulement un index de division.
+ * `decodePeriod` reste, parce qu'il faut continuer de **lire** les liens v1.
+ */
 function decodePeriod(text: string, at: number): number | null {
   const raw = decode6(text, at)
   if (raw === null) return null
@@ -121,22 +158,35 @@ function decodePeriod(text: string, at: number): number | null {
 }
 
 /** Liste des gammes connues, dans un ordre **figé** : l'index voyage dans l'URL. */
-export function encodeScene(scene: SharedScene, tuningIds: readonly string[]): string {
+export function encodeScene(
+  scene: SharedScene,
+  tuningIds: readonly string[],
+  instrumentIds: readonly string[]
+): string {
   const tuningIndex = Math.max(0, tuningIds.indexOf(scene.tuningId))
+  const instrumentIndex = Math.max(0, instrumentIds.indexOf(scene.instrumentId))
   const bars = scene.bars.slice(0, MAX_BARS)
   const emitters = scene.emitters.slice(0, MAX_EMITTERS)
 
-  const parts = [VERSION, encode6(tuningIndex), encodeInt12(bars.length), encodeInt12(emitters.length)]
+  const parts = [
+    VERSION,
+    encode6(tuningIndex),
+    encode6(instrumentIndex),
+    encodeTempo(scene.bpm),
+    encodeInt12(bars.length),
+    encodeInt12(emitters.length),
+  ]
   for (const bar of bars) {
     parts.push(
       encode12(bar.mx),
       encode12(bar.my),
       encode12(bar.len / LEN_RANGE),
       encode12(normalizeAngle(bar.angle) / Math.PI),
+      encode6(bar.natureIndex),
     )
   }
   for (const emitter of emitters) {
-    parts.push(encode12(emitter.x), encode12(emitter.y), encodePeriod(emitter.period))
+    parts.push(encode12(emitter.x), encode12(emitter.y), encode6(emitter.divisionIndex))
   }
   return parts.join('')
 }
@@ -146,48 +196,86 @@ export function encodeScene(scene: SharedScene, tuningIds: readonly string[]): s
  * caractère hors alphabet — plutôt que de jeter : c'est la seule entrée non maîtrisée du produit, et
  * un lien trafiqué doit simplement rendre la scène d'accueil.
  */
-export function decodeScene(text: string, tuningIds: readonly string[]): SharedScene | null {
+export function decodeScene(
+  text: string,
+  tuningIds: readonly string[],
+  instrumentIds: readonly string[]
+): SharedScene | null {
   // `typeof` est redondant pour le typage, mais l'entrée vient d'une URL : à l'exécution ce peut être
   // n'importe quoi.
-  if (typeof text !== 'string' || text.length < HEADER || text[0] !== VERSION) return null
+  if (typeof text !== 'string' || text.length < HEADER_V1) return null
+  const version = text[0] ?? ''
+  if (!KNOWN_VERSIONS.includes(version)) return null
+
+  const v2 = version === '2'
+  const header = v2 ? HEADER_V2 : HEADER_V1
+  if (text.length < header) return null
 
   const tuningIndex = decode6(text, 1)
-  const barCount = decodeInt12(text, 2)
-  const emitterCount = decodeInt12(text, 4)
-  if (tuningIndex === null || barCount === null || emitterCount === null) return null
+  const instrumentIndex = v2 ? decode6(text, 2) : 0
+  const bpm = v2 ? decodeTempo(text, 3) : DEFAULT_BPM
+  const barCount = decodeInt12(text, v2 ? 4 : 2)
+  const emitterCount = decodeInt12(text, v2 ? 6 : 4)
+  if (tuningIndex === null || instrumentIndex === null || bpm === null) return null
+  if (barCount === null || emitterCount === null) return null
   if (barCount > MAX_BARS || emitterCount > MAX_EMITTERS) return null
 
-  const expected = HEADER + barCount * 8 + emitterCount * 5
-  if (text.length !== expected) return null
+  const barSize = v2 ? 9 : 8
+  const emitterSize = 5
+  if (text.length !== header + barCount * barSize + emitterCount * emitterSize) return null
 
   const bars: SharedBar[] = []
-  let at = HEADER
+  let at = header
   for (let i = 0; i < barCount; i++) {
     const mx = decode12(text, at)
     const my = decode12(text, at + 2)
     const len = decode12(text, at + 4)
     const angle = decode12(text, at + 6)
-    if (mx === null || my === null || len === null || angle === null) return null
-    bars.push({ mx, my, len: len * LEN_RANGE, angle: angle * Math.PI })
-    at += 8
+    // Un lien v1 ne porte pas de nature : ses barres sont des murs, le comportement historique.
+    const natureIndex = v2 ? decode6(text, at + 8) : 0
+    if (mx === null || my === null || len === null || angle === null || natureIndex === null) {
+      return null
+    }
+    bars.push({
+      mx,
+      my,
+      len: len * LEN_RANGE,
+      angle: angle * Math.PI,
+      natureIndex: natureIndex < NATURES.length ? natureIndex : 0,
+    })
+    at += barSize
   }
 
   const emitters: SharedEmitter[] = []
   for (let i = 0; i < emitterCount; i++) {
     const x = decode12(text, at)
     const y = decode12(text, at + 2)
-    const period = decodePeriod(text, at + 4)
-    if (x === null || y === null || period === null) return null
-    emitters.push({ x, y, period })
-    at += 5
+    if (x === null || y === null) return null
+    if (v2) {
+      const divisionIndex = decode6(text, at + 4)
+      if (divisionIndex === null) return null
+      emitters.push({ x, y, divisionIndex: divisionIndex < DIVISIONS.length ? divisionIndex : 1 })
+    } else {
+      // v1 : période libre en secondes, rapprochée de la division la plus voisine.
+      const period = decodePeriod(text, at + 4)
+      if (period === null) return null
+      emitters.push({ x, y, divisionIndex: nearestDivisionIndex(period, bpm) })
+    }
+    at += emitterSize
   }
 
-  return { tuningId: tuningIds[tuningIndex] ?? tuningIds[0] ?? '', bars, emitters }
+  return {
+    tuningId: tuningIds[tuningIndex] ?? tuningIds[0] ?? '',
+    instrumentId: instrumentIds[instrumentIndex] ?? instrumentIds[0] ?? '',
+    bpm,
+    bars,
+    emitters,
+  }
 }
 
 /** Taille d'URL qu'occuperait cette scène, pour vérifier le budget sans construire l'URL. */
 export function encodedLength(barCount: number, emitterCount: number): number {
-  return HEADER + Math.min(barCount, MAX_BARS) * 8 + Math.min(emitterCount, MAX_EMITTERS) * 5
+  return HEADER_V2 + Math.min(barCount, MAX_BARS) * 9 + Math.min(emitterCount, MAX_EMITTERS) * 5
 }
 
 export { MAX_BARS, MAX_EMITTERS }
