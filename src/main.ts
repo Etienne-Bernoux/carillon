@@ -25,7 +25,8 @@ import {
 } from './core/emitter'
 import { divisionAt, divisionLabel, gridTimeAfter, nearestDivisionIndex } from './core/clock'
 import { createHistory } from './core/history'
-import { cycleNature, natureLabel } from './core/nature'
+import { NATURES, cycleNature, natureLabel, rearm } from './core/nature'
+import type { BarNature } from './core/nature'
 import {
   DEFAULT_INSTRUMENT,
   INSTRUMENTS,
@@ -900,6 +901,11 @@ interface CarillonDebug {
   /** air composé actuellement posé, ou `null` si la scène n'en porte pas */
   composedMelody(): { label: string; notes: number } | null
   /**
+   * Pose l'état d'une barre. **Un seul** accès pour la nature, la vie restante et l'absence : les trois
+   * ne s'atteignent autrement qu'en jouant, ce qui ne permet pas de montrer les cinq états côte à côte.
+   */
+  setBar(id: number, patch: { nature?: string; hitsLeft?: number; absentUntil?: number }): boolean
+  /**
    * Rend hors ligne une salve dense sur l'instrument courant et renvoie ce qui en sort réellement.
    * `notes > 0` compte des appels, pas des décibels : c'est la seule mesure qui puisse dire « ça ne
    * sature pas » sans oreille humaine.
@@ -981,6 +987,17 @@ window.__carillon = {
     })),
   lastImpact: () => (lastImpactPoint ? { ...lastImpactPoint } : null),
   composedMelody: () => (composedMelody ? { ...composedMelody } : null),
+  setBar: (id, patch) => {
+    const bar = world.bars.find((candidate) => candidate.id === id)
+    if (!bar) return false
+    if (patch.nature && NATURES.includes(patch.nature as BarNature)) {
+      bar.nature = patch.nature as BarNature
+      rearm(bar)
+    }
+    if (patch.hitsLeft !== undefined) bar.hitsLeft = patch.hitsLeft
+    if (patch.absentUntil !== undefined) bar.absentUntil = patch.absentUntil
+    return true
+  },
   measureAudio: async (voices = 24) => {
     // Une salve **simultanée** au gain maximal, étalée sur toute l'étendue : c'est le pire cas
     // réaliste (une pluie de billes sur une rangée de barres), et c'est là que la saturation arrive.

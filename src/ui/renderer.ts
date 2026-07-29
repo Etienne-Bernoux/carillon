@@ -8,6 +8,7 @@ import {
 } from '../core/particles'
 import type { Particle } from '../core/particles'
 import { emitterPeriod } from '../core/emitter'
+import { isPresent } from '../core/nature'
 import { BAR_THICKNESS } from '../core/physics'
 import { createRng } from '../core/rng'
 import type { Bounds, ImpactEvent, Vec2, World } from '../core/types'
@@ -228,19 +229,59 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
         continue
       }
 
+      // Barre éphémère absente : un fantôme, pour qu'on sache qu'elle va revenir. Sans lui, elle
+      // disparaîtrait purement et le motif semblerait s'être cassé.
+      if (!isPresent(bar, world.time)) {
+        drawGhost(bar, hue)
+        continue
+      }
+
       if (hot > 0) {
         base.strokeStyle = `hsla(${hue}, 100%, 70%, ${0.14 + hot * 0.3})`
         base.lineWidth = BAR_THICKNESS + 10 + hot * 14
+        // Pointillé aussi sur la lueur : pleine, elle rebouchait les creux au moment même de l'impact,
+        // donc exactement quand l'œil regarde la barre.
+        if (bar.nature === 'ephemeral') {
+          base.setLineDash(dashForHits(bar.hitsLeft))
+          base.lineCap = 'butt'
+        }
         strokeBar(bar.a, bar.b)
+        base.setLineDash([])
+        base.lineCap = 'round'
       }
 
+      /*
+       * Le **trait coloré** porte la nature, pas le cœur blanc. Première version : le pointillé était sur
+       * le cœur de 1,6 px, totalement invisible sous les 7 px de couleur — sur la capture, une barre
+       * éphémère était indiscernable d'un mur. C'est le trait le plus épais qui décide de la lecture.
+       */
       base.strokeStyle = `hsl(${hue}, ${60 + hot * 30}%, ${44 + hot * 40}%)`
       base.lineWidth = BAR_THICKNESS
+      if (bar.nature === 'ephemeral') {
+        base.setLineDash(dashForHits(bar.hitsLeft))
+        base.lineCap = 'butt'
+      }
       strokeBar(bar.a, bar.b)
+      base.setLineDash([])
+      base.lineCap = 'round'
 
+      /*
+       * Le cœur blanc porte la **nature** de la barre, parce que c'est le trait le plus lisible à
+       * distance : plein pour un mur, pointillé qui s'érode pour une éphémère. Le trampoline, lui, prend
+       * des crans perpendiculaires — un pointillé de plus ne se distinguerait pas du premier.
+       */
       base.strokeStyle = `hsla(0, 0%, 100%, ${0.12 + hot * 0.65})`
       base.lineWidth = 1.6
+      // Même pointillé que le trait coloré : un cœur plein reboucherait les trous et effacerait la nature.
+      if (bar.nature === 'ephemeral') {
+        base.setLineDash(dashForHits(bar.hitsLeft))
+        base.lineCap = 'butt'
+      }
       strokeBar(bar.a, bar.b)
+      base.setLineDash([])
+      base.lineCap = 'round'
+
+      if (bar.nature === 'trampoline') drawSpring(bar, hot)
 
       if (bar.id === interaction.hoveredBarId) drawGrabHandles(bar, interaction.hoveredKind, 'hover')
       else if (interaction.revealHandles) drawGrabHandles(bar, null, 'reveal')
@@ -306,6 +347,61 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
     base.lineWidth = BAR_THICKNESS
     strokeBar(bar.a, bar.b)
     base.restore()
+  }
+
+  /**
+   * Motif de pointillé d'une barre éphémère : il **s'érode** à mesure qu'elle encaisse. C'est ce qui
+   * répond à « la barre montre où elle en est » sans texte ni survol — la matière du trait se raréfie.
+   */
+  function dashForHits(hitsLeft: number): number[] {
+    /*
+     * Les intervalles sont **plus larges que l'épaisseur du trait** (7 px), sinon les bouts arrondis les
+     * rebouchent : mesuré, un pointillé [16, 5] ne retirait que 4 % de matière et une barre éphémère
+     * restait indiscernable d'un mur. Les barres ajourées sont d'ailleurs tracées à bouts francs.
+     */
+    if (hitsLeft >= 3) return [15, 11]
+    if (hitsLeft === 2) return [9, 14]
+    return [4, 18]
+  }
+
+  /**
+   * Crans perpendiculaires d'un trampoline. Un ressort se lit à ses spires : des traits en travers de la
+   * barre disent « ça repousse » là où un pointillé se confondrait avec l'éphémère, et où une couleur
+   * différente entrerait en conflit avec la teinte, qui porte déjà la **hauteur**.
+   */
+  function drawSpring(bar: { a: Vec2; b: Vec2 }, hot: number): void {
+    const dx = bar.b.x - bar.a.x
+    const dy = bar.b.y - bar.a.y
+    const length = Math.hypot(dx, dy)
+    if (length < 1) return
+    const ux = dx / length
+    const uy = dy / length
+    const nx = -uy
+    const ny = ux
+    const count = Math.max(3, Math.min(9, Math.round(length / 26)))
+    const reach = BAR_THICKNESS * 0.9
+
+    base.strokeStyle = `hsla(0, 0%, 100%, ${0.34 + hot * 0.5})`
+    base.lineWidth = 1.5
+    base.beginPath()
+    for (let i = 0; i < count; i += 1) {
+      // Répartis à l'intérieur, sans toucher les extrémités : là se trouvent les poignées de préhension.
+      const t = (i + 1) / (count + 1)
+      const px = bar.a.x + dx * t
+      const py = bar.a.y + dy * t
+      base.moveTo(px - nx * reach, py - ny * reach)
+      base.lineTo(px + nx * reach, py + ny * reach)
+    }
+    base.stroke()
+  }
+
+  /** Barre éphémère absente : contour pointillé, sans lueur ni couleur pleine. Elle reviendra. */
+  function drawGhost(bar: { a: Vec2; b: Vec2 }, hue: number): void {
+    base.setLineDash([5, 9])
+    base.strokeStyle = `hsla(${hue}, 60%, 70%, 0.22)`
+    base.lineWidth = 2
+    strokeBar(bar.a, bar.b)
+    base.setLineDash([])
   }
 
   function strokeBar(a: Vec2, b: Vec2): void {

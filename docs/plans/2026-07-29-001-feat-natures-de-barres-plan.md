@@ -9,6 +9,8 @@ execution: code
 
 # Natures de barres - Plan
 
+> Statut : **livrée** pour le cœur, le geste et le rendu. Reste le format de partage v2 (R10).
+
 ## Goal Capsule
 
 - **Objectif** : donner une nature aux barres — mur, trampoline, éphémère — pour qu'un motif **évolue** au lieu de se répéter à l'identique.
@@ -79,6 +81,20 @@ Les types de barres figuraient au backlog de l'US3 et y ont été reportés — 
 **Le partage**
 
 - R10. La nature des barres, le tempo et l'instrument voyagent dans le lien de partage. Un lien émis avant ce travail reste lisible : ses barres sont des murs, son tempo et son instrument sont ceux par défaut.
+
+### Résultats mesurés
+
+| # | Résultat |
+|---|---|
+| R1–R5 | Cœur pur, 17 tests, 10 mutations tuées. Le trampoline est borné par la hauteur **au-dessus de l'impact** et mesuré sur le bord haut de la bille, pas son centre — posée sur le point de contact, la borne la laissait à moitié hors de l'écran (centre à y = 1 ; désormais 25). |
+| R6, R7 | Appui long sur une barre, annulable. Le tap reste l'écoute : un appui long ne produit **aucune** note, vérifié en unitaire et dans la page. |
+| R8, R9 | Cinq états distinguables sans texte ni survol, **mesurés en pixels** sur scène figée : mur 11 348 unités de matière, trampoline 11 600 (plus 252 de crans blancs contre 0), éphémère 6 580, usée 2 128, absente 0. |
+| R10 | **Non fait** — format de partage v2. |
+
+Deux corrections que la capture a imposées, et qu'aucune assertion n'aurait trouvées seule :
+
+1. Le pointillé était d'abord porté par le **cœur blanc** de 1,6 px, invisible sous les 7 px de couleur : une barre éphémère était indiscernable d'un mur. C'est le trait le plus épais qui décide de la lecture.
+2. Les intervalles étaient plus **courts** que l'épaisseur du trait, et les bouts arrondis les rebouchaient : le pointillé ne retirait que 4 % de matière. Les barres ajourées sont maintenant tracées à bouts francs, avec des intervalles plus larges que le trait — 42 % de matière retirée.
 
 ### Acceptance Examples
 
