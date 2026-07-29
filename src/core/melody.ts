@@ -178,8 +178,10 @@ function cloneWorld(world: World): World {
     bounds: { ...world.bounds },
     time: world.time,
     bpm: world.bpm,
-    respawns: world.respawns.map((respawn) => ({ ...respawn, pos: { ...respawn.pos } })),
+    respawns: world.respawns.map((respawn) => ({ ...respawn, vel: { ...respawn.vel } })),
+    droppers: world.droppers.map((dropper) => ({ ...dropper, pos: { ...dropper.pos } })),
     nextBallId: world.nextBallId,
+    nextDropperId: world.nextDropperId,
     nextBarId: world.nextBarId,
     nextEmitterId: world.nextEmitterId,
   }

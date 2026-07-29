@@ -32,6 +32,12 @@ export interface Ball {
    */
   readonly launchVel: Vec2
   /**
+   * Point de lâcher auquel cette bille revient, ou `-1` si elle ne revient pas. On garde un
+   * **identifiant** et non une position : déplacer le point doit déplacer le retour, et le supprimer
+   * doit annuler le retour.
+   */
+  readonly dropperId: number
+  /**
    * Une bille lâchée à la main **revient** quand elle sort de l'écran ; une bille née d'une source,
    * non — sa source la ré-émet déjà, et la recycler doublerait sa cadence.
    */
@@ -99,12 +105,27 @@ export interface Bounds {
   h: number
 }
 
+/**
+ * Point de lâcher d'une bille recyclée : **visible et manipulable**.
+ *
+ * Avant, l'origine d'une bille recyclée vivait sur la bille elle-même : rien ne la montrait, rien ne
+ * permettait de la déplacer ni de la supprimer. Un geste créait donc une source de son **permanente et
+ * invisible**, alors que la stratégie du produit interdit l'état caché. C'est un défaut de principe, pas
+ * une fonctionnalité manquante.
+ */
+export interface Dropper {
+  readonly id: number
+  pos: Vec2
+  /** teinte de la bille qu'il relâche ; le rendu s'en sert, la physique l'ignore */
+  readonly hue: number
+}
+
 /** Retour programmé d'une bille recyclée, sur un instant de grille. */
 export interface Respawn {
   at: number
-  pos: Vec2
+  /** point de lâcher d'où la bille repartira ; sa position est lue **au moment du retour** */
+  dropperId: number
   vel: Vec2
-  hue: number
 }
 
 export interface World {
@@ -127,7 +148,10 @@ export interface World {
    * aurait rien sur quoi porter l'attente.
    */
   respawns: Respawn[]
+  /** points de lâcher : l'état, autrefois caché, des billes qui reviennent */
+  droppers: Dropper[]
   nextBallId: number
+  nextDropperId: number
   nextBarId: number
   nextEmitterId: number
 }

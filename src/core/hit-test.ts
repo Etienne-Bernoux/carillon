@@ -1,4 +1,4 @@
-import type { Bar, Emitter, Vec2 } from './types'
+import type { Bar, Dropper, Emitter, Vec2 } from './types'
 
 /** Ce qu'on a attrapé sur une barre : son corps, ou l'une de ses deux extrémités. */
 export type GrabKind = 'body' | 'endA' | 'endB'
@@ -19,7 +19,15 @@ export interface EmitterHit {
  * Ce que le pointeur attrape. Généralisé en US4 : une entité qu'on ne pourrait ni déplacer ni jeter
  * réintroduirait exactement la frustration que l'US3 a corrigée pour les barres.
  */
-export type Grab = ({ target: 'bar' } & BarHit) | ({ target: 'emitter' } & EmitterHit)
+export interface DropperHit {
+  dropper: Dropper
+  distance: number
+}
+
+export type Grab =
+  | ({ target: 'bar' } & BarHit)
+  | ({ target: 'emitter' } & EmitterHit)
+  | ({ target: 'dropper' } & DropperHit)
 
 export interface HitRadii {
   /** rayon de préhension du corps */
@@ -115,6 +123,7 @@ export function hitTestWorld(
   emitters: readonly Emitter[],
   point: Vec2,
   radii: HitRadii = MOUSE_RADII,
+  droppers: readonly Dropper[] = [],
 ): Grab | null {
   const bar = hitTestBars(bars, point, radii)
   const barScore = bar ? grabScore(bar) : Number.POSITIVE_INFINITY
@@ -127,8 +136,21 @@ export function hitTestWorld(
     }
   }
 
-  if (emitterHit && emitterHit.distance - EMITTER_BIAS < barScore) {
-    return { target: 'emitter', ...emitterHit }
+  // Le point de lâcher partage le rayon et le biais des sources : ce sont deux petites cibles
+  // ponctuelles, et les départager autrement ferait gagner la plus lointaine.
+  let dropperHit: DropperHit | null = null
+  for (const dropper of droppers) {
+    const distance = Math.hypot(point.x - dropper.pos.x, point.y - dropper.pos.y)
+    if (distance <= radii.emitter && (!dropperHit || distance < dropperHit.distance)) {
+      dropperHit = { dropper, distance }
+    }
   }
+
+  const emitterScore = emitterHit ? emitterHit.distance - EMITTER_BIAS : Number.POSITIVE_INFINITY
+  const dropperScore = dropperHit ? dropperHit.distance - EMITTER_BIAS : Number.POSITIVE_INFINITY
+  const best = Math.min(barScore, emitterScore, dropperScore)
+
+  if (dropperHit && dropperScore === best) return { target: 'dropper', ...dropperHit }
+  if (emitterHit && emitterScore === best) return { target: 'emitter', ...emitterHit }
   return bar ? { target: 'bar', ...bar } : null
 }

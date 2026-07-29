@@ -29,8 +29,8 @@ import { NATURES } from './nature'
  * murs, le tempo par défaut et l'instrument par défaut. Ce qui manque prend sa valeur par défaut ;
  * jamais une valeur inventée.
  */
-const VERSION = '2'
-const KNOWN_VERSIONS = ['1', '2']
+const VERSION = '3'
+const KNOWN_VERSIONS = ['1', '2', '3']
 /** 12 bits par coordonnée : 1/4096 de la zone, soit 0,3 px sur un écran de 1280. */
 const QUANTUM = 4096
 const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
@@ -46,6 +46,10 @@ const LEN_RANGE = 1
 const HEADER_V1 = 6
 /** v2 : + instrument (1) + tempo (1) */
 const HEADER_V2 = 8
+/** v3 : + compte de points de lâcher (2) */
+const HEADER_V3 = 10
+/** Au-delà, l'URL cesse d'être partageable. */
+const MAX_DROPPERS = 16
 /** 6 bits de tempo entre MIN_BPM et MAX_BPM, soit une résolution d'environ 1,7 BPM */
 const TEMPO_STEPS = 64
 
@@ -73,6 +77,11 @@ export interface SharedEmitter {
   divisionIndex: number
 }
 
+export interface SharedDropper {
+  x: number
+  y: number
+}
+
 export interface SharedScene {
   tuningId: string
   /** identifiant d'instrument ; par défaut sur un lien v1 */
@@ -81,6 +90,11 @@ export interface SharedScene {
   bpm: number
   bars: SharedBar[]
   emitters: SharedEmitter[]
+  /**
+   * Points de lâcher. Absents d'un lien v1 ou v2 : une scène partagée y perdait donc ses billes qui
+   * reviennent, et un air composé — qui ne tient que par une bille recyclée — arrivait **silencieux**.
+   */
+  droppers: SharedDropper[]
 }
 
 function encode12(value: number): string {
@@ -168,6 +182,7 @@ export function encodeScene(
   const bars = scene.bars.slice(0, MAX_BARS)
   const emitters = scene.emitters.slice(0, MAX_EMITTERS)
 
+  const droppers = scene.droppers.slice(0, MAX_DROPPERS)
   const parts = [
     VERSION,
     encode6(tuningIndex),
@@ -175,6 +190,7 @@ export function encodeScene(
     encodeTempo(scene.bpm),
     encodeInt12(bars.length),
     encodeInt12(emitters.length),
+    encodeInt12(droppers.length),
   ]
   for (const bar of bars) {
     parts.push(
@@ -187,6 +203,9 @@ export function encodeScene(
   }
   for (const emitter of emitters) {
     parts.push(encode12(emitter.x), encode12(emitter.y), encode6(emitter.divisionIndex))
+  }
+  for (const dropper of droppers) {
+    parts.push(encode12(dropper.x), encode12(dropper.y))
   }
   return parts.join('')
 }
@@ -207,8 +226,9 @@ export function decodeScene(
   const version = text[0] ?? ''
   if (!KNOWN_VERSIONS.includes(version)) return null
 
-  const v2 = version === '2'
-  const header = v2 ? HEADER_V2 : HEADER_V1
+  const v3 = version === '3'
+  const v2 = version === '2' || v3
+  const header = v3 ? HEADER_V3 : v2 ? HEADER_V2 : HEADER_V1
   if (text.length < header) return null
 
   const tuningIndex = decode6(text, 1)
@@ -216,13 +236,17 @@ export function decodeScene(
   const bpm = v2 ? decodeTempo(text, 3) : DEFAULT_BPM
   const barCount = decodeInt12(text, v2 ? 4 : 2)
   const emitterCount = decodeInt12(text, v2 ? 6 : 4)
+  const dropperCount = v3 ? decodeInt12(text, 8) : 0
   if (tuningIndex === null || instrumentIndex === null || bpm === null) return null
-  if (barCount === null || emitterCount === null) return null
+  if (barCount === null || emitterCount === null || dropperCount === null) return null
   if (barCount > MAX_BARS || emitterCount > MAX_EMITTERS) return null
+  if (dropperCount > MAX_DROPPERS) return null
 
   const barSize = v2 ? 9 : 8
   const emitterSize = 5
-  if (text.length !== header + barCount * barSize + emitterCount * emitterSize) return null
+  if (text.length !== header + barCount * barSize + emitterCount * emitterSize + dropperCount * 4) {
+    return null
+  }
 
   const bars: SharedBar[] = []
   let at = header
@@ -264,18 +288,33 @@ export function decodeScene(
     at += emitterSize
   }
 
+  const droppers: SharedDropper[] = []
+  for (let i = 0; i < dropperCount; i++) {
+    const x = decode12(text, at)
+    const y = decode12(text, at + 2)
+    if (x === null || y === null) return null
+    droppers.push({ x, y })
+    at += 4
+  }
+
   return {
     tuningId: tuningIds[tuningIndex] ?? tuningIds[0] ?? '',
     instrumentId: instrumentIds[instrumentIndex] ?? instrumentIds[0] ?? '',
     bpm,
     bars,
     emitters,
+    droppers,
   }
 }
 
 /** Taille d'URL qu'occuperait cette scène, pour vérifier le budget sans construire l'URL. */
-export function encodedLength(barCount: number, emitterCount: number): number {
-  return HEADER_V2 + Math.min(barCount, MAX_BARS) * 9 + Math.min(emitterCount, MAX_EMITTERS) * 5
+export function encodedLength(barCount: number, emitterCount: number, dropperCount = 0): number {
+  return (
+    HEADER_V3 +
+    Math.min(barCount, MAX_BARS) * 9 +
+    Math.min(emitterCount, MAX_EMITTERS) * 5 +
+    Math.min(dropperCount, MAX_DROPPERS) * 4
+  )
 }
 
-export { MAX_BARS, MAX_EMITTERS }
+export { MAX_BARS, MAX_DROPPERS, MAX_EMITTERS }

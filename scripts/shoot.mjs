@@ -24,7 +24,7 @@ const ROOT = path.resolve(__dirname, '..')
 const PROOFS_DIR = path.join(ROOT, 'docs', 'proofs')
 const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
-const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis', 'rythme', 'timbres', 'natures', 'air', 'partage']
+const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis', 'rythme', 'timbres', 'natures', 'air', 'partage', 'lacher']
 
 const rawArgs = process.argv.slice(2)
 const flags = new Set(rawArgs.filter((a) => a.startsWith('--')))
@@ -825,6 +825,178 @@ async function runPartageV2(browser, url, rec) {
     `${sent.divisions.join(',')} -> ${got.divisions.join(',')}`
   )
   await rec.shot(guest, 'partage-v2')
+  await guest.close()
+}
+
+/**
+ * Le point de lâcher. Avant, lâcher une bille créait une source de son **permanente et invisible** :
+ * rien ne la montrait, rien ne permettait de la déplacer ni de la supprimer, alors que la stratégie du
+ * produit interdit l'état caché. C'était un défaut de principe, pas une fonctionnalité manquante.
+ */
+async function runLacher(browser, url, rec) {
+  const page = await browser.newPage()
+  rec.attachConsoleListeners(page)
+  await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await page.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(page)
+  await page.mouse.click(640, 740)
+
+  await page.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    c.addBar(300, 500, 900, 530)
+  })
+  await tick(page)
+
+  // Un clic dans le vide lâche une bille — et doit créer un point visible.
+  await page.mouse.click(500, 200)
+  await wait(150)
+  const created = await page.evaluate(() => window.__carillon.droppers())
+  console.log(`  [lâcher] après un clic : ${created.length} point(s) de lâcher`)
+  rec.assert(
+    'lâcher une bille crée un point de lâcher',
+    created.length === 1 && Math.abs(created[0].x - 500) < 3,
+    JSON.stringify(created)
+  )
+
+  // Il se déplace au glisser, comme une source.
+  await page.mouse.move(created[0].x, created[0].y)
+  await page.mouse.down()
+  await page.mouse.move(created[0].x + 240, created[0].y + 60, { steps: 8 })
+  await page.mouse.up()
+  await wait(150)
+  const moved = await page.evaluate(() => window.__carillon.droppers())
+  console.log(`  [lâcher] après glisser : x ${Math.round(created[0].x)} -> ${Math.round(moved[0]?.x ?? -1)}`)
+  rec.assert(
+    'le point de lâcher se déplace au glisser',
+    moved.length === 1 && moved[0].x > created[0].x + 180,
+    `${Math.round(created[0].x)} -> ${Math.round(moved[0]?.x ?? -1)}`
+  )
+
+  // La bille revient **au nouvel endroit** : c'est ce qui rend le déplacement utile.
+  const back = await page.evaluate(() => {
+    const c = window.__carillon
+    /*
+     * Relevé **pendant** l'avance, pas à la fin : une bille recyclée n'existe qu'environ 1,1 s par
+     * mesure de 2,5 s, donc un relevé unique tombe à côté plus d'une fois sur deux. Même piège que dans
+     * le scénario `rythme`.
+     */
+    const seen = []
+    for (let i = 0; i < 40; i += 1) {
+      c.advance(0.25)
+      for (const ball of c.balls()) seen.push(Math.round(ball.origin ?? ball.x))
+    }
+    return seen
+  })
+  console.log(`  [lâcher] billes vues sur 10 s : ${back.length}`)
+  /*
+   * On exige qu'une bille **revienne** au nouvel emplacement, pas que toutes y soient : la bille
+   * initiale garde légitimement son origine d'avant le déplacement — elle a bien été lâchée là. Ce sont
+   * les retours qui suivent le point.
+   */
+  const origins = [...new Set(back)]
+  rec.assert(
+    'la bille revient au nouvel emplacement du point',
+    origins.some((x) => x > created[0].x + 180),
+    `origines vues : ${origins.join(', ')}`
+  )
+
+  // Capture **pendant** que le point existe : prise après sa suppression, elle ne montrait rien —
+  // troisième fois que l'instant de capture me joue le tour dans ce dépôt.
+  await rec.shot(page, 'point-de-lacher')
+
+  // Et il se jette par le bord, comme une barre ou une source.
+  const target = await page.evaluate(() => window.__carillon.droppers()[0])
+  await page.mouse.move(target.x, target.y)
+  await page.mouse.down()
+  await page.mouse.move(1272, target.y, { steps: 10 })
+  await page.mouse.up()
+  await wait(150)
+  const after = await page.evaluate(() => ({
+    droppers: window.__carillon.droppers().length,
+    pending: window.__carillon.stats().pendingRespawns,
+  }))
+  console.log(`  [lâcher] après suppression : ${after.droppers} point(s), ${after.pending} retour(s) en attente`)
+  rec.assert(
+    'le point de lâcher se jette par le bord',
+    after.droppers === 0,
+    `${after.droppers} point(s)`
+  )
+  rec.assert(
+    'sa suppression annule les retours en attente',
+    after.pending === 0,
+    `${after.pending} en attente`
+  )
+
+  // Plus rien ne revient : sans ça, la scène rejouerait ce qu'on vient d'effacer.
+  const silent = await page.evaluate(() => {
+    const c = window.__carillon
+    let seen = 0
+    for (let i = 0; i < 8; i += 1) {
+      c.advance(1)
+      seen = Math.max(seen, c.stats().balls)
+    }
+    return seen
+  })
+  rec.assert(
+    'aucune bille ne réapparaît après suppression du point',
+    silent === 0,
+    `${silent} bille(s) vue(s)`
+  )
+
+  await rec.shot(page, 'point-de-lacher-supprime')
+  await page.close()
+
+  /*
+   * Et le défaut que ça révèle : une scène partagée **perdait ses billes**. Un air composé ne tient que
+   * par une bille recyclée, donc son lien arrivait silencieux jusqu'au premier clic du destinataire.
+   */
+  const author = await browser.newPage()
+  rec.attachConsoleListeners(author)
+  await author.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await author.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(author)
+  await author.mouse.click(640, 740)
+  let air = null
+  for (let i = 0; i < 6 && !air; i += 1) {
+    await author.click('[data-control="surprise"]')
+    await wait(250)
+    air = await author.evaluate(() => window.__carillon.composedMelody())
+  }
+  await author.click('[data-control="share"]')
+  await wait(200)
+  const link = await author.evaluate(() => location.href)
+  const sentDroppers = await author.evaluate(() => window.__carillon.droppers().length)
+  await author.close()
+
+  const guest = await browser.newPage()
+  rec.attachConsoleListeners(guest)
+  await guest.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await guest.goto(link, { waitUntil: 'load' })
+  await waitForCarillon(guest)
+  const received = await guest.evaluate(() => {
+    const c = window.__carillon
+    const before = c.stats().impacts
+    c.advance(10)
+    return {
+      droppers: c.droppers().length,
+      impacts: c.stats().impacts - before,
+      air: c.composedMelody(),
+    }
+  })
+  console.log(
+    `  [lâcher] air partagé « ${air?.label ?? '?'} » : ${sentDroppers} point(s) envoyé(s), ${received.droppers} reçu(s), ${received.impacts} impacts chez le destinataire`
+  )
+  rec.assert(
+    'les points de lâcher traversent le lien',
+    received.droppers === sentDroppers && sentDroppers > 0,
+    `${sentDroppers} -> ${received.droppers}`
+  )
+  rec.assert(
+    'un air partagé arrive **en jouant**, sans clic du destinataire',
+    received.impacts > 0,
+    `${received.impacts} impacts`
+  )
   await guest.close()
 }
 
@@ -2204,6 +2376,7 @@ const SCENARIOS = {
   natures: runNatures,
   air: runAir,
   partage: runPartageV2,
+  lacher: runLacher,
   edit: runEdit,
   touch: runTouch,
 }

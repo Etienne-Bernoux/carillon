@@ -118,6 +118,8 @@ export interface Interaction {
   pendingDeleteBarId: number | null
   hoveredEmitterId: number | null
   pendingDeleteEmitterId: number | null
+  hoveredDropperId: number | null
+  pendingDeleteDropperId: number | null
 }
 
 export const NO_INTERACTION: Interaction = {
@@ -127,6 +129,8 @@ export const NO_INTERACTION: Interaction = {
   pendingDeleteBarId: null,
   hoveredEmitterId: null,
   pendingDeleteEmitterId: null,
+  hoveredDropperId: null,
+  pendingDeleteDropperId: null,
 }
 
 export interface Renderer {
@@ -451,6 +455,38 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
     base.globalCompositeOperation = 'source-over'
   }
 
+  /**
+   * Points de lâcher. Un anneau ouvert **vers le bas** avec une flèche : il dit « ça retombe d'ici »,
+   * là où une source pulse. Les deux sont de petites cibles ponctuelles, donc leur forme doit les
+   * séparer — pas leur seule couleur, déjà prise par la hauteur des notes.
+   */
+  function drawDroppers(world: World, interaction: Interaction): void {
+    for (const dropper of world.droppers) {
+      const doomed = dropper.id === interaction.pendingDeleteDropperId
+      const hovered = dropper.id === interaction.hoveredDropperId
+      const hue = dropper.hue
+      const alpha = doomed ? 0.35 : hovered ? 0.95 : 0.7
+
+      base.strokeStyle = doomed
+        ? 'rgba(255, 138, 138, 0.9)'
+        : `hsla(${hue}, 90%, 78%, ${alpha})`
+      base.lineWidth = hovered ? 2.4 : 1.8
+      if (doomed) base.setLineDash([4, 4])
+      base.beginPath()
+      // Arc ouvert en bas : l'ouverture pointe vers là où la bille tombe.
+      base.arc(dropper.pos.x, dropper.pos.y, 9, Math.PI * 0.15, Math.PI * 0.85, true)
+      base.stroke()
+      base.beginPath()
+      base.moveTo(dropper.pos.x, dropper.pos.y - 2)
+      base.lineTo(dropper.pos.x, dropper.pos.y + 9)
+      base.moveTo(dropper.pos.x - 4, dropper.pos.y + 4)
+      base.lineTo(dropper.pos.x, dropper.pos.y + 9)
+      base.lineTo(dropper.pos.x + 4, dropper.pos.y + 4)
+      base.stroke()
+      base.setLineDash([])
+    }
+  }
+
   function drawDraft(draft: Draft): void {
     base.save()
     base.setLineDash([9, 7])
@@ -594,6 +630,7 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
       drawParticles(effects)
       drawRipples(effects)
       drawEmitters(world, interaction)
+      drawDroppers(world, interaction)
       drawBars(world, interaction)
       if (draft) drawDraft(draft)
       drawBalls(world)

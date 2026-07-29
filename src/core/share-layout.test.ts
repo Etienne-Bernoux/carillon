@@ -51,6 +51,7 @@ function roundTrip(
         bpm: 96,
         bars: shared,
         emitters: [],
+        droppers: [],
       },
       TUNING_IDS,
       INSTRUMENT_IDS,
