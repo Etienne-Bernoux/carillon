@@ -53,6 +53,9 @@ function fakeHit(kind: 'body' | 'endA' | 'endB' = 'body'): Grab {
     a: { x: 0, y: 0 },
     b: { x: 100, y: 0 },
     restitution: 0.8,
+    nature: 'wall',
+    hitsLeft: 3,
+    absentUntil: -1,
     midi: 60,
     lastHitAt: -1,
   }
@@ -99,7 +102,7 @@ describe('machine à gestes', () => {
     h.down(50, 0)
     h.up(52, 1)
 
-    expect(h.types()).toEqual(['grab', 'tap-bar'])
+    expect(h.types()).toEqual(['grab', 'tap'])
     expect(h.types()).not.toContain('drop-ball')
   })
 
@@ -254,6 +257,6 @@ describe('machine à gestes', () => {
     h.up(50, 0)
 
     expect(h.types()).not.toContain('long-press')
-    expect(h.types()).toEqual(['grab', 'tap-bar'])
+    expect(h.types()).toEqual(['grab', 'tap'])
   })
 })

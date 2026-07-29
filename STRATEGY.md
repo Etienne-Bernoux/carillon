@@ -46,10 +46,13 @@ Le plan de chaque US est écrit **au moment de l'attaquer**, pas maintenant.
 |----|-------|--------|
 | **US1** ✅ | Le premier rebond | *Livrée.* Dessiner des barres, lâcher des billes, une note par impact. Le noyau : physique déterministe + audio + rendu. |
 | **US2** ✅ | Ça sonne juste | *Livrée.* Hauteur relative à la largeur de la scène (un téléphone ne jouait que 2 hauteurs, il en joue 5+), sélecteur de gamme qui **réaccorde** l'instrument, longueurs stratifiées : 11 hauteurs sur desktop, et 71 impacts par scène au lieu de 16. |
-| **US3** | Le geste agréable | Éditer sans frustration : sélection, déplacement, suppression, undo. Types de barres (mur / trampoline / disparaissante). Tactile + responsive. |
+| **US3** ✅ | Le geste agréable | *Livrée.* Éditer sans frustration : survol, déplacement, accordage par les extrémités, suppression par le bord, undo. Les **types de barres** ont été reportés — ils font l'objet du plan du 2026-07-29. |
 | **US4** ✅ | La scène qui tourne | *Livrée.* Sources périodiques posées à l'appui long, déplaçables et jetables comme des barres, émission déterministe, plafond de billes. La scène d'accueil joue **19 impacts en 3,2 s sans aucun geste**. |
 | **US5** ✅ | Le lien qu'on envoie | *Livrée.* La scène **est** l'URL — 161 caractères pour la scène d'accueil, aucun serveur. Le format encode milieu, longueur et angle : un lien ouvert sur un autre écran remplit la page **et** rejoue les mêmes notes. |
-| **US6** | Le vernis | Glow, particules d'impact, `prefers-reduced-motion`, densité du HUD sur petit écran (il mange 44 % d'un 320×568). |
+| **US6** ✅ | Le vernis | *Livrée.* Le HUD passe de 44 % à **29 %** d'un 320×568, les poignées se révèlent au premier contact tactile, `prefers-reduced-motion` raccourcit sans figer, et les impacts font des étincelles. La review y a trouvé un défaut produit qu'aucune assertion ne voyait : la colonne du titre s'écrasait à 0 px entre 641 et 860 px de large. |
+| **US7** | Le rythme | *Première tranche livrée.* Les sources s'expriment en **divisions de mesure** sur une grille commune, donc deux sources restent en phase indéfiniment ; une bille lâchée à la main **revient** sur le temps de la mesure. Restent la périodicité du motif et le tempo dans l'URL. |
+| **US8** ✅ | Les instruments | *Livrée.* Quatre timbres, chacun **combinant une voix grave et une voix aiguë** selon le registre de la barre. La mesure hors ligne a révélé que les quatre écrêtaient à 24 voix : le limiteur de sortie n'avait jamais été réglé depuis l'US1. |
+| **US9** | Les natures de barres | Mur, trampoline, éphémère — pour qu'un motif **évolue** au lieu de se répéter à l'identique. Requirements : `docs/plans/2026-07-29-001-feat-natures-de-barres-plan.md`. |
 
 **Ordre non négociable** : US1 avant tout le reste. Si le noyau physique+audio n'est pas
 satisfaisant, aucune quantité de vernis ne sauve le produit — et on préférera revoir US1 plutôt

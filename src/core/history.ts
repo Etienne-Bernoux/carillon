@@ -6,6 +6,7 @@
  * Les billes ne font jamais partie de l'historique : elles sont éphémères.
  */
 
+import { EPHEMERAL_HITS } from './nature'
 import type { Bar, Emitter, Vec2 } from './types'
 
 /** Nombre d'états annulables conservés par défaut. */
@@ -54,6 +55,12 @@ function cloneBar(bar: Bar): Bar {
     a: cloneVec2(bar.a),
     b: cloneVec2(bar.b),
     restitution: bar.restitution,
+    // La nature **est** de la donnée de scène : la changer est annulable. La vie restante et l'absence,
+    // elles, sont transitoires — les inclure tuerait la déduplication et ferait réapparaître un état de
+    // jeu périmé à l'annulation, exactement comme `nextAt` d'une source en US4.
+    nature: bar.nature,
+    hitsLeft: EPHEMERAL_HITS,
+    absentUntil: -1,
     midi: bar.midi,
     lastHitAt: -1,
   }
@@ -73,7 +80,7 @@ function cloneEmitter(emitter: Emitter): Emitter {
   return {
     id: emitter.id,
     pos: cloneVec2(emitter.pos),
-    period: emitter.period,
+    divisionIndex: emitter.divisionIndex,
     nextAt: 0,
     hue: emitter.hue,
   }
@@ -87,7 +94,11 @@ function emittersEqual(a: readonly Emitter[], b: readonly Emitter[]): boolean {
     // `nextAt` est exclu : c'est une échéance qui avance toute seule, comme `lastHitAt` pour une
     // barre. L'inclure désactiverait la déduplication dès qu'une source tourne.
     if (!first || !second) return false
-    if (first.id !== second.id || first.period !== second.period || !vecEqual(first.pos, second.pos)) {
+    if (
+      first.id !== second.id ||
+      first.divisionIndex !== second.divisionIndex ||
+      !vecEqual(first.pos, second.pos)
+    ) {
       return false
     }
   }

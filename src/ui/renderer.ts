@@ -7,6 +7,7 @@ import {
   spawnImpactParticles,
 } from '../core/particles'
 import type { Particle } from '../core/particles'
+import { emitterPeriod } from '../core/emitter'
 import { BAR_THICKNESS } from '../core/physics'
 import { createRng } from '../core/rng'
 import type { Bounds, ImpactEvent, Vec2, World } from '../core/types'
@@ -392,7 +393,7 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
       // Mouvement réduit : anneau fixe, à mi-course, plutôt qu'une pulsation continue.
       const progress = reducedMotion
         ? 0.5
-        : 1 - Math.min(1, remaining / Math.max(emitter.period, 1e-6))
+        : 1 - Math.min(1, remaining / Math.max(emitterPeriod(emitter, world.bpm), 1e-6))
       const doomed = emitter.id === interaction.pendingDeleteEmitterId
       const hovered = emitter.id === interaction.hoveredEmitterId
 

@@ -1,4 +1,6 @@
 import { createAudioEngine } from './audio/engine'
+import { measurePeak, measurePeakBeforeCompressor } from './audio/engine'
+import type { NoteRequest } from './audio/engine'
 import {
   DEFAULT_TUNING,
   TUNINGS,
@@ -12,8 +14,24 @@ import {
 import type { Tuning } from './core/music'
 import { DT, addBar, createWorld, spawnBall, stepWorld } from './core/physics'
 import type { Bar, Emitter, ImpactEvent, Vec2 } from './core/types'
-import { MAX_BALLS, addEmitter, removeEmitter, runEmitters } from './core/emitter'
+import {
+  MAX_BALLS,
+  addEmitter,
+  cycleDivision,
+  emitterPeriod,
+  removeEmitter,
+  runEmitters,
+  runRespawns,
+} from './core/emitter'
+import { divisionAt, divisionLabel, gridTimeAfter, nearestDivisionIndex } from './core/clock'
 import { createHistory } from './core/history'
+import {
+  DEFAULT_INSTRUMENT,
+  INSTRUMENTS,
+  decayForNote,
+  voiceForMidi,
+} from './core/instruments'
+import type { Instrument } from './core/instruments'
 import { MAX_PARTICLES } from './core/particles'
 import { decodeScene, encodeScene } from './core/share'
 import type { SharedScene } from './core/share'
@@ -57,6 +75,8 @@ const canvas = requireElement<HTMLCanvasElement>('#stage')
 const hint = document.querySelector<HTMLParagraphElement>('#hint')
 const tuningLabel = document.querySelector<HTMLSpanElement>('#tuning-label')
 const tuningLabelShort = document.querySelector<HTMLSpanElement>('#tuning-label-short')
+const instrumentLabel = document.querySelector<HTMLSpanElement>('#instrument-label')
+const instrumentLabelShort = document.querySelector<HTMLSpanElement>('#instrument-label-short')
 const muteLabel = document.querySelector<HTMLSpanElement>('#mute-label')
 
 const renderer = createRenderer(canvas)
@@ -80,6 +100,13 @@ let interaction: Interaction = { ...NO_INTERACTION }
  * Temps de simulation jusqu'auquel les poignées de toutes les barres restent visibles. Déclenché par
  * le premier contact tactile : sans survol au doigt, rien n'annonçait qu'une barre s'attrape.
  */
+/**
+ * Instrument courant. C'est un réglage de **lecture**, pas une donnée de scène : il ne change aucune
+ * hauteur, seulement le timbre. Il vit donc hors de l'historique et hors du lien de partage, exactement
+ * comme le silence — alors que la gamme, elle, réaccorde les barres et fait partie de l'état.
+ */
+let instrument: Instrument = DEFAULT_INSTRUMENT
+
 let revealHandlesUntil = -1
 const REVEAL_HANDLES_SECONDS = 5
 let dragArea: SceneArea | null = null
@@ -119,10 +146,21 @@ function applyTuning(next: Tuning): void {
   retuneBars(world.bars, tuning, world.bounds.w)
 }
 
+/**
+ * Change d'instrument. Rien à réaccorder, contrairement à la gamme : le timbre ne touche aucune
+ * hauteur. Les notes déjà en vol gardent le leur — une note est construite à l'attaque, et la
+ * réécrire en cours de route produirait un saut audible sur une décroissance de cloche.
+ */
+function applyInstrument(next: Instrument): void {
+  instrument = next
+  if (instrumentLabel) instrumentLabel.textContent = instrument.label
+  if (instrumentLabelShort) instrumentLabelShort.textContent = instrument.short
+}
+
 function dropBall(point: Vec2): number {
   // Teintes froides pour les billes : la couleur chaude est réservée aux barres, qui portent la hauteur.
   const hue = 190 + ((world.nextBallId * 37) % 90)
-  return spawnBall(world, point, { x: 0, y: 0 }, { hue }).id
+  return spawnBall(world, point, { x: 0, y: 0 }, { hue, recycle: true }).id
 }
 
 /**
@@ -141,12 +179,7 @@ function handleImpacts(events: readonly ImpactEvent[]): void {
     impactsTotal++
     const gain = gainForImpact(event.speed)
     if (gain <= 0) continue
-    audio.play({
-      barId: bar.id,
-      freq: midiToFreq(bar.midi),
-      gain,
-      pan: panForX(event.point.x, world.bounds.w),
-    })
+    audio.play(noteFor(bar, gain, panForX(event.point.x, world.bounds.w)))
     effects.addImpact(event, bar.midi, gain)
     lastImpactPoint = { x: event.point.x, y: event.point.y }
   }
@@ -155,6 +188,9 @@ function handleImpacts(events: readonly ImpactEvent[]): void {
 function advance(seconds: number): void {
   const steps = Math.max(0, Math.round(seconds / DT))
   for (let i = 0; i < steps; i++) {
+    runRespawns(world, (pos, hue) => {
+      spawnBall(world, { x: pos.x, y: pos.y }, { x: 0, y: 0 }, { hue, recycle: true })
+    })
     runEmitters(world, (pos, hue) => {
       spawnBall(world, { x: pos.x, y: pos.y }, { x: 0, y: 0 }, { hue })
     })
@@ -235,7 +271,7 @@ function sharedScene(): SharedScene {
     bars: world.bars.map((bar) => toSharedBar(bar.a, bar.b, area, width)),
     emitters: world.emitters.map((emitter) => ({
       ...toSharedPoint(emitter.pos, area, width),
-      period: emitter.period,
+      period: emitterPeriod(emitter, world.bpm),
     })),
   }
 }
@@ -252,7 +288,11 @@ function applyShared(shared: SharedScene): void {
     placeBar(...placeSharedBar(bar, area, width, MIN_BAR_LENGTH))
   }
   for (const emitter of shared.emitters) {
-    addEmitter(world, placeSharedEmitter(emitter, area, width), { period: emitter.period })
+    addEmitter(world, placeSharedEmitter(emitter, area, width), {
+      // Les liens déjà émis portent une période libre en secondes : on la rapproche de la division la
+      // plus voisine. Un lien ancien reste donc lisible, à la grille près.
+      divisionIndex: nearestDivisionIndex(emitter.period, world.bpm),
+    })
   }
   // La scène vient de quelqu'un d'autre : on ne la remplace pas par une scène surprise.
   userOwnsScene = true
@@ -325,13 +365,19 @@ function inDeleteZone(point: Vec2): boolean {
   )
 }
 
+/**
+ * Assemble une note. Un seul endroit décide du timbre : deux chemins (impact et écoute au tap)
+ * dupliquaient déjà la fréquence et le panoramique, et auraient divergé sur la voix — le genre d'écart
+ * qui fait qu'une barre sonne différemment selon la façon dont on la fait sonner.
+ */
+function noteFor(bar: Bar, gain: number, pan: number): NoteRequest {
+  const voice = voiceForMidi(instrument, bar.midi)
+  const freq = midiToFreq(bar.midi)
+  return { barId: bar.id, freq, gain, pan, voice, decaySeconds: decayForNote(voice, freq) }
+}
+
 function playBar(bar: Bar, gain: number): void {
-  audio.play({
-    barId: bar.id,
-    freq: midiToFreq(bar.midi),
-    gain,
-    pan: panForX((bar.a.x + bar.b.x) / 2, world.bounds.w),
-  })
+  audio.play(noteFor(bar, gain, panForX((bar.a.x + bar.b.x) / 2, world.bounds.w)))
 }
 
 function removeBar(id: number): void {
@@ -376,7 +422,9 @@ function undo(): void {
   world.emitters.push(...restored.emitters)
   // Réarmer les échéances : un instantané ne porte pas de temps (cf. history.cloneEmitter), sinon
   // annuler ferait cracher une rafale de billes pour rattraper un retard fictif.
-  for (const emitter of world.emitters) emitter.nextAt = world.time + emitter.period
+  for (const emitter of world.emitters) {
+    emitter.nextAt = gridTimeAfter(world.time, divisionAt(emitter.divisionIndex), world.bpm)
+  }
   // La gamme fait partie de l'état : sans ça, annuler un changement de gamme réaccordait les barres
   // mais laissait le libellé — donc l'interface annonçait une gamme que l'instrument ne jouait plus.
   if (restored.tuningId !== tuning.id) applyTuning(tuningById(restored.tuningId))
@@ -546,14 +594,26 @@ function handleGesture(gesture: Gesture): void {
       interaction = { ...NO_INTERACTION }
       break
 
-    case 'tap-bar':
+    case 'tap':
       // Aucun instantané validé : écouter une barre ne modifie rien.
       pendingSnapshot = null
-      // Taper une barre la fait sonner sans rien modifier : c'est comment on apprend la
-      // correspondance entre la couleur d'une barre et sa hauteur.
       if (gesture.hit.target === 'bar') {
+        // Taper une barre la fait sonner sans rien modifier : c'est comment on apprend la
+        // correspondance entre la couleur d'une barre et sa hauteur.
         playBar(gesture.hit.bar, 0.65)
         gesture.hit.bar.lastHitAt = world.time
+      } else {
+        /*
+         * Taper une source change son **rythme**. C'est le seul geste qui construise un motif — sans
+         * lui, toutes les sources partagent la même division et la scène n'a qu'une seule pulsation.
+         * Aucun mode ajouté : une source est déjà une cible de geste (on la déplace en la glissant),
+         * donc la toucher lui parle à elle. Et taper une source ne faisait **rien** jusqu'ici.
+         */
+        history.push(world.bars, world.emitters, tuning.id)
+        detachFromLink()
+        const index = cycleDivision(world, gesture.hit.emitter)
+        announce(`Source : ${divisionLabel(index)}`)
+        userOwnsScene = true
       }
       fadeHint()
       break
@@ -587,6 +647,17 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-control
           // L'instantané porte la gamme d'**avant** le changement : c'est elle qu'il faut restaurer.
           history.push(world.bars, world.emitters, tuning.id)
           applyTuning(next)
+        }
+        break
+      }
+      case 'instrument': {
+        const index = INSTRUMENTS.findIndex((candidate) => candidate.id === instrument.id)
+        const next = INSTRUMENTS[(index + 1) % INSTRUMENTS.length]
+        if (next) {
+          applyInstrument(next)
+          // Annoncé : le changement de timbre ne s'entend qu'au prochain impact, donc sans retour
+          // immédiat on ne sait pas si le bouton a fait quelque chose.
+          announce(`Instrument : ${next.label}`)
         }
         break
       }
@@ -682,6 +753,9 @@ function frame(now: number): void {
     steps++
     // Les sources émettent avant l'intégration du pas : une bille créée doit être simulée dès le pas
     // où elle apparaît, sinon elle « saute » d'un pas au premier affichage.
+    runRespawns(world, (pos, hue) => {
+      spawnBall(world, { x: pos.x, y: pos.y }, { x: 0, y: 0 }, { hue, recycle: true })
+    })
     runEmitters(world, (pos, hue) => {
       spawnBall(world, { x: pos.x, y: pos.y }, { x: 0, y: 0 }, { hue })
     })
@@ -738,11 +812,24 @@ interface CarillonDebug {
   undo(): void
   /** Géométrie des barres : sans elle, toute assertion sur un déplacement passerait par des pixels. */
   bars(): Array<{ id: number; ax: number; ay: number; bx: number; by: number; midi: number }>
-  addEmitter(x: number, y: number, period?: number): number
+  addEmitter(x: number, y: number, divisionIndex?: number): number
   /** positions et vitesses des billes vivantes — pour prouver qu'une scène **bouge**, pas qu'elle existe */
   balls(): { id: number; x: number; y: number; vx: number; vy: number }[]
   lastImpact(): { x: number; y: number } | null
-  emitters(): Array<{ id: number; x: number; y: number; period: number }>
+  /**
+   * Rend hors ligne une salve dense sur l'instrument courant et renvoie ce qui en sort réellement.
+   * `notes > 0` compte des appels, pas des décibels : c'est la seule mesure qui puisse dire « ça ne
+   * sature pas » sans oreille humaine.
+   */
+  measureAudio(voices?: number): Promise<{ peak: number; rms: number; peakBeforeCompressor: number }>
+  emitters(): Array<{
+    id: number
+    x: number
+    y: number
+    divisionIndex: number
+    period: number
+    nextAt: number
+  }>
   stats(): {
     fps: number
     balls: number
@@ -759,6 +846,7 @@ interface CarillonDebug {
     barsUnderHud: number
     /** identifiant de la gamme courante */
     tuning: string
+    instrument: string
     /** nombre de sources périodiques posées */
     emitters: number
     /** poignées de toutes les barres visibles (révélation tactile) — assertable sans passer par des pixels */
@@ -769,6 +857,8 @@ interface CarillonDebug {
     trailPoints: number
     particles: number
     maxParticles: number
+    bpm: number
+    pendingRespawns: number
     /** plafond de billes vivantes, exposé pour que le harnais n'ait pas à le deviner */
     maxBalls: number
     /** nombre de gestes annulables empilés */
@@ -805,14 +895,38 @@ window.__carillon = {
       vy: ball.vel.y,
     })),
   lastImpact: () => (lastImpactPoint ? { ...lastImpactPoint } : null),
-  addEmitter: (x, y, period) =>
-    addEmitter(world, { x, y }, period === undefined ? {} : { period }).id,
+  measureAudio: async (voices = 24) => {
+    // Une salve **simultanée** au gain maximal, étalée sur toute l'étendue : c'est le pire cas
+    // réaliste (une pluie de billes sur une rangée de barres), et c'est là que la saturation arrive.
+    const notes: NoteRequest[] = []
+    for (let i = 0; i < voices; i += 1) {
+      const midi = 45 + (i * 5) % 40
+      const voice = voiceForMidi(instrument, midi)
+      const freq = midiToFreq(midi)
+      notes.push({
+        barId: i,
+        freq,
+        gain: 1,
+        pan: ((i % 5) - 2) / 2.5,
+        voice,
+        decaySeconds: decayForNote(voice, freq),
+      })
+    }
+    const [after, before] = await Promise.all([measurePeak(notes, 3), measurePeakBeforeCompressor(notes, 3)])
+    return { ...after, peakBeforeCompressor: before }
+  },
+  addEmitter: (x, y, divisionIndex) =>
+    addEmitter(world, { x, y }, divisionIndex === undefined ? {} : { divisionIndex }).id,
   emitters: () =>
     world.emitters.map((emitter) => ({
       id: emitter.id,
       x: emitter.pos.x,
       y: emitter.pos.y,
-      period: emitter.period,
+      divisionIndex: emitter.divisionIndex,
+      period: emitterPeriod(emitter, world.bpm),
+      // Échéance absolue : c'est la seule façon d'asserter « ces deux sources sont en phase » depuis le
+      // navigateur sans deviner à partir des instants d'apparition des billes.
+      nextAt: emitter.nextAt,
     })),
   bars: () =>
     world.bars.map((bar) => ({
@@ -833,6 +947,7 @@ window.__carillon = {
     barsOutOfBounds: countOutOfBounds(),
     barsUnderHud: countUnderHud(),
     tuning: tuning.id,
+    instrument: instrument.id,
     undoDepth: history.depth(),
     emitters: world.emitters.length,
     revealHandles: world.time < revealHandlesUntil,
@@ -840,6 +955,8 @@ window.__carillon = {
     trailPoints: renderer.trailPointCount(),
     particles: effects.particles.length,
     maxParticles: MAX_PARTICLES,
+    bpm: world.bpm,
+    pendingRespawns: world.respawns.length,
     maxBalls: MAX_BALLS,
     distinctPitches: new Set(world.bars.map((bar) => bar.midi)).size,
   }),

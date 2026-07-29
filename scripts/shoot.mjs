@@ -24,7 +24,7 @@ const ROOT = path.resolve(__dirname, '..')
 const PROOFS_DIR = path.join(ROOT, 'docs', 'proofs')
 const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
-const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis']
+const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis', 'rythme', 'timbres']
 
 const rawArgs = process.argv.slice(2)
 const flags = new Set(rawArgs.filter((a) => a.startsWith('--')))
@@ -210,7 +210,7 @@ async function runSandbox(browser, url, rec) {
 
   // 5 clics pour lâcher 5 billes (vrai geste souris), dans la bande réservée aux billes — à
   // distance garantie des 3 barres (bandes distinctes), donc chaque clic tombe forcément dans le
-  // vide et déclenche `drop-ball`, jamais `tap-bar`.
+  // vide et déclenche `drop-ball`, jamais `tap`.
   const beforeClicksBalls = (await page.evaluate(() => window.__carillon.stats())).balls
   for (let i = 0; i < 5; i++) {
     await page.mouse.click(area.left + w * (0.08 + i * 0.2), dropY)
@@ -271,7 +271,9 @@ async function runStress(browser, url, rec) {
     // Des sources à cadence rapide : sans elles, le scénario mesurait un budget d'où l'US4 était
     // absente — zéro émission dans la boucle chaude, zéro anneau à dessiner — tout en prétendant
     // couvrir « le plafond de billes ».
-    for (let i = 0; i < 6; i++) c.addEmitter(120 + i * 180, 120, 0.15)
+    // Division la plus fine du catalogue (la croche) : les sources s'expriment désormais en divisions
+    // de mesure, plus en secondes. Passer 0.15 ici serait interprété comme un **index** de division.
+    for (let i = 0; i < 6; i++) c.addEmitter(120 + i * 180, 120, 4)
   })
 
   await page.evaluate(() => {
@@ -1064,6 +1066,340 @@ async function runVernis(browser, url, rec) {
   await spark.close()
 }
 
+/**
+ * Le rythme. Deux propriétés qu'aucun scénario ne pouvait montrer avant l'US7 : les sources tombent
+ * sur une **grille** commune (donc un motif se répète en phase au lieu de flotter), et une bille lâchée
+ * à la main **revient** au lieu de disparaître — un seul geste devient un élément rythmique permanent.
+ */
+async function runRythme(browser, url, rec) {
+  const page = await browser.newPage()
+  rec.attachConsoleListeners(page)
+  await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await page.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(page)
+  await page.mouse.click(640, 740)
+
+  // Deux sources de même division, posées à des instants différents : c'est le cas qui distingue une
+  // grille commune d'une simple période régulière.
+  const emitters = await page.evaluate(async () => {
+    const c = window.__carillon
+    c.reset()
+    c.addBar(200, 420, 560, 470)
+    c.addBar(700, 500, 1060, 545)
+    c.addEmitter(300, 120, 1)
+    await new Promise((r) => setTimeout(r, 180))
+    c.addEmitter(800, 120, 1)
+    return c.emitters()
+  })
+  console.log(
+    `  [rythme] sources : ${emitters.map((e) => `#${e.id} div=${e.divisionIndex} période=${e.period.toFixed(3)}s échéance=${e.nextAt.toFixed(3)}`).join(' | ')}`
+  )
+  rec.assert(
+    'deux sources de même division visent exactement le même instant',
+    emitters.length === 2 && emitters[0].nextAt === emitters[1].nextAt,
+    emitters.map((e) => e.nextAt).join(' vs ')
+  )
+  rec.assert(
+    'la période découle du tempo et de la division, pas d’une valeur libre',
+    emitters.every((e) => Math.abs(e.period - (60 / 96) * 4 * 0.5) < 1e-9),
+    `${emitters[0]?.period}`
+  )
+
+  // Elles restent en phase après une longue course : c'est ce qu'une échéance cumulée finit par perdre.
+  await page.evaluate(() => window.__carillon.advance(120))
+  await tick(page)
+  const later = await page.evaluate(() => window.__carillon.emitters())
+  rec.assert(
+    'toujours en phase après 120 s simulées',
+    later.length === 2 && later[0].nextAt === later[1].nextAt,
+    later.map((e) => e.nextAt).join(' vs ')
+  )
+
+  /*
+   * Taper une source change son rythme. Vrai clic souris, pas un appel d'API : c'est le seul geste qui
+   * construise un motif, et jusqu'à l'US7 taper une source ne faisait **rien**.
+   */
+  const cycled = await page.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    c.addEmitter(500, 300, 0)
+    return c.emitters()[0]
+  })
+  await tick(page)
+  await page.mouse.click(500, 300)
+  await tick(page)
+  const afterTap = await page.evaluate(() => window.__carillon.emitters()[0])
+  console.log(
+    `  [rythme] tap sur la source : division ${cycled.divisionIndex} -> ${afterTap.divisionIndex} (période ${cycled.period.toFixed(3)}s -> ${afterTap.period.toFixed(3)}s)`
+  )
+  rec.assert(
+    'taper une source change sa division',
+    afterTap.divisionIndex === cycled.divisionIndex + 1 && afterTap.period < cycled.period,
+    `${cycled.divisionIndex} -> ${afterTap.divisionIndex}`
+  )
+  // Propriété **vérifiable** : l'échéance est un multiple de la nouvelle période, donc sur la grille.
+  // Première version de cette assertion : `nextAt - période <= nextAt`, vraie par construction.
+  const gridOffset = Math.abs(
+    afterTap.nextAt / afterTap.period - Math.round(afterTap.nextAt / afterTap.period)
+  )
+  rec.assert(
+    'la nouvelle échéance retombe sur la grille de la nouvelle division',
+    gridOffset < 1e-6,
+    `écart à la grille = ${gridOffset.toExponential(2)}`
+  )
+  // Et c'est annulable : un changement de rythme est une modification de la scène comme une autre.
+  await page.keyboard.down('Meta')
+  await page.keyboard.press('KeyZ')
+  await page.keyboard.up('Meta')
+  await tick(page)
+  const afterUndo = await page.evaluate(() => window.__carillon.emitters()[0])
+  rec.assert(
+    'annuler restaure la division précédente',
+    afterUndo?.divisionIndex === cycled.divisionIndex,
+    `division=${afterUndo?.divisionIndex}`
+  )
+
+  // Recyclage : une bille lâchée à la main revient.
+  const recycled = await page.evaluate(async () => {
+    const c = window.__carillon
+    c.reset()
+    c.addBar(400, 450, 800, 500)
+    c.dropBall(500, 120)
+    const seen = { queued: 0, returned: 0, ballsAfter: 0 }
+    // 6 s simulées : la bille tombe (~1,1 s), sort, revient sur le temps de la mesure (2,5 s), etc.
+    for (let i = 0; i < 6; i += 1) {
+      c.advance(1)
+      seen.queued = Math.max(seen.queued, c.stats().pendingRespawns)
+      seen.returned = Math.max(seen.returned, c.stats().balls)
+    }
+    seen.ballsAfter = c.stats().balls
+    return seen
+  })
+  console.log(
+    `  [rythme] recyclage : file max=${recycled.queued} billes max=${recycled.returned} billes à la fin=${recycled.ballsAfter}`
+  )
+  rec.assert(
+    'une bille lâchée à la main est reprogrammée quand elle sort',
+    recycled.queued > 0,
+    `file max=${recycled.queued}`
+  )
+  rec.assert(
+    'la scène ne s’éteint pas : la bille est toujours là 6 s plus tard',
+    recycled.returned > 0,
+    `billes max=${recycled.returned}`
+  )
+
+  // Capture du chemin **nominal** : deux sources en phase et une bille recyclée. Prise ici et non en
+  // fin de scénario, où les 60 billes du test de bornes noient la barre sous autant d'ondes d'impact.
+  await page.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    c.addBar(220, 430, 600, 480)
+    c.addBar(700, 520, 1080, 560)
+    c.addEmitter(320, 130, 1)
+    c.addEmitter(820, 130, 3)
+    c.dropBall(500, 150)
+    c.advance(3.2)
+  })
+  await tick(page)
+  await rec.shot(page, 'rythme')
+
+  // Et le recyclage ne fuit pas : ni les billes ni la file ne grossissent sans fin.
+  const bounded = await page.evaluate(() => {
+    const c = window.__carillon
+    for (let i = 0; i < 60; i += 1) c.dropBall(60 + i * 20, 100)
+    c.advance(180)
+    const s = c.stats()
+    return { balls: s.balls, queued: s.pendingRespawns, max: s.maxBalls, dropped: s.droppedSteps }
+  })
+  console.log(
+    `  [rythme] après 180 s et 60 billes recyclées : billes=${bounded.balls}/${bounded.max} file=${bounded.queued} pasPerdus=${bounded.dropped}`
+  )
+  rec.assert(
+    'le recyclage reste borné (billes)',
+    bounded.balls <= bounded.max,
+    `${bounded.balls}/${bounded.max}`
+  )
+  rec.assert(
+    'le recyclage reste borné (file d’attente)',
+    bounded.queued <= bounded.max,
+    `file=${bounded.queued}`
+  )
+  rec.assert('aucun pas de simulation abandonné', bounded.dropped === 0, `${bounded.dropped}`)
+
+  await rec.shot(page, 'rythme-charge')
+  await page.close()
+}
+
+/**
+ * Les timbres. Un instrument est une **paire de voix** (grave/aigu) : chaque scène combine donc deux
+ * sons sans qu'on ait rien à choisir. Ce que ce scénario vérifie n'est pas « ça sonne bien » — l'oreille
+ * en juge — mais que chaque instrument **produit réellement du son** : quatre combinaisons de formes
+ * d'onde, dont une voix nue sans seconde couche, passent toutes par le même chemin audio.
+ */
+async function runTimbres(browser, url, rec) {
+  const page = await browser.newPage()
+  rec.attachConsoleListeners(page)
+  await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await page.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(page)
+  // Vrai geste : sans lui l'AudioContext reste verrouillé et `notes` resterait à 0 pour tout le monde.
+  await page.mouse.click(640, 740)
+
+  const button = '[data-control="instrument"]'
+  const seen = []
+  for (let i = 0; i < 5; i += 1) {
+    const state = await page.evaluate((sel) => {
+      const el = document.querySelector(sel)
+      const label = el.querySelector('.label')
+      return {
+        id: window.__carillon.stats().instrument,
+        label: (label?.textContent ?? '').trim(),
+        notesBefore: window.__carillon.stats().notes,
+      }
+    }, button)
+
+    // Une scène fraîche à chaque instrument, et de vraies chutes : c'est le seul moyen de prouver que
+    // ce timbre-là passe par le moteur, et pas seulement qu'un libellé a changé.
+    await page.evaluate(() => {
+      const c = window.__carillon
+      c.reset()
+      for (let b = 0; b < 5; b += 1) c.addBar(160 + b * 190, 400, 300 + b * 190, 440)
+      // Barres courtes ET longues : la bascule grave/aigu doit être exercée, pas seulement une voix.
+      c.addBar(120, 620, 1160, 660)
+      for (let k = 0; k < 8; k += 1) c.dropBall(180 + k * 130, 120)
+    })
+    // On attend la **condition**, pas une durée : les billes mettent ~1,1 s à tomber, et une attente
+    // fixe de 1,4 s rendait l'assertion instable dès qu'une frame traînait (mesuré : une itération sur
+    // cinq à 0 note, de façon non reproductible).
+    await page
+      .waitForFunction(
+        (baseline) => window.__carillon.stats().notes > baseline,
+        { timeout: 6000 },
+        state.notesBefore
+      )
+      .catch(() => {})
+    await wait(250)
+    const after = await page.evaluate(() => window.__carillon.stats())
+    seen.push({ id: state.id, label: state.label, notes: after.notes - state.notesBefore })
+    rec.assert(
+      `l'instrument « ${state.label} » produit réellement des notes`,
+      after.notes - state.notesBefore > 0,
+      `${after.notes - state.notesBefore} notes`
+    )
+    await page.click(button)
+    await tick(page)
+  }
+
+  console.log(
+    `  [timbres] ${seen.map((s) => `${s.label}=${s.notes} notes`).join(' | ')}`
+  )
+  const ids = seen.map((s) => s.id)
+  rec.assert(
+    'le bouton parcourt tout le catalogue et revient au début',
+    ids.length === 5 && new Set(ids.slice(0, 4)).size === 4 && ids[4] === ids[0],
+    ids.join(' -> ')
+  )
+  rec.assert(
+    'le libellé visible suit l’instrument courant',
+    seen.every((s) => s.label.length > 2),
+    seen.map((s) => s.label).join(', ')
+  )
+
+  // Le timbre est un réglage de **lecture** : il ne touche aucune hauteur.
+  const pitches = await page.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    // Longueurs **variées** : six barres identiques donnent six fois la même note, et l'assertion
+    // comparerait alors deux listes constantes — vraie quoi qu'il arrive.
+    for (let b = 0; b < 6; b += 1) c.addBar(120 + b * 180, 400, 120 + b * 180 + 40 + b * 45, 440)
+    const before = c.bars().map((bar) => bar.midi)
+    document.querySelector('[data-control="instrument"]').click()
+    return { before, after: c.bars().map((bar) => bar.midi) }
+  })
+  rec.assert(
+    'changer d’instrument ne change aucune hauteur',
+    new Set(pitches.before).size >= 4 &&
+      JSON.stringify(pitches.before) === JSON.stringify(pitches.after),
+    `${pitches.before.join(',')} vs ${pitches.after.join(',')}`
+  )
+
+  /*
+   * « Ça sonne bien » n'est pas mesurable, mais « ça sature » l'est. Rendu **hors ligne** de la même
+   * chaîne audio que la sortie réelle — mêmes voix, même réverbe, même limiteur : 24 notes simultanées
+   * au gain maximal, le pire cas réaliste (une pluie de billes sur une rangée de barres).
+   *
+   * Mesuré avant correction : la crête de sortie valait 1,38 au carillon et 1,45 au verre, donc en
+   * écrêtage franc sur les quatre instruments. Le `DynamicsCompressor` était là depuis l'US1 mais n'avait
+   * jamais été réglé — ses valeurs par défaut (attaque 3 ms) laissent passer le transitoire.
+   */
+  const audio = []
+  for (const target of ['carillon', 'bois', 'verre', 'corde']) {
+    const m = await page.evaluate(async (id) => {
+      const btn = document.querySelector('[data-control="instrument"]')
+      let guard = 0
+      while (window.__carillon.stats().instrument !== id && guard++ < 8) btn.click()
+      const dense = await window.__carillon.measureAudio(24)
+      const sparse = await window.__carillon.measureAudio(1)
+      return { id: window.__carillon.stats().instrument, dense, sparse }
+    }, target)
+    audio.push(m)
+    rec.assert(
+      `aucun écrêtage sur « ${m.id} » à 24 voix simultanées`,
+      m.dense.peak < 0.95,
+      `crête=${m.dense.peak.toFixed(3)}`
+    )
+    // Le limiteur ne doit pas non plus tout aplatir : une note seule reste franchement audible, et une
+    // scène dense reste plus forte qu'une note seule. Sans ces deux bornes, couper le son passerait.
+    rec.assert(
+      `une note seule reste audible sur « ${m.id} »`,
+      m.sparse.peak > 0.15,
+      `crête=${m.sparse.peak.toFixed(3)}`
+    )
+    rec.assert(
+      `la densité s'entend encore sur « ${m.id} » (le limiteur n'aplatit pas)`,
+      m.dense.peak > m.sparse.peak * 1.2,
+      `${m.sparse.peak.toFixed(3)} -> ${m.dense.peak.toFixed(3)}`
+    )
+  }
+  console.log(
+    `  [timbres] audio : ${audio.map((m) => `${m.id} ${m.sparse.peak.toFixed(2)}→${m.dense.peak.toFixed(2)} (avant limiteur ${m.dense.peakBeforeCompressor.toFixed(1)})`).join(' | ')}`
+  )
+
+  await rec.shot(page, 'timbres')
+  await page.close()
+
+  // Sept contrôles sur un petit écran : les deux boutons porteurs d'état partagent une rangée.
+  const small = await browser.newPage()
+  rec.attachConsoleListeners(small)
+  await small.setViewport({ width: 320, height: 568, deviceScaleFactor: 2, isMobile: true, hasTouch: true })
+  await small.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(small)
+  await small.touchscreen.tap(160, 300)
+  await wait(150)
+  const rows = await small.evaluate(() => {
+    const tops = [...document.querySelectorAll('.toolbar button')].map((b) =>
+      Math.round(b.getBoundingClientRect().top)
+    )
+    const state = [...document.querySelectorAll('[data-control="tuning"], [data-control="instrument"]')]
+      .map((b) => Math.round(b.getBoundingClientRect().top))
+    return { rows: new Set(tops).size, stateRows: new Set(state).size, count: tops.length }
+  })
+  console.log(`  [timbres] petit écran : ${rows.count} contrôles sur ${rows.rows} rangées`)
+  rec.assert(
+    'les sept contrôles tiennent sur deux rangées',
+    rows.count === 7 && rows.rows === 2,
+    `${rows.count} contrôles, ${rows.rows} rangées`
+  )
+  rec.assert(
+    'les deux boutons porteurs d’état partagent la même rangée',
+    rows.stateRows === 1,
+    `${rows.stateRows} rangée(s)`
+  )
+  await rec.shot(small, 'timbres-petit-ecran')
+  await small.close()
+}
+
 async function runResize(browser, url, rec) {
   const page = await browser.newPage()
   rec.attachConsoleListeners(page)
@@ -1417,6 +1753,8 @@ const SCENARIOS = {
   alive: runAlive,
   share: runShare,
   vernis: runVernis,
+  rythme: runRythme,
+  timbres: runTimbres,
   edit: runEdit,
   touch: runTouch,
 }

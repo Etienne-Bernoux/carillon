@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { MIN_PERIOD } from './emitter'
+
+/** Plancher de période **du format** de partage (les liens déjà émis encodent des secondes). */
+const FORMAT_MIN_PERIOD = 0.15
 import { DEFAULT_TUNING, TUNINGS } from './music'
 import { createRng } from './rng'
 import { MAX_BARS, MAX_EMITTERS, decodeScene, encodeScene, encodedLength, normalizeAngle } from './share'
@@ -20,7 +22,7 @@ function scene(barCount: number, emitterCount = 2, tuningId = DEFAULT_TUNING.id)
     emitters: Array.from({ length: emitterCount }, () => ({
       x: rng(),
       y: rng(),
-      period: MIN_PERIOD + rng() * 2,
+      period: FORMAT_MIN_PERIOD + rng() * 2,
     })),
   }
 }
@@ -56,7 +58,7 @@ describe('E1 — aller-retour fidèle', () => {
       expect(Math.abs((back?.x ?? -1) - emitter.x)).toBeLessThan(1 / 4000)
       // `y` aussi : sans cette ligne, intervertir x et y dans l'encodeur passait les 167 tests.
       expect(Math.abs((back?.y ?? -1) - emitter.y)).toBeLessThan(1 / 4000)
-      // Période sur 6 bits entre MIN_PERIOD et 4 s : un pas vaut 61 ms.
+      // Période sur 6 bits entre FORMAT_MIN_PERIOD et 4 s : un pas vaut 61 ms.
       expect(Math.abs((back?.period ?? -1) - emitter.period)).toBeLessThan(0.04)
     }
   })

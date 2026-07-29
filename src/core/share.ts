@@ -1,4 +1,3 @@
-import { MIN_PERIOD } from './emitter'
 
 /**
  * Encodage d'une scène pour la mettre dans une URL. Pur, déterministe, sans DOM.
@@ -100,6 +99,14 @@ function decode6(text: string, at: number): number | null {
   const index = ALPHABET.indexOf(text[at] ?? '')
   return index < 0 ? null : index
 }
+
+/**
+ * Plancher de période **du format**, et non de l'émetteur. Les sources s'expriment désormais en
+ * divisions de mesure (cf. `clock.ts`), mais les liens déjà émis encodent une période libre en
+ * secondes : cette borne appartient donc au format, qu'on ne touche plus, et la relecture rapproche la
+ * valeur de la division la plus voisine.
+ */
+const MIN_PERIOD = 0.15
 
 function encodePeriod(period: number): string {
   const span = PERIOD_MAX - MIN_PERIOD

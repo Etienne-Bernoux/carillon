@@ -1,3 +1,19 @@
+import { DEFAULT_BPM, divisionAt, gridTimeAfter } from './clock'
+import {
+  DEFAULT_NATURE,
+  EPHEMERAL_HITS,
+  isPresent,
+  maxBounceSpeed,
+  registerHit,
+  restitutionFor,
+} from './nature'
+import type { BarNature } from './nature'
+
+/**
+ * Division sur laquelle revient une bille recyclée : la mesure. Une bille qui revient à la croche
+ * saturerait la scène, et le retour n'est pas une pulsation — c'est une reprise de motif.
+ */
+const RECYCLE_DIVISION_INDEX = 0
 import type { Ball, Bar, Bounds, ImpactEvent, Vec2, World } from './types'
 import { dot, len2, normalize, perp, sub } from './vec'
 
@@ -141,18 +157,30 @@ export function createWorld(bounds: Bounds): World {
     gravity: { x: DEFAULT_GRAVITY.x, y: DEFAULT_GRAVITY.y },
     bounds,
     time: 0,
+    bpm: DEFAULT_BPM,
+    respawns: [],
     nextBallId: 0,
     nextBarId: 0,
     nextEmitterId: 0,
   }
 }
 
-export function addBar(world: World, a: Vec2, b: Vec2, midi: number, restitution?: number): Bar {
+export function addBar(
+  world: World,
+  a: Vec2,
+  b: Vec2,
+  midi: number,
+  restitution?: number,
+  nature: BarNature = DEFAULT_NATURE
+): Bar {
   const bar: Bar = {
     id: world.nextBarId++,
     a: { x: a.x, y: a.y },
     b: { x: b.x, y: b.y },
     restitution: restitution ?? DEFAULT_RESTITUTION,
+    nature,
+    hitsLeft: EPHEMERAL_HITS,
+    absentUntil: -1,
     midi,
     lastHitAt: -1,
   }
@@ -164,9 +192,10 @@ export function spawnBall(
   world: World,
   pos: Vec2,
   vel?: Vec2,
-  opts?: { radius?: number; hue?: number },
+  opts?: { radius?: number; hue?: number; recycle?: boolean; origin?: Vec2 },
 ): Ball {
   const v = vel ?? { x: 0, y: 0 }
+  const origin = opts?.origin ?? pos
   const ball: Ball = {
     id: world.nextBallId++,
     pos: { x: pos.x, y: pos.y },
@@ -175,6 +204,8 @@ export function spawnBall(
     alive: true,
     age: 0,
     hue: opts?.hue ?? 0,
+    origin: { x: origin.x, y: origin.y },
+    recycle: opts?.recycle ?? false,
   }
   world.balls.push(ball)
   return ball
@@ -198,6 +229,16 @@ export function stepWorld(world: World, dt: number = DT): ImpactEvent[] {
       ball.alive = false
     } else if (ball.pos.x < -SIDE_MARGIN || ball.pos.x > world.bounds.w + SIDE_MARGIN) {
       ball.alive = false
+    }
+    // Une bille recyclée ne disparaît pas : elle est **reprogrammée** sur le prochain temps de la
+    // grille. C'est ce qui fait qu'un seul geste suffit à créer un motif qui se répète, et l'alignement
+    // sur la grille est ce qui le fait tomber en phase avec les sources déjà en place.
+    if (!ball.alive && ball.recycle) {
+      world.respawns.push({
+        at: gridTimeAfter(world.time, divisionAt(RECYCLE_DIVISION_INDEX), world.bpm),
+        pos: { x: ball.origin.x, y: ball.origin.y },
+        hue: ball.hue,
+      })
     }
     died = died || !ball.alive
   }
@@ -224,6 +265,8 @@ function stepBall(world: World, ball: Ball, dt: number, events: ImpactEvent[]): 
     let bestBar: Bar | null = null
 
     for (const bar of world.bars) {
+      // Une barre éphémère absente laisse passer les billes : elle n'existe pas pour la collision.
+      if (!isPresent(bar, world.time)) continue
       const hit = sweepCircleSegment(ball.pos, ball.vel, effectiveRadius, bar.a, bar.b, remaining)
       if (hit && (!bestHit || hit.t < bestHit.t)) {
         bestHit = hit
@@ -249,10 +292,23 @@ function stepBall(world: World, ball: Ball, dt: number, events: ImpactEvent[]): 
       ball.vel.x -= vn * normal.x
       ball.vel.y -= vn * normal.y
     } else {
-      const e = bestBar.restitution
+      const e = restitutionFor(bestBar.nature, bestBar.restitution)
       const j = (1 + e) * vn
       ball.vel.x -= j * normal.x
       ball.vel.y -= j * normal.y
+
+      /*
+       * Plafond de rebond, appliqué **après** la réflexion et sur la seule composante normale : un
+       * trampoline rend plus d'énergie qu'il n'en reçoit, donc la vitesse croîtrait à chaque rebond
+       * jusqu'à ce que la bille traverse l'écran par le haut. La borne est dérivée de la scène (cf.
+       * `maxBounceSpeed`), pas choisie.
+       */
+      const outgoing = dot(ball.vel, normal)
+      const cap = maxBounceSpeed(world.gravity.y, bestHit.point.y)
+      if (outgoing > cap) {
+        ball.vel.x += (cap - outgoing) * normal.x
+        ball.vel.y += (cap - outgoing) * normal.y
+      }
 
       const tangent = perp(normal)
       const vt = dot(ball.vel, tangent)
@@ -269,6 +325,7 @@ function stepBall(world: World, ball: Ball, dt: number, events: ImpactEvent[]): 
         at,
       })
       bestBar.lastHitAt = at
+      registerHit(bestBar, speed, at, world.bpm)
     }
 
     ball.pos.x += normal.x * SEPARATION_EPS

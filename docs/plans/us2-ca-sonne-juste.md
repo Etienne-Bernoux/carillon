@@ -1,6 +1,6 @@
 # US2 — Ça sonne juste
 
-> Statut : en cours · Branche `feat/us2-ca-sonne-juste`
+> Statut : **livrée** · Branche `feat/us2-ca-sonne-juste`
 
 ## Intent
 

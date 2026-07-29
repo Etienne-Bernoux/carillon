@@ -1,6 +1,6 @@
 # US3 — Le geste agréable
 
-> Statut : en cours · Branche `feat/us3-le-geste-agreable`
+> Statut : **livrée** · Branche `feat/us3-le-geste-agreable`
 
 ## Intent
 
