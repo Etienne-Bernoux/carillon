@@ -112,6 +112,18 @@ Pièges déjà connus (issus des règles cortex, à ne pas réapprendre) :
   propriété exacte ailleurs — souvent une grandeur géométrique assertable dans le cœur pur.
 - **Un seuil se dérive du code, pas de l'intuition.** « Quitter le halo » estimé à 30 px faisait échouer
   le code correct ; le vrai nombre était 28 (`ball.radius * 7 / 2`, la demi-taille du sprite de lueur).
+- **Une mutation qui survit ne condamne pas le test.** La bonne question est « **sous quelle condition
+  ces deux codes cessent-ils d'être le même code** », pas « qu'est-ce que mon test ne couvre pas ».
+  L'accumulation d'échéance passait 19 tests sur 19 parce qu'elle est *mathématiquement identique* au
+  recalcul depuis la grille — sauf au changement de tempo. Quand aucune condition de divergence
+  n'existe, c'est le **code** qui porte une redondance
+  (`docs/solutions/mutation-survivante-nest-pas-test-faible.md`).
+- **Un test qui neutralise le mécanisme qu'il surveille ne prouve rien.** Mettre la gravité à zéro « pour
+  isoler le rebond » désactivait aussi le plafond de vitesse, qui en dépend : la mutation passait.
+  Vérifier que la grandeur testée est encore **active** dans les conditions du test.
+- **Une borne se pose dans le repère que l'œil juge.** Le plafond d'un trampoline, posé sur le point de
+  contact, laissait la bille à moitié hors de l'écran au sommet — le point de contact est sous le centre
+  de la bille. C'est le **bord** de l'objet visible qui compte.
 - **Un seuil de mise en page se vérifie de part et d'autre de sa bascule, et sur les deux axes.** Une
   media query réglée sur la largeur seule a fait passer une barre derrière le HUD sur un téléphone en
   paysage. La largeur et la hauteur posent deux problèmes différents.

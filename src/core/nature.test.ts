@@ -4,6 +4,7 @@ import { barSeconds } from './clock'
 import { MIN_IMPACT_SPEED } from './music'
 import {
   EPHEMERAL_HITS,
+  MIN_ABSENCE_SECONDS,
   NATURES,
   cycleNature,
   isPresent,
@@ -13,7 +14,7 @@ import {
   restitutionFor,
 } from './nature'
 import { DT, addBar, createWorld, spawnBall, stepWorld } from './physics'
-import type { Bar, World } from './types'
+import type { Bar, Vec2, World } from './types'
 
 function world(): World {
   return createWorld({ w: 1280, h: 800 })
@@ -93,8 +94,12 @@ describe('AE1 / R3 — un trampoline ne s’emballe pas', () => {
     }
 
     expect(bounces).toBeGreaterThanOrEqual(20)
-    // Jamais au-dessus du bord haut : c'est le critère exact, pas « à peu près dans l'écran ».
-    expect(highest).toBeGreaterThan(0)
+    /*
+     * Le **bord haut de la bille** reste dans le champ, pas seulement son centre. Une première version
+     * n'exigeait que `highest > 0` : le centre restait dedans et la bille était à moitié dehors —
+     * mesuré, centre à y = 1 pour un rayon de 8.
+     */
+    expect(highest - (w.balls[0]?.radius ?? 8)).toBeGreaterThan(0)
     // La vitesse ne dépasse pas le plafond, à la contribution de la gravité entre deux pas près.
     expect(fastest).toBeLessThan(cap + Math.abs(w.gravity.y) * DT * 2)
   })
@@ -165,6 +170,72 @@ describe('AE2 / R4 — une barre éphémère s’efface puis revient', () => {
       for (let i = 0; i < 50; i += 1) expect(registerHit(bar, 3000, i, w.bpm)).toBe(false)
       expect(isPresent(bar, 100)).toBe(true)
     }
+  })
+})
+
+describe('C9 — une absence doit s’entendre', () => {
+  it('l’absence dure au moins son plancher, **quel que soit** l’instant du dernier impact', () => {
+    /*
+     * Le retour est quantifié sur la mesure, pas la durée : une barre touchée juste avant la barre de
+     * mesure disparaissait 1 ms — un huitième de pas de simulation, donc pas du tout. On balaye toute
+     * la mesure, y compris ses derniers millièmes.
+     */
+    const w = world()
+    const measure = barSeconds(w.bpm)
+    for (const phase of [0, 0.25, 0.5, 0.9, 0.98, 0.999, 0.9999]) {
+      const bar = floor(w, 'ephemeral')
+      const time = measure * 3 + measure * phase
+      bar.hitsLeft = 1
+      registerHit(bar, 900, time, w.bpm)
+      expect(bar.absentUntil - time).toBeGreaterThanOrEqual(MIN_ABSENCE_SECONDS)
+      // Et le retour reste **sur** la grille : le plancher décale d'une mesure, il ne désaligne pas.
+      expect(Math.abs(bar.absentUntil / measure - Math.round(bar.absentUntil / measure))).toBeLessThan(
+        1e-9
+      )
+    }
+  })
+})
+
+describe('C1 — le plafond ne bride que ce qui injecte de l’énergie', () => {
+  /**
+   * Rejoue un rebond et renvoie la vitesse d'impact mesurée **par la simulation** (`impact.speed`, la
+   * composante normale avant réflexion) et la vitesse sortante. Se calibrer sur l'impact réel évite
+   * tout nombre en dur : la relation attendue est `sortant = restitution × entrant`.
+   *
+   * La gravité reste **active**. Une première version la mettait à zéro « pour isoler le rebond » — ce
+   * qui désactive le plafond lui-même (`maxBounceSpeed` vaut l'infini sans gravité) : le test
+   * neutralisait le mécanisme qu'il devait surveiller, et la mutation passait.
+   */
+  function bounceOnce(w: World, from: Vec2, vel: Vec2): { entrant: number; sortant: Vec2 } {
+    const ball = spawnBall(w, from, vel)
+    for (let i = 0; i < Math.round(2 / DT); i += 1) {
+      const impacts = stepWorld(w, DT)
+      const impact = impacts[0]
+      if (impact) return { entrant: impact.speed, sortant: { x: ball.vel.x, y: ball.vel.y } }
+    }
+    throw new Error('aucun rebond')
+  }
+
+  it('un mur vertical rend ce qu’il reçoit, sans être bridé par la place au-dessus', () => {
+    /*
+     * Première version du plafond : comparée à la composante normale de **toute** barre, dans n'importe
+     * quel sens. Mesuré, elle ramenait le sortant d'un mur vertical de 720 à 579 px/s — une barre
+     * passive qui vole de l'énergie.
+     */
+    const w = world()
+    addBar(w, { x: 900, y: 20 }, { x: 900, y: 400 }, 60)
+    const { entrant, sortant } = bounceOnce(w, { x: 700, y: 140 }, { x: 900, y: 0 })
+    expect(Math.abs(sortant.x)).toBeCloseTo(0.8 * entrant, 0)
+  })
+
+  it('un rebond vers le bas n’est pas bridé non plus', () => {
+    // Barre haute, bille qui **monte** vite : le rebond la renvoie vers le bas, donc « la place
+    // au-dessus » n'a rien à voir avec ce mouvement.
+    const w = world()
+    addBar(w, { x: 300, y: 60 }, { x: 900, y: 60 }, 60)
+    const { entrant, sortant } = bounceOnce(w, { x: 600, y: 200 }, { x: 0, y: -1200 })
+    expect(sortant.y).toBeGreaterThan(0)
+    expect(sortant.y).toBeCloseTo(0.8 * entrant, 0)
   })
 })
 

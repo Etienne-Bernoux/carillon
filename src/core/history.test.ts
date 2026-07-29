@@ -225,4 +225,17 @@ describe('déduplication et gamme — régressions de la revue US3', () => {
     history.push([bar(42)], [], TUNING)
     expect(history.undo()?.bars[0]?.lastHitAt).toBe(-1)
   })
+
+  it('C2 — un changement de nature n’est pas avalé par la déduplication', () => {
+    // La nature est de la donnée de scène : sans elle dans la comparaison, la profondeur restait à 1 et
+    // Cmd+Z sautait par-dessus le geste.
+    const history = createHistory()
+    const wall = [makeBar(1, 60)]
+    history.push(wall, [], TUNING)
+    expect(history.depth()).toBe(1)
+
+    const trampoline = [{ ...makeBar(1, 60), nature: 'trampoline' as const }]
+    history.push(trampoline, [], TUNING)
+    expect(history.depth()).toBe(2)
+  })
 })

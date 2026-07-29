@@ -61,7 +61,6 @@ export interface Bar {
 export interface Emitter {
   readonly id: number
   pos: Vec2
-  /** secondes de simulation entre deux billes */
   /**
    * Index dans `DIVISIONS` (cf. `clock.ts`) — une **division de mesure**, pas une durée libre. Deux
    * sources de même division émettent exactement en phase, indéfiniment ; deux périodes libres
