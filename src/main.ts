@@ -683,7 +683,11 @@ function applyWheelChoice(index: number): void {
 
   const bar = world.bars.find((candidate) => candidate.id === openWheel?.barId)
   if (!bar) return
-  if (bar.nature === option.value) {
+  // Retrouvée dans le catalogue plutôt qu'affirmée par un cast : la roue porte des chaînes, et c'est
+  // `NATURES` qui décide lesquelles sont des natures. Même forme que la branche instrument juste au-dessus.
+  const nature = NATURES.find((candidate) => candidate === option.value)
+  if (!nature) return
+  if (bar.nature === nature) {
     // Choisir ce qui est déjà en place ne doit pas consommer une place d'annulation, ni ré-armer une
     // barre éphémère à moitié usée : ce serait une modification déguisée en confirmation.
     announce(`Barre : ${natureLabel(bar.nature)}`)
@@ -692,7 +696,7 @@ function applyWheelChoice(index: number): void {
   // Empilé ici plutôt qu'à la préhension : c'est le seul instant où l'on sait que l'état va changer.
   history.push(world.bars, world.emitters, tuning.id)
   detachFromLink()
-  bar.nature = option.value as BarNature
+  bar.nature = nature
   rearm(bar)
   announce(`Barre : ${natureLabel(bar.nature)}`)
   userOwnsScene = true
