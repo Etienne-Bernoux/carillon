@@ -25,8 +25,10 @@ import {
 } from './core/emitter'
 import { clampBpm, divisionAt, divisionLabel, gridTimeAfter } from './core/clock'
 import { createHistory } from './core/history'
-import { DEFAULT_NATURE, NATURES, cycleNature, natureLabel, rearm } from './core/nature'
+import { DEFAULT_NATURE, NATURES, natureLabel, rearm } from './core/nature'
 import type { BarNature } from './core/nature'
+import { INNER_RADIUS, OUTER_RADIUS, fitWheel, labelAnchor, sectorAt } from './core/wheel'
+import type { Wheel } from './core/wheel'
 import {
   DEFAULT_INSTRUMENT,
   INSTRUMENTS,
@@ -559,7 +561,184 @@ function interactionFor(hit: Grab | null): Interaction {
   return { ...NO_INTERACTION, hoveredDropperId: hit.dropper.id }
 }
 
+/**
+ * Roue de sélection ouverte, ou `null`. Deux réglages y passent — la nature d'une barre et
+ * l'instrument — et le seul état partagé est celui-ci : la géométrie ne connaît ni l'un ni l'autre.
+ *
+ * `pinned` distingue les deux temps du geste. À ressort, la roue vit le temps d'un appui et le
+ * relâchement décide. Épinglée, elle survit au relâchement et c'est un tap qui décide — le cas de
+ * quelqu'un qui appuie long et relâche sans avoir bougé, c'est-à-dire de quelqu'un qui découvre.
+ */
+interface OpenWheel {
+  wheel: Wheel<string>
+  /** barre visée pour une roue de nature ; `null` pour l'instrument */
+  barId: number | null
+  aimed: number | null
+  pinned: boolean
+  /**
+   * Point où l'appui a commencé, et vrai dès que le doigt s'en est franchement éloigné.
+   *
+   * Sans ça, une roue **recadrée** trahissait le geste : ouverte près d'un bord, `fitWheel` la déplace
+   * loin du doigt, donc le pointeur immobile se retrouve dans un secteur — et relâcher sans avoir bougé
+   * appliquait une option que personne n'avait visée, au lieu d'épingler. Trouvé en regardant une
+   * capture, aucune assertion ne le voyait. La zone morte se mesure depuis l'**origine du geste**, pas
+   * depuis le centre du dessin.
+   */
+  origin: Vec2
+  committed: boolean
+}
+let openWheel: OpenWheel | null = null
+
+function openNatureWheel(bar: Bar, point: Vec2): void {
+  openWheel = {
+    wheel: {
+      center: fitWheel(point, measureSceneArea(world.bounds)),
+      options: NATURES.map((nature) => ({ value: nature, label: natureLabel(nature) })),
+      current: bar.nature,
+    },
+    barId: bar.id,
+    aimed: null,
+    pinned: false,
+    origin: point,
+    committed: false,
+  }
+}
+
+function openInstrumentWheel(): void {
+  const area = measureSceneArea(world.bounds)
+  const center = { x: (area.left + area.right) / 2, y: (area.top + area.bottom) / 2 }
+  openWheel = {
+    wheel: {
+      // Au centre de la zone de jeu : l'origine du geste est un bouton du HUD, donc une roue posée là
+      // serait à moitié hors de la scène — et `fitWheel` la recadrerait de toute façon.
+      center: fitWheel(center, area),
+      options: INSTRUMENTS.map((candidate) => ({ value: candidate.id, label: candidate.label })),
+      current: instrument.id,
+    },
+    barId: null,
+    aimed: null,
+    // Épinglée d'entrée : le geste d'ouverture est un clic, il n'y a pas d'appui à tenir.
+    pinned: true,
+    // L'origine ne sert qu'aux roues à ressort ; le centre est la valeur neutre pour une roue épinglée.
+    origin: center,
+    committed: true,
+  }
+}
+
+/**
+ * Vue de la roue pour le harnais. Une fonction plutôt qu'un objet littéral dans `stats()` : le
+ * paramètre non-nullable est ce qui évite un cast pour convaincre le compilateur qu'une fermeture ne
+ * s'est pas glissée entre le test d'ouverture et la lecture.
+ */
+function wheelStats(open: OpenWheel) {
+  return {
+    options: open.wheel.options.map((option, index) => {
+      const anchor = labelAnchor(open.wheel, index)
+      return { value: option.value, label: option.label, x: anchor.x, y: anchor.y }
+    }),
+    current: open.wheel.current,
+    aimed: open.aimed,
+    pinned: open.pinned,
+    centerX: open.wheel.center.x,
+    centerY: open.wheel.center.y,
+    outerRadius: OUTER_RADIUS,
+  }
+}
+
+function aimWheel(point: Vec2): void {
+  if (!openWheel) return
+  if (!openWheel.committed) {
+    const travelled = Math.hypot(point.x - openWheel.origin.x, point.y - openWheel.origin.y)
+    // Tant que le doigt n'a pas quitté son point de départ, rien n'est visé — et rien ne s'affiche
+    // comme visé, sinon la roue annoncerait un choix que le relâchement ne ferait pas.
+    if (travelled <= INNER_RADIUS) {
+      openWheel.aimed = null
+      return
+    }
+    openWheel.committed = true
+  }
+  const aim = sectorAt(openWheel.wheel, point)
+  openWheel.aimed = aim.kind === 'sector' ? aim.index : null
+}
+
+function applyWheelChoice(index: number): void {
+  const option = openWheel?.wheel.options[index]
+  if (!openWheel || !option) return
+
+  if (openWheel.barId === null) {
+    const next = INSTRUMENTS.find((candidate) => candidate.id === option.value)
+    if (next) {
+      applyInstrument(next)
+      // Annoncé : un changement de timbre ne s'entend qu'au prochain impact.
+      announce(`Instrument : ${next.label}`)
+    }
+    return
+  }
+
+  const bar = world.bars.find((candidate) => candidate.id === openWheel?.barId)
+  if (!bar) return
+  if (bar.nature === option.value) {
+    // Choisir ce qui est déjà en place ne doit pas consommer une place d'annulation, ni ré-armer une
+    // barre éphémère à moitié usée : ce serait une modification déguisée en confirmation.
+    announce(`Barre : ${natureLabel(bar.nature)}`)
+    return
+  }
+  // Empilé ici plutôt qu'à la préhension : c'est le seul instant où l'on sait que l'état va changer.
+  history.push(world.bars, world.emitters, tuning.id)
+  detachFromLink()
+  bar.nature = option.value as BarNature
+  rearm(bar)
+  announce(`Barre : ${natureLabel(bar.nature)}`)
+  userOwnsScene = true
+}
+
+/**
+ * Fin d'un geste sur la roue. Trois issues, et la troisième est celle qui rend la fonction découvrable
+ * plutôt que secrète : relâcher dans la zone morte **épingle** au lieu d'annuler.
+ */
+function resolveWheel(point: Vec2, cancelled: boolean): void {
+  if (!openWheel) return
+  if (cancelled) {
+    openWheel = null
+    return
+  }
+  /*
+   * Un geste qui n'a jamais quitté son origine n'a rien visé : il épingle. Décidé sur le **geste** et
+   * non sur la position absolue, sinon une roue recadrée près d'un bord appliquerait le secteur où le
+   * doigt se trouve par accident.
+   */
+  const aim = openWheel.committed ? sectorAt(openWheel.wheel, point) : ({ kind: 'pin' } as const)
+  if (aim.kind === 'pin' && !openWheel.pinned) {
+    openWheel.pinned = true
+    openWheel.aimed = null
+    // Le geste suivant est un tap neuf : il se décide à sa position, et l'origine de l'appui qui vient
+    // de s'achever ne le concerne plus. Sans ça, le premier tap dans un secteur ne choisissait rien.
+    openWheel.committed = true
+    return
+  }
+  if (aim.kind === 'sector') applyWheelChoice(aim.index)
+  openWheel = null
+}
+
 function handleGesture(gesture: Gesture): void {
+  /*
+   * Une roue épinglée capte les gestes qui **décident**, et eux seuls. Sans cette interception, le tap
+   * qui choisit un secteur ferait aussi sonner la barre en dessous, et un appui long y poserait une
+   * source : la roue volerait les gestes qu'elle est censée ne pas voler, à l'envers.
+   *
+   * Un glisser franc, lui, passe : il est sans ambiguïté (on veut dessiner), et il ferme la roue.
+   */
+  if (openWheel?.pinned) {
+    if (gesture.type === 'tap' || gesture.type === 'drop-ball' || gesture.type === 'long-press') {
+      // Écouter ou choisir ne modifie rien par soi-même : l'instantané de préhension est jeté, et
+      // `applyWheelChoice` empile le sien s'il change quelque chose.
+      pendingSnapshot = null
+      resolveWheel(gesture.point, false)
+      return
+    }
+    if (gesture.type === 'draft' || gesture.type === 'create-bar') openWheel = null
+  }
+
   switch (gesture.type) {
     case 'hover':
       interaction = interactionFor(gesture.hit)
@@ -599,11 +778,13 @@ function handleGesture(gesture: Gesture): void {
        * qu'il faut restaurer.
        */
       if (gesture.hit?.target === 'bar') {
-        commitPending()
-        detachFromLink()
-        const nature = cycleNature(gesture.hit.bar)
-        announce(`Barre : ${natureLabel(nature)}`)
-        userOwnsScene = true
+        /*
+         * La roue remplace le cyclage. Cycler cachait l'ensemble : rien n'annonçait qu'il existait
+         * trois natures, ni laquelle était en place. Rien n'est modifié à l'ouverture — c'est le
+         * relâchement qui décide, donc l'instantané de préhension n'a rien à valider.
+         */
+        openNatureWheel(gesture.hit.bar, gesture.point)
+        announce(`Nature de la barre : ${NATURES.map(natureLabel).join(', ')}`)
         fadeHint()
         break
       }
@@ -624,6 +805,16 @@ function handleGesture(gesture: Gesture): void {
       }
       userOwnsScene = true
       fadeHint()
+      break
+
+    case 'long-press-move':
+      // Viser dans la roue sans relever le doigt. Aucun effet si aucune roue n'est ouverte : l'appui
+      // long dans le vide pose une source et n'a rien à viser.
+      aimWheel(gesture.point)
+      break
+
+    case 'long-press-end':
+      resolveWheel(gesture.point, gesture.cancelled)
       break
 
     case 'drop-ball':
@@ -810,14 +1001,14 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-control
         break
       }
       case 'instrument': {
-        const index = INSTRUMENTS.findIndex((candidate) => candidate.id === instrument.id)
-        const next = INSTRUMENTS[(index + 1) % INSTRUMENTS.length]
-        if (next) {
-          applyInstrument(next)
-          // Annoncé : le changement de timbre ne s'entend qu'au prochain impact, donc sans retour
-          // immédiat on ne sait pas si le bouton a fait quelque chose.
-          announce(`Instrument : ${next.label}`)
-        }
+        /*
+         * Le bouton ouvre la roue au lieu de cycler. C'est ici que le cyclage coûtait le plus cher :
+         * revenir d'un cran sur cinq timbres demandait quatre clics, et le cinquième timbre ne se
+         * découvrait qu'en cliquant cinq fois. Deux gestes suffisent maintenant, quel que soit le
+         * timbre visé.
+         */
+        openInstrumentWheel()
+        announce(`Instrument : ${INSTRUMENTS.map((candidate) => candidate.label).join(', ')}`)
         break
       }
       case 'share': {
@@ -938,6 +1129,9 @@ function frame(now: number): void {
   renderer.draw(world, effects, draft, {
     ...interaction,
     revealHandles: world.time < revealHandlesUntil,
+    // Injecté ici et pas dans `interaction` : cet objet est reconstruit à chaque survol depuis
+    // `NO_INTERACTION`, ce qui fermerait la roue au premier mouvement de souris.
+    wheel: openWheel ? { wheel: openWheel.wheel, aimed: openWheel.aimed } : null,
   })
   requestAnimationFrame(frame)
 }
@@ -1040,6 +1234,26 @@ interface CarillonDebug {
     undoDepth: number
     /** nombre de hauteurs distinctes présentes sur la scène — mesure la richesse musicale */
     distinctPitches: number
+    /**
+     * Roue de sélection ouverte, ou `null`. Les libellés sont exposés parce que « la roue montre les
+     * cinq timbres » est une propriété du **contenu**, pas un comptage de pixels : une roue ouverte sur
+     * trois options passerait n'importe quelle assertion de surface.
+     */
+    wheel: {
+      /**
+       * Chaque option **avec le point où son libellé est dessiné**. C'est ce point que le harnais vise,
+       * donc l'assertion parcourt le vrai chemin : `labelAnchor` place, `sectorAt` relit. Rendre l'un
+       * incohérent avec l'autre casse le scénario, ce qu'une liste de libellés seule ne verrait pas.
+       */
+      options: readonly { value: string; label: string; x: number; y: number }[]
+      current: string
+      aimed: number | null
+      pinned: boolean
+      centerX: number
+      centerY: number
+      /** rayon du disque, exposé pour que « la roue tient dans la scène » s'asserte sans deviner sa taille */
+      outerRadius: number
+    } | null
   }
 }
 
@@ -1155,5 +1369,6 @@ window.__carillon = {
     droppers: world.droppers.length,
     maxBalls: MAX_BALLS,
     distinctPitches: new Set(world.bars.map((bar) => bar.midi)).size,
+    wheel: openWheel ? wheelStats(openWheel) : null,
   }),
 }

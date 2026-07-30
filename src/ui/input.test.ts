@@ -263,13 +263,69 @@ describe('machine à gestes', () => {
     vi.advanceTimersByTime(LONG_PRESS_MS + 10)
     h.up(50, 0)
 
-    expect(h.types()).toEqual(['grab', 'long-press', 'release'])
+    expect(h.types()).toEqual(['grab', 'long-press', 'long-press-end', 'release'])
     // Le geste d'écoute n'est pas volé : pas de `tap`, donc la barre ne sonne pas.
     expect(h.types()).not.toContain('tap')
     const press = h.gestures.find((g) => g.type === 'long-press')
     expect(press?.hit?.target).toBe('bar')
     const release = h.gestures.find((g) => g.type === 'release')
     expect(release?.handled).toBe(true)
+  })
+
+  it('le pointeur reste suivi après un appui long, et le relâchement dit où', () => {
+    /*
+     * C'est ce qui rend un choix radial visable dans le même geste que son ouverture. Avant l'US16, le
+     * mouvement était **supprimé** après un appui long : rien ne pouvait suivre le doigt.
+     */
+    const h = harness(fakeHit())
+    h.down(50, 0)
+    vi.advanceTimersByTime(LONG_PRESS_MS + 10)
+    h.move(50, -60)
+    h.move(90, -20)
+    h.up(90, -20)
+
+    const aims = h.gestures.filter((g) => g.type === 'long-press-move')
+    expect(aims).toHaveLength(2)
+    expect(aims[0]).toMatchObject({ point: { x: 50, y: -60 } })
+    expect(aims[1]).toMatchObject({ point: { x: 90, y: -20 } })
+    const end = h.gestures.find((g) => g.type === 'long-press-end')
+    expect(end).toMatchObject({ point: { x: 90, y: -20 }, cancelled: false })
+    // Le mouvement d'après l'appui long ne dessine pas et ne déplace pas la barre.
+    expect(h.types()).not.toContain('drag')
+    expect(h.types()).not.toContain('draft')
+  })
+
+  it('la visée commence dès le premier pixel, sans attendre le seuil de tap', () => {
+    // Sinon la roue ne réagirait pas dans ses 14 premiers pixels, ce qui se lit comme un widget mort.
+    const h = harness(null)
+    h.down(300, 300)
+    vi.advanceTimersByTime(LONG_PRESS_MS + 10)
+    h.move(303, 301)
+
+    expect(h.types()).toContain('long-press-move')
+  })
+
+  it('un appui long interrompu par le système est annoncé comme tel', () => {
+    const h = harness(null)
+    h.down(300, 300)
+    vi.advanceTimersByTime(LONG_PRESS_MS + 10)
+    h.cancel(300, 300)
+
+    expect(h.gestures.find((g) => g.type === 'long-press-end')).toMatchObject({ cancelled: true })
+  })
+
+  it('sans appui long, aucun geste de visée n’est émis', () => {
+    // Test de non-vol : les quatre gestes historiques gardent exactement leur séquence.
+    const empty = harness(null)
+    empty.down(100, 100)
+    empty.move(140, 100)
+    empty.up(140, 100)
+    expect(empty.types()).toEqual(['draft', 'draft-cancel', 'create-bar'])
+
+    const bar = harness(fakeHit())
+    bar.down(50, 0)
+    bar.up(50, 0)
+    expect(bar.types()).toEqual(['grab', 'tap'])
   })
 
   it('un appui long sur une source n’émet rien : taper une source change déjà son rythme', () => {

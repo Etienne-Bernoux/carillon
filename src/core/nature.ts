@@ -107,17 +107,13 @@ export function rearm(bar: Bar): void {
   bar.absentUntil = -1
 }
 
-/**
- * Nature suivante, en cycle. Ré-arme au passage : une barre qui devient éphémère part avec sa vie
- * pleine, et une barre qui cesse de l'être ne doit pas rester absente pour toujours.
+/*
+ * `cycleNature` a vécu ici jusqu'à l'US16. La roue de sélection l'a remplacée : elle **montre** les
+ * trois natures et laisse en choisir une, là où le cycle les cachait derrière des appuis successifs.
+ * La fonction est retirée plutôt que gardée « au cas où » — une fonction exportée et testée que rien
+ * n'appelle affirme un comportement que le produit n'a plus. Le ré-armement, lui, reste : c'est
+ * `rearm`, et il est appelé à chaque changement de nature.
  */
-export function cycleNature(bar: Bar): BarNature {
-  const index = NATURES.indexOf(bar.nature)
-  const next = NATURES[(index + 1) % NATURES.length] ?? DEFAULT_NATURE
-  bar.nature = next
-  rearm(bar)
-  return next
-}
 
 /** Nom lisible, pour l'annonce accessible. */
 export function natureLabel(nature: BarNature): string {

@@ -12,6 +12,8 @@ import { isPresent } from '../core/nature'
 import { BAR_THICKNESS } from '../core/physics'
 import { createRng } from '../core/rng'
 import type { Bounds, ImpactEvent, Vec2, World } from '../core/types'
+import { INNER_RADIUS, OUTER_RADIUS, labelAnchor, sectorStartAngle } from '../core/wheel'
+import type { WheelView } from '../core/wheel'
 import { hueForMidi } from './notation'
 
 const BG_TOP = '#0b1030'
@@ -120,6 +122,8 @@ export interface Interaction {
   pendingDeleteEmitterId: number | null
   hoveredDropperId: number | null
   pendingDeleteDropperId: number | null
+  /** roue de sélection ouverte, ou `null` : rien n'est dessiné et rien n'est calculé quand elle est fermée */
+  wheel: WheelView | null
 }
 
 export const NO_INTERACTION: Interaction = {
@@ -131,6 +135,7 @@ export const NO_INTERACTION: Interaction = {
   pendingDeleteEmitterId: null,
   hoveredDropperId: null,
   pendingDeleteDropperId: null,
+  wheel: null,
 }
 
 export interface Renderer {
@@ -547,6 +552,79 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
     }
   }
 
+  /**
+   * La roue de sélection. Dessinée **par-dessus tout** : c'est un choix en cours, et une bille qui
+   * passerait devant un secteur le rendrait illisible au moment précis où on le lit.
+   *
+   * Un voile sombre sous les secteurs plutôt qu'un simple contour : les libellés se posent sur une scène
+   * qui bouge, et sans fond opaque ils deviennent illisibles dès qu'une traînée passe dessous.
+   */
+  function drawWheel(view: WheelView): void {
+    const { wheel, aimed } = view
+    const count = wheel.options.length
+    const { x, y } = wheel.center
+    // Écart entre secteurs exprimé en pixels de l'anneau extérieur : à 3 secteurs comme à 8, le trait
+    // de séparation garde la même épaisseur à l'œil.
+    const gap = 3 / OUTER_RADIUS
+
+    base.save()
+    base.fillStyle = 'rgba(6, 9, 24, 0.82)'
+    base.beginPath()
+    base.arc(x, y, OUTER_RADIUS, 0, Math.PI * 2)
+    base.fill()
+
+    for (let index = 0; index < count; index += 1) {
+      const start = sectorStartAngle(count, index) + gap
+      const end = sectorStartAngle(count, index + 1) - gap
+      const option = wheel.options[index]
+      if (!option) continue
+      const isAimed = index === aimed
+      const isCurrent = option.value === wheel.current
+
+      base.beginPath()
+      base.arc(x, y, OUTER_RADIUS, start, end)
+      base.arc(x, y, INNER_RADIUS, end, start, true)
+      base.closePath()
+      base.fillStyle = isAimed ? 'rgba(150, 196, 255, 0.34)' : 'rgba(120, 160, 230, 0.13)'
+      base.fill()
+      base.lineWidth = isAimed ? 2 : 1
+      base.strokeStyle = isAimed ? 'rgba(214, 232, 255, 0.95)' : 'rgba(150, 180, 240, 0.35)'
+      base.stroke()
+
+      const anchor = labelAnchor(wheel, index)
+      base.font = isAimed
+        ? '700 14px ui-sans-serif, system-ui, sans-serif'
+        : '600 13px ui-sans-serif, system-ui, sans-serif'
+      base.textAlign = 'center'
+      base.textBaseline = 'middle'
+      base.fillStyle = isAimed ? '#ffffff' : 'rgba(232, 240, 255, 0.82)'
+      base.fillText(option.label, anchor.x, anchor.y)
+
+      /*
+       * L'option en place est marquée par un point, pas par une couleur : la couleur est déjà prise par
+       * la visée, et deux significations sur le même canal se confondent exactement au moment où elles
+       * comptent — quand on vise l'option courante.
+       */
+      if (isCurrent) {
+        base.beginPath()
+        base.arc(anchor.x, anchor.y + 13, 2.5, 0, Math.PI * 2)
+        base.fillStyle = 'rgba(255, 236, 170, 0.95)'
+        base.fill()
+      }
+    }
+
+    // Zone morte : relâcher ici laisse la roue ouverte, ce que le trait pointillé annonce comme « rien
+    // ne se décide ici ».
+    base.beginPath()
+    base.arc(x, y, INNER_RADIUS - 4, 0, Math.PI * 2)
+    base.setLineDash([4, 4])
+    base.lineWidth = 1
+    base.strokeStyle = aimed === null ? 'rgba(214, 232, 255, 0.7)' : 'rgba(150, 180, 240, 0.3)'
+    base.stroke()
+    base.setLineDash([])
+    base.restore()
+  }
+
   function recordTrails(world: World): void {
     for (const ball of world.balls) {
       let points = trails.get(ball.id)
@@ -634,6 +712,8 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
       drawBars(world, interaction)
       if (draft) drawDraft(draft)
       drawBalls(world)
+      // En dernier : un choix en cours ne doit pas passer sous une bille au moment où on le lit.
+      if (interaction.wheel) drawWheel(interaction.wheel)
     },
   }
 }
