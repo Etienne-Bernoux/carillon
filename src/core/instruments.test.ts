@@ -18,6 +18,8 @@ describe('catalogue', () => {
       'bois',
       'verre',
       'corde',
+      // Ajoutées **en fin** : l'index voyage dans les liens depuis le format v2.
+      'percussions',
     ])
   })
 
@@ -137,3 +139,38 @@ describe('bornes de durée', () => {
     expect(Number.isFinite(decayForNote(voice, 1e9))).toBe(true)
   })
 })
+
+describe('les percussions gardent le mapping de la géométrie', () => {
+  it('le registre décide du fût : grosse caisse en bas, cymbale en haut', () => {
+    // Une percussion est non accordée, mais on ne renonce pas au mapping : c'est le **type** de fût qui
+    // suit le registre, et la hauteur continue de moduler l'instrument.
+    const perc = instrumentById('percussions')
+    expect(perc.low.pitchDrop).toBeLessThan(1)
+    expect(perc.low.noise ?? 0).toBeLessThan(0.3)
+    expect(perc.high.noise ?? 0).toBeGreaterThan(0.5)
+    expect(perc.high.filterType).toBe('highpass')
+  })
+
+  it('une percussion est nettement plus courte que tout le reste du catalogue', () => {
+    const midi = 72
+    const decay = (id: string) => {
+      const instrument = instrumentById(id)
+      return decayForNote(voiceForMidi(instrument, midi), midiToFreq(midi))
+    }
+    for (const other of INSTRUMENTS.filter((i) => i.id !== 'percussions')) {
+      expect(decay('percussions'), other.label).toBeLessThan(decay(other.id))
+    }
+  })
+
+  it('les autres instruments n’ont ni bruit ni chute de hauteur', () => {
+    // Les trois champs sont optionnels, et absent doit signifier le comportement historique.
+    for (const instrument of INSTRUMENTS.filter((i) => i.id !== 'percussions')) {
+      for (const voice of [instrument.low, instrument.high]) {
+        expect(voice.noise ?? 0, instrument.label).toBe(0)
+        expect(voice.pitchDrop ?? 1, instrument.label).toBe(1)
+        expect(voice.filterType ?? 'lowpass', instrument.label).toBe('lowpass')
+      }
+    }
+  })
+})
+
