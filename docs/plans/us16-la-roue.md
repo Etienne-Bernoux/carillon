@@ -1,6 +1,7 @@
 # US16 — La roue
 
-> Statut : **en cours** · Branche `feat/us16-la-roue`
+> Statut : **livrée** · Branche `feat/us16-la-roue` · 306 tests unitaires, 17 scénarios navigateur
+> (243 assertions), 10 mutations tuées sur 10
 
 ## Intent
 
@@ -88,9 +89,9 @@ restaurer).
 1. **Tout secteur est atteignable** : pour tout `n` de 2 à 8 et tout indice `i`, un point posé à
    l'angle médian et au rayon médian du secteur `i` est rendu par `sectorAt` comme `i`. Propriété sur
    tout le domaine, pas sur deux cas regardés.
-2. **La zone morte annule** : tout point à une distance strictement inférieure au rayon intérieur
-   renvoie `null`, quel que soit l'angle.
-3. **Au-delà de l'anneau, annulé** : idem au-delà du rayon extérieur.
+2. **La zone morte ne choisit rien** : tout point à une distance strictement inférieure au rayon
+   intérieur renvoie `pin`, quel que soit l'angle — jamais un secteur.
+3. **Au-delà de l'anneau, annulé** : `cancel` au-delà du rayon extérieur, quel que soit l'angle.
 4. **Les frontières sont exactes** : un point posé exactement sur la frontière entre deux secteurs
    appartient à un seul des deux, et le partitionnement ne laisse **aucun trou** — la somme des
    secteurs couvre 360°.
@@ -135,3 +136,35 @@ restaurer).
 - **Un mécanisme qui ne sert qu'une fois.** Écarté par construction : deux câblages dans l'US.
 - **Le rendu joli mais illisible.** Les libellés de secteurs sur un fond de scène chargé. Se juge en
   **regardant** les captures, pas en comptant des pixels.
+
+## Ce que la vérification a trouvé
+
+### Le défaut que seule la capture voyait
+
+Les douze assertions du scénario passaient. En regardant `docs/proofs/roue/07-roue-au-bord.png`, un
+défaut de principe : près d'un bord, `fitWheel` recadre la roue **loin du doigt**. Le pointeur immobile
+tombe alors dans un secteur — donc « appuyer long, relâcher sans bouger », le geste de la découverte,
+**appliquait « éphémère »** au lieu d'épingler. La roue modifiait la scène sans que personne ait visé.
+
+Correctif : la zone morte se mesure depuis l'**origine du geste**, pas depuis le centre du dessin. Un
+geste qui n'a jamais quitté son point de départ n'a rien visé. Mutation qui le prouve : mesurer depuis
+le centre fait rougir l'assertion avec `nature=wall->ephemeral`.
+
+Leçon générale : **un recadrage qui déplace un widget déplace aussi son repère d'interaction.** Tant que
+la roue s'ouvrait sous le doigt, « centre du dessin » et « origine du geste » étaient le même point —
+deux notions confondues qui divergent exactement là où le recadrage agit.
+
+### Une mutation survivante qui condamnait le test, pas le code
+
+Retirer le centrage `- step / 2` de `sectorStartAngle` laissait le test « premier secteur centré sur le
+haut » **vert**. Le test visait pile la verticale, qui reste dans le premier secteur même quand le haut
+devient une **frontière** entre deux secteurs. La propriété réelle est le voisinage : si le haut est une
+frontière, viser en haut est un tirage au sort entre deux options. Test corrigé pour asserter un
+voisinage angulaire, puis mutation tuée.
+
+### Les dix mutations
+
+Géométrie (Vitest) : zone morte neutralisée · anneau extérieur sans borne · recadrage neutralisé ·
+premier secteur non centré · libellé posé hors de l'anneau · clamp d'index retiré.
+Interaction (harnais) : visée jamais mise à jour · relâcher au centre annule au lieu d'épingler · zone
+morte mesurée depuis le centre · roue épinglée qui ne capte plus les gestes décisifs.

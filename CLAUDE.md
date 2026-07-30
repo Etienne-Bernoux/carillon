@@ -77,6 +77,14 @@ Pièges déjà connus (issus des règles cortex, à ne pas réapprendre) :
   vérifier que l'assertion rougit, restaurer. Déjà payé — une comparaison de captures plein cadre
   passait au vert grâce à l'état `:hover` du bouton cliqué
   (`docs/solutions/tester-la-propriete-pas-son-proxy.md`).
+- **Une mutation se restaure depuis une copie, jamais par `git checkout`, et jamais avant d'avoir
+  commité.** Les deux moitiés de la règle ont été payées dans le même tour (US16) : sur un fichier
+  **neuf**, `git checkout -- <fichier>` échoue (« pathspec did not match ») et les mutations
+  s'**accumulent** en silence — les trois suivantes ne prouvent alors plus rien, et le fichier reste
+  corrompu ; sur un fichier **suivi**, il réussit trop bien et **efface le travail non commité** — une
+  US entière de `main.ts` perdue, à reconstituer. Donc : commiter d'abord, `cp` vers le scratchpad,
+  restaurer par `cp`, et vérifier qu'une mutation non appliquée (motif qui ne matche pas) est signalée
+  comme telle plutôt que comptée comme tuée.
 - **Après un test de mutation, `git diff` sur le fichier touché doit être vide**, et les preuves
   doivent être **postérieures** au code (comparer les horodatages avant de clôturer). Déjà payé : un
   résidu `void dx` a survécu à `pnpm check`, parce que c'est justement la forme qui fait taire

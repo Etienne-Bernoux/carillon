@@ -2604,6 +2604,49 @@ async function runRoue(browser, url, rec) {
     `nature=${afterCloseTap.nature} notes=${beforeCloseTap.notes}->${afterCloseTap.notes} undo=${beforeCloseTap.undoDepth}->${afterCloseTap.undoDepth}`
   )
 
+  /*
+   * --- Une roue ouverte ne survit pas à un saut d'état ---
+   *
+   * Son centre est en pixels absolus et elle vise une barre par identifiant : après un redimensionnement,
+   * un « Effacer » ou une annulation, la laisser ouverte afficherait un choix sur une scène qui n'est
+   * plus celle-là — secteurs passés sous le HUD, ou option marquée qui n'est plus en place.
+   */
+  const survivors = []
+  for (const [label, jump] of [
+    ['Effacer', async () => page.click('[data-control="clear"]')],
+    ['annulation', async () => {
+      await page.keyboard.down('Meta')
+      await page.keyboard.press('KeyZ')
+      await page.keyboard.up('Meta')
+    }],
+    ['redimensionnement', async () => page.setViewport({ width: 1024, height: 720, deviceScaleFactor: 2 })],
+  ]) {
+    await page.evaluate(() => {
+      const c = window.__carillon
+      c.reset()
+      c.addBar(400, 460, 800, 460)
+    })
+    await tick(page)
+    const target = await page.evaluate(() => window.__carillon.bars()[0])
+    await openNatureWheel(page, { x: (target.ax + target.bx) / 2, y: target.ay })
+    await page.mouse.up()
+    await wait(150)
+    const openBefore = await readWheel(page)
+    await jump()
+    await wait(250)
+    await tick(page)
+    const openAfter = await readWheel(page)
+    survivors.push(`${label}: ${openBefore ? 'ouverte' : 'fermée'} -> ${openAfter ? 'ENCORE OUVERTE' : 'fermée'}`)
+  }
+  await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await tick(page)
+  rec.assert(
+    'un saut d’état (Effacer, annulation, redimensionnement) ferme la roue',
+    survivors.every((line) => line.endsWith('-> fermée')) &&
+      survivors.every((line) => line.includes('ouverte ->')),
+    survivors.join(' | ')
+  )
+
   // --- La roue des timbres : l'ensemble d'un coup, et un aller-retour en deux gestes ---
   const catalogue = await page.evaluate(() => window.__carillon.stats().instrumentIds)
   await page.click('[data-control="instrument"]')

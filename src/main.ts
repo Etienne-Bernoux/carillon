@@ -239,6 +239,9 @@ function clearAll(): void {
   world.droppers.length = 0
   effects.clear()
   impactsTotal = 0
+  // Une roue ouverte visait une barre de cette scène : la laisser ouverte afficherait un choix sur un
+  // objet qui n'existe plus, et le tap suivant ne pourrait que ne rien faire — un widget mort à l'écran.
+  openWheel = null
 }
 
 /**
@@ -542,6 +545,9 @@ function undo(): void {
   if (restored.tuningId !== tuning.id) applyTuning(tuningById(restored.tuningId))
   pendingSnapshot = null
   interaction = { ...NO_INTERACTION }
+  // Annuler est un saut d'état : la barre restaurée peut ne plus avoir la nature que la roue affiche
+  // comme courante, donc le point de marquage mentirait sur ce qui est en place.
+  openWheel = null
   userOwnsScene = true
 }
 
@@ -1074,6 +1080,13 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-control
 
 const resizeObserver = new ResizeObserver(() => {
   world.bounds = renderer.resize()
+  /*
+   * Une roue ouverte est fermée : son centre est en **pixels absolus**, recadrés pour la zone de jeu
+   * d'avant. Après une rotation d'écran, elle se retrouverait à cheval sur le HUD ou hors champ, avec
+   * des secteurs devenus inatteignables — et elle viserait encore la scène précédente, que ce même
+   * gestionnaire peut être en train de reconstruire juste en dessous.
+   */
+  openWheel = null
   // La scène générée est calculée pour un viewport donné : après une rotation d'écran ou un
   // redimensionnement de fenêtre, elle resterait hors champ. On la reconstruit à graine identique,
   // donc à l'identique, sauf si la scène appartient désormais à l'utilisateur.
