@@ -1,7 +1,8 @@
 # US16 — La roue
 
-> Statut : **livrée** · Branche `feat/us16-la-roue` · 306 tests unitaires, 17 scénarios navigateur
-> (243 assertions), 10 mutations tuées sur 10
+> Statut : **livrée** · Branche `feat/us16-la-roue` · PR #14 · 311 tests unitaires, 17 scénarios
+> navigateur (248 assertions), 16 mutations tuées sur 16 · une passe de review adverse déléguée, qui a
+> trouvé trois défauts réels dont une assertion creuse sur le correctif principal
 
 ## Intent
 
@@ -168,9 +169,45 @@ devient une **frontière** entre deux secteurs. La propriété réelle est le vo
 frontière, viser en haut est un tirage au sort entre deux options. Test corrigé pour asserter un
 voisinage angulaire, puis mutation tuée.
 
-### Les dix mutations
+### Ce que la review adverse a trouvé, que je n'avais pas vu
+
+Trois constats sérieux, tous réels.
+
+**Mon assertion phare était creuse.** Muter « la zone morte se mesure depuis l'origine du geste » vers
+« depuis le centre du dessin » — le défaut ci-dessus, celui que l'US revendique d'avoir corrigé —
+laissait les **douze assertions vertes**. Cause : le bloc du bord ne bougeait jamais le pointeur, donc
+`aimWheel` n'était jamais appelée, `committed` restait faux, et l'assertion ne testait que
+`resolveWheel`. Elle testait la conséquence, pas le garde. Corrigée par un micro-mouvement sous le
+seuil, et une assertion sur la visée lue (`aimKind === 'pin'`) en plus de la nature inchangée.
+
+Leçon : **une assertion écrite pour un correctif doit exercer le chemin que le correctif a ajouté.**
+Ici le correctif vivait dans `aimWheel`, et l'assertion n'appelait jamais `aimWheel`.
+
+**Deux timbres sur cinq étaient illisibles.** À cinq options, « Corde (pizzicato) » et « Verre
+(cloches) » partagent la même ordonnée à 76 px d'écart et mesurent ~95 px : **18 px de recouvrement,
+garantis par l'arithmétique**. La capture montrait « Corde (pizzicdteje (cloches) ». Le risque « joli
+mais illisible » que ce plan listait s'est réalisé, sur le câblage que ce plan désigne comme le vrai
+point de douleur — et le critère 12 n'était pas tenu. Aucune assertion ne pouvait le voir : toutes
+lisaient les libellés depuis `stats()`, jamais des pixels ni des boîtes.
+
+**On choisissait à l'aveugle.** Une roue épinglée — donc **toute** roue d'instrument, ouverte au clic —
+ne mettait jamais le secteur survolé en évidence : `hover` n'est émis qu'au changement de cible, et la
+cible ne change pas dans un disque. Toute la branche « visé » du rendu était morte pour ce cas.
+
+**Et deux issues opposées avaient le même dessin** : la zone morte (qui garde la roue) et l'extérieur de
+l'anneau (qui la jette) produisaient des captures identiques au pixel près. Corrigé par un liseré rouge
+et un estompage — dont la **première version était mesurable et invisible** (251 pixels rouges contre 0,
+et rien à l'œil sur la capture). Épaissie, puis remesurée avec un contrôle propre : 0 → 589. Un signal
+qui ne passe que le test n'est pas un signal.
+
+### Les mutations
 
 Géométrie (Vitest) : zone morte neutralisée · anneau extérieur sans borne · recadrage neutralisé ·
 premier secteur non centré · libellé posé hors de l'anneau · clamp d'index retiré.
 Interaction (harnais) : visée jamais mise à jour · relâcher au centre annule au lieu d'épingler · zone
-morte mesurée depuis le centre · roue épinglée qui ne capte plus les gestes décisifs.
+morte mesurée depuis le centre · roue épinglée qui ne capte plus les gestes décisifs · fermeture retirée
+de `clearAll`, de `undo`, du redimensionnement (trois mutations distinctes) · libellé long imposé sans
+repli court · survol qui ne vise plus.
+
+Seize mutations, seize tuées — dont celle que la review avait vue **survivre**, et qui est le vrai
+verdict sur l'assertion : c'est elle qui a montré que la preuve manquait, pas le code.

@@ -77,6 +77,17 @@ Pièges déjà connus (issus des règles cortex, à ne pas réapprendre) :
   vérifier que l'assertion rougit, restaurer. Déjà payé — une comparaison de captures plein cadre
   passait au vert grâce à l'état `:hover` du bouton cliqué
   (`docs/solutions/tester-la-propriete-pas-son-proxy.md`).
+- **Une assertion écrite pour un correctif doit exercer le chemin que le correctif a ajouté.** Déjà
+  payé (US16) : le garde « la zone morte se mesure depuis l'origine du geste » vivait dans `aimWheel`,
+  et l'assertion censée le prouver ne bougeait jamais le pointeur — donc n'appelait jamais `aimWheel`.
+  Remettre le bug laissait les **douze** assertions vertes. Aucune relecture du test ne montre ce trou ;
+  une mutation le montre en une exécution. Corollaire : après avoir corrigé un défaut, **muter le
+  correctif** et pas seulement vérifier que le scénario passe.
+- **Un signal qui ne passe que le test n'est pas un signal.** Même US : le liseré d'annulation était
+  mesurable (251 pixels rouges contre 0) et parfaitement invisible en regardant la capture. Un effet
+  destiné à l'œil se dimensionne en le regardant, puis se mesure — dans cet ordre. Et sa mesure exige un
+  **contrôle propre** : les premiers pixels « rouges » comptés venaient d'une barre grave à l'écran, pas
+  du liseré.
 - **Une mutation se restaure depuis une copie, jamais par `git checkout`, et jamais avant d'avoir
   commité.** Les deux moitiés de la règle ont été payées dans le même tour (US16) : sur un fichier
   **neuf**, `git checkout -- <fichier>` échoue (« pathspec did not match ») et les mutations

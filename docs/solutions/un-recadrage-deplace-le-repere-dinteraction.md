@@ -50,17 +50,39 @@ comportements**, pas un comportement à deux positions. Un scénario qui n'exerc
 rien du bord — et l'assertion « la roue tient dans l'écran », qui elle passait, ne dit rien de ce que le
 geste **décide** dans cette position.
 
-## L'assertion qui manquait
+## L'assertion qui manquait — et la première version, creuse
+
+Premier jet, écrit juste après le correctif :
 
 ```js
 // Le doigt est resté au milieu de la barre, que `fitWheel` a laissée hors du centre de la roue.
 const pointerInSector = Math.abs(wheel.centerX - 90) > 26
-await page.mouse.up()
+await page.mouse.up()   // ← aucun mouvement de pointeur
 // La roue doit être épinglée, et la nature inchangée.
 ```
 
-Mutation qui la valide : remesurer la zone morte depuis le centre du dessin → l'assertion rougit avec
+**Elle ne testait rien.** Une review adverse l'a montré en remettant le bug : remesurer la zone morte
+depuis le centre du dessin laissait les **douze** assertions vertes. Parce que sans mouvement de
+pointeur, `aimWheel` — la fonction qui porte le garde — n'est **jamais appelée** : `committed` reste
+faux, et `resolveWheel` épingle quoi qu'il arrive. L'assertion testait la conséquence par un chemin qui
+contourne la cause.
+
+Version qui tient :
+
+```js
+// Un micro-mouvement SOUS le seuil : c'est lui qui fait passer par le garde.
+await page.mouse.move(90 + 8, 300, { steps: 2 })
+const aim = await page.evaluate(() => window.__carillon.stats().wheel?.aimKind)
+// Rien n'est visé — alors que le point est géométriquement dans un secteur.
+await page.mouse.up()
+```
+
+Mutation qui la valide : remesurer depuis le centre du dessin → l'assertion rougit, `visée=sector` puis
 `nature=wall->ephemeral`, soit exactement le défaut d'origine.
+
+**Règle générale : une assertion écrite pour un correctif doit exercer le chemin que le correctif a
+ajouté.** Ici le correctif vivait dans `aimWheel` et l'assertion n'appelait jamais `aimWheel` — le genre
+de trou qu'aucune relecture du test ne montre, et qu'une mutation montre en une exécution.
 
 ## Voir aussi
 
