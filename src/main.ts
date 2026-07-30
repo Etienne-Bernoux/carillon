@@ -1019,6 +1019,7 @@ interface CarillonDebug {
     tuning: string
     tuningIds: readonly string[]
     instrument: string
+    instrumentIds: readonly string[]
     /** nombre de sources périodiques posées */
     emitters: number
     /** poignées de toutes les barres visibles (révélation tactile) — assertable sans passer par des pixels */
@@ -1140,6 +1141,7 @@ window.__carillon = {
     tuning: tuning.id,
     tuningIds: TUNING_IDS,
     instrument: instrument.id,
+    instrumentIds: INSTRUMENT_IDS,
     undoDepth: history.depth(),
     emitters: world.emitters.length,
     revealHandles: world.time < revealHandlesUntil,

@@ -176,6 +176,16 @@ function buildVoice(
   const carrier = ctx.createOscillator()
   carrier.type = voice.wave
   carrier.frequency.value = note.freq
+  /*
+   * Chute de hauteur : c'est **la** signature d'une grosse caisse. Le « boum » n'est pas un timbre mais
+   * une fréquence qui s'effondre pendant l'extinction.
+   */
+  if (voice.pitchDrop !== undefined && voice.pitchDrop !== 1) {
+    carrier.frequency.exponentialRampToValueAtTime(
+      Math.max(note.freq * voice.pitchDrop, 20),
+      startAt + decaySeconds
+    )
+  }
 
   // Seconde couche **optionnelle** : une voix nue (le marimba aigu) doit pouvoir l'être vraiment.
   // Créer un oscillateur muet à la place coûterait du CPU pour rien à chaque note.
@@ -184,6 +194,22 @@ function buildVoice(
     layer.type = voice.layer
     layer.frequency.value = note.freq
     layer.detune.value = voice.detuneCents
+  }
+
+  /*
+   * Bruit blanc mêlé à l'oscillateur : c'est lui qui fait une caisse ou une cymbale. Le tampon est
+   * partagé et seedé, donc deux sessions entendent la même cymbale.
+   */
+  const noiseAmount = voice.noise ?? 0
+  let noise: AudioBufferSourceNode | null = null
+  let noiseGain: GainNode | null = null
+  if (noiseAmount > 0) {
+    noise = ctx.createBufferSource()
+    noise.buffer = noiseBuffer(ctx)
+    noise.loop = true
+    noiseGain = ctx.createGain()
+    noiseGain.gain.value = noiseAmount
+    noise.connect(noiseGain)
   }
 
   const voiceGain = ctx.createGain()
@@ -195,8 +221,13 @@ function buildVoice(
   )
 
   const filter = ctx.createBiquadFilter()
-  filter.type = 'lowpass'
-  filter.frequency.value = clamp(note.freq * voice.filterRatio, 400, 12000)
+  filter.type = voice.filterType ?? 'lowpass'
+  // Un passe-haut à 400 Hz minimum laisserait passer tout le grave d'une cymbale : la borne basse ne
+  // vaut que pour un passe-bas, où elle empêche d'étouffer une note grave.
+  filter.frequency.value =
+    filter.type === 'highpass'
+      ? clamp(note.freq * voice.filterRatio, 1200, 14000)
+      : clamp(note.freq * voice.filterRatio, 400, 12000)
   filter.Q.value = voice.filterQ
 
   const panner = ctx.createStereoPanner()
@@ -204,6 +235,7 @@ function buildVoice(
 
   carrier.connect(voiceGain)
   layer?.connect(voiceGain)
+  noiseGain?.connect(voiceGain)
   voiceGain.connect(filter)
   filter.connect(panner)
   for (const destination of destinations) panner.connect(destination)
@@ -213,10 +245,14 @@ function buildVoice(
   carrier.stop(stopAt)
   layer?.start(startAt)
   layer?.stop(stopAt)
+  noise?.start(startAt)
+  noise?.stop(stopAt)
 
   carrier.onended = () => {
     carrier.disconnect()
     layer?.disconnect()
+    noise?.disconnect()
+    noiseGain?.disconnect()
     voiceGain.disconnect()
     filter.disconnect()
     panner.disconnect()
@@ -329,6 +365,29 @@ function clamp(value: number, min: number, max: number): number {
  * Impulsion de réverbe générée procéduralement : bruit blanc à décroissance exponentielle.
  * Évite toute dépendance à un fichier audio externe.
  */
+/** graine du bruit percussif ; comme la réverbe, le timbre doit être identique d'une session à l'autre */
+const NOISE_SEED = 0x9e3d
+/** une seconde de bruit suffit : aucune percussion ne dure plus longtemps */
+const NOISE_SECONDS = 1
+
+/**
+ * Tampon de bruit blanc, **mémorisé par contexte**. Le régénérer à chaque note coûterait 48 000 tirages
+ * par percussion, et la chaîne hors ligne comme la chaîne réelle doivent entendre le même bruit.
+ */
+const noiseBuffers = new WeakMap<BaseAudioContext, AudioBuffer>()
+
+function noiseBuffer(ctx: BaseAudioContext): AudioBuffer {
+  const cached = noiseBuffers.get(ctx)
+  if (cached) return cached
+  const length = Math.floor(ctx.sampleRate * NOISE_SECONDS)
+  const buffer = ctx.createBuffer(1, length, ctx.sampleRate)
+  const data = buffer.getChannelData(0)
+  const rng = createRng(NOISE_SEED)
+  for (let i = 0; i < length; i += 1) data[i] = rng() * 2 - 1
+  noiseBuffers.set(ctx, buffer)
+  return buffer
+}
+
 function buildReverbImpulse(ctx: BaseAudioContext): AudioBuffer {
   const length = Math.floor(ctx.sampleRate * REVERB_SECONDS)
   const buffer = ctx.createBuffer(2, length, ctx.sampleRate)

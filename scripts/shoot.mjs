@@ -1579,8 +1579,11 @@ async function runTimbres(browser, url, rec) {
   await page.mouse.click(640, 740)
 
   const button = '[data-control="instrument"]'
+  // Le nombre vient de l'app : ajouter un instrument ne doit pas casser l'assertion, mais en oublier
+  // un dans le cycle doit la casser.
+  const catalogue = await page.evaluate(() => window.__carillon.stats().instrumentIds)
   const seen = []
-  for (let i = 0; i < 5; i += 1) {
+  for (let i = 0; i < catalogue.length + 1; i += 1) {
     const state = await page.evaluate((sel) => {
       const el = document.querySelector(sel)
       const label = el.querySelector('.label')
@@ -1591,29 +1594,37 @@ async function runTimbres(browser, url, rec) {
       }
     }, button)
 
-    // Une scène fraîche à chaque instrument, et de vraies chutes : c'est le seul moyen de prouver que
-    // ce timbre-là passe par le moteur, et pas seulement qu'un libellé a changé.
-    await page.evaluate(() => {
+    /*
+     * Une scène fraîche à chaque instrument, et de vraies chutes : c'est le seul moyen de prouver que ce
+     * timbre-là passe par le moteur, et pas seulement qu'un libellé a changé.
+     *
+     * Deux pièges rencontrés ici, opposés :
+     *
+     * 1. Attendre que le compteur de notes augmente (plafond 6 s) sortait à zéro une fois sur cinq sur
+     *    une machine chargée. Une preuve qui dépend de la charge n'est pas une preuve.
+     * 2. Tout avancer par `advance` sans pause a échoué **systématiquement** à partir du cinquième
+     *    instrument : `advance` déclenche tous les impacts au **même instant audio** — l'horloge audio
+     *    n'avance pas, elle — donc le budget de polyphonie sature et refuse les notes suivantes. Le
+     *    produit va bien ; c'était le pilotage qui était faux.
+     *
+     * D'où : impacts déclenchés par `advance` (déterministes) **et** une pause de temps réel entre deux
+     * instruments pour libérer les créneaux de voix. La dépendance au temps est ici à sens unique —
+     * attendre plus longtemps ne peut que rendre l'assertion plus vraie.
+     */
+    await wait(1500)
+    const after = await page.evaluate(() => {
       const c = window.__carillon
       c.reset()
       for (let b = 0; b < 5; b += 1) c.addBar(160 + b * 190, 400, 300 + b * 190, 440)
       // Barres courtes ET longues : la bascule grave/aigu doit être exercée, pas seulement une voix.
       c.addBar(120, 620, 1160, 660)
-      for (let k = 0; k < 8; k += 1) c.dropBall(180 + k * 130, 120)
+      // Cinq billes plutôt que huit : autant de créneaux de voix en moins à réserver d'un coup.
+      for (let k = 0; k < 5; k += 1) c.dropBall(200 + k * 210, 120)
+      c.advance(2.5)
+      return c.stats()
     })
-    // On attend la **condition**, pas une durée : les billes mettent ~1,1 s à tomber, et une attente
-    // fixe de 1,4 s rendait l'assertion instable dès qu'une frame traînait (mesuré : une itération sur
-    // cinq à 0 note, de façon non reproductible).
-    await page
-      .waitForFunction(
-        (baseline) => window.__carillon.stats().notes > baseline,
-        { timeout: 6000 },
-        state.notesBefore
-      )
-      .catch(() => {})
-    await wait(250)
-    const after = await page.evaluate(() => window.__carillon.stats())
     seen.push({ id: state.id, label: state.label, notes: after.notes - state.notesBefore })
+
     rec.assert(
       `l'instrument « ${state.label} » produit réellement des notes`,
       after.notes - state.notesBefore > 0,
@@ -1629,7 +1640,9 @@ async function runTimbres(browser, url, rec) {
   const ids = seen.map((s) => s.id)
   rec.assert(
     'le bouton parcourt tout le catalogue et revient au début',
-    ids.length === 5 && new Set(ids.slice(0, 4)).size === 4 && ids[4] === ids[0],
+    ids.length === catalogue.length + 1 &&
+      new Set(ids.slice(0, catalogue.length)).size === catalogue.length &&
+      ids[catalogue.length] === ids[0],
     ids.join(' -> ')
   )
   /*
@@ -1638,10 +1651,11 @@ async function runTimbres(browser, url, rec) {
    * `applyInstrument`. Pire, les libellés des autres assertions étant construits depuis ce même texte,
    * le journal devenait trompeur et non seulement muet.
    */
-  const distinctLabels = new Set(seen.slice(0, 4).map((s) => s.label))
+  const distinctLabels = new Set(seen.slice(0, catalogue.length).map((s) => s.label))
   rec.assert(
     'le libellé visible suit l’instrument courant',
-    distinctLabels.size === 4 && seen[4]?.label === seen[0]?.label,
+    distinctLabels.size === catalogue.length &&
+      seen[catalogue.length]?.label === seen[0]?.label,
     seen.map((s) => s.label).join(', ')
   )
 
@@ -1673,7 +1687,7 @@ async function runTimbres(browser, url, rec) {
    * jamais été réglé — ses valeurs par défaut (attaque 3 ms) laissent passer le transitoire.
    */
   const audio = []
-  for (const target of ['carillon', 'bois', 'verre', 'corde']) {
+  for (const target of catalogue) {
     const m = await page.evaluate(async (id) => {
       const btn = document.querySelector('[data-control="instrument"]')
       let guard = 0

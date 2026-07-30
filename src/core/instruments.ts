@@ -47,6 +47,21 @@ export interface Voice {
    */
   decayRatioMin: number
   decayRatioMax: number
+  /**
+   * Trois champs **optionnels**, absents de toutes les voix d'avant les percussions. Absent signifie le
+   * comportement historique — 0 de bruit, aucune chute de hauteur, filtre passe-bas — ce qui évite de
+   * recopier trois lignes neutres sur huit voix existantes.
+   */
+  /** proportion de bruit mêlée à l'oscillateur, 0..1. C'est lui qui fait une caisse ou une cymbale. */
+  noise?: number
+  /**
+   * Facteur appliqué à la fréquence sur la durée de la note. 1 = hauteur tenue ; 0,25 = deux octaves
+   * plus bas à l'extinction. C'est **la** signature d'une grosse caisse : le « boum » est une chute de
+   * hauteur, pas un timbre.
+   */
+  pitchDrop?: number
+  /** `highpass` pour une cymbale : sans ça le bruit sonne comme un souffle, pas comme du métal. */
+  filterType?: 'lowpass' | 'highpass'
 }
 
 export interface Instrument {
@@ -204,6 +219,46 @@ export const INSTRUMENTS: readonly Instrument[] = [
       decayRatioMax: 1,
     },
     crossoverMidi: 67,
+  },
+  {
+    id: 'percussions',
+    label: 'Percussions',
+    short: 'Perc.',
+    /*
+     * Une percussion est **non accordée**, alors que tout le produit repose sur la hauteur venue de la
+     * géométrie. On ne renonce donc pas au mapping : on fait varier le **type de fût** selon le registre.
+     * Une barre longue frappe une grosse caisse, une barre courte une cymbale — et la hauteur continue
+     * de moduler l'instrument, comme une caisse qu'on accorde.
+     */
+    low: {
+      // Grosse caisse : sinus qui **chute** de deux octaves en s'éteignant, filtre bas, très court.
+      wave: 'sine',
+      detuneCents: 0,
+      attackSeconds: 0.001,
+      decaySeconds: 0.28,
+      filterRatio: 1.6,
+      filterQ: 0.9,
+      brightnessDecay: 0.3,
+      decayRatioMin: 0.7,
+      decayRatioMax: 1.4,
+      noise: 0.12,
+      pitchDrop: 0.25,
+    },
+    high: {
+      // Cymbale : surtout du bruit, filtre **passe-haut**, extinction immédiate.
+      wave: 'square',
+      detuneCents: 0,
+      attackSeconds: 0.0008,
+      decaySeconds: 0.13,
+      filterRatio: 2.2,
+      filterQ: 0.8,
+      brightnessDecay: 0.5,
+      decayRatioMin: 0.5,
+      decayRatioMax: 1,
+      noise: 0.85,
+      filterType: 'highpass',
+    },
+    crossoverMidi: 69,
   },
 ] as const
 
