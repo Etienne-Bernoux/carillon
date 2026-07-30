@@ -53,7 +53,13 @@ Une fois épinglée : un tap dans un secteur choisit, un tap ailleurs ferme sans
 
 **Dedans** : `src/core/wheel.ts` pur et testé (secteurs, zone morte, recadrage dans la scène), le rendu
 dans `src/ui/renderer.ts`, le suivi du pointeur après l'appui long dans `src/ui/input.ts`, les deux
-câblages dans `main.ts`, l'annonce accessible, `prefers-reduced-motion`.
+câblages dans `main.ts`, l'annonce accessible.
+
+`prefers-reduced-motion` figurait dans ce périmètre à la rédaction : **il n'y avait rien à faire**. La
+roue n'a aucune animation — elle apparaît, elle se lit, elle disparaît. Le noter plutôt que de laisser
+la ligne cocher une fonction inexistante : une préférence « respectée » parce qu'elle ne s'applique pas
+n'est pas une préférence respectée, et si une transition d'ouverture est ajoutée un jour, c'est ici
+qu'il faudra revenir.
 
 **Dehors**
 
