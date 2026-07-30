@@ -4,6 +4,7 @@ import {
   OUTER_RADIUS,
   fitWheel,
   labelAnchor,
+  labelWidthBudget,
   sectorAt,
   sectorMidAngle,
   sectorStartAngle,
@@ -141,6 +142,51 @@ describe('labelAnchor', () => {
           kind: 'sector',
           index,
         })
+      }
+    }
+  })
+})
+
+describe('labelWidthBudget', () => {
+  it('décroît quand les options se multiplient', () => {
+    // La corde d'un secteur rétrécit avec son angle : c'est pour ça qu'un libellé long finit par ne
+    // plus tenir, et pourquoi le budget ne peut pas être une constante.
+    const budgets = COUNTS.map((count) => labelWidthBudget(count))
+    for (let i = 1; i < budgets.length; i += 1) {
+      expect(budgets[i]).toBeLessThan(budgets[i - 1] ?? Number.POSITIVE_INFINITY)
+    }
+  })
+
+  it('reste dans la corde du secteur, jamais au-delà', () => {
+    for (const count of COUNTS) {
+      const chord = 2 * MID_RADIUS * Math.sin(Math.PI / count)
+      expect(labelWidthBudget(count)).toBeLessThan(chord)
+      expect(labelWidthBudget(count)).toBeGreaterThan(0)
+    }
+  })
+
+  it('deux libellés adjacents qui tiennent dans leur budget ne se chevauchent pas', () => {
+    /*
+     * La propriété qui compte, et celle qui était fausse : à cinq options, deux libellés du bas
+     * partagent la même ordonnée et se recouvraient de 18 px. On la vérifie ici en géométrie pure,
+     * pour tout nombre d'options.
+     */
+    for (const count of COUNTS) {
+      const wheel = wheelOf(count)
+      const budget = labelWidthBudget(count)
+      for (let index = 0; index < count; index += 1) {
+        const a = labelAnchor(wheel, index)
+        const b = labelAnchor(wheel, (index + 1) % count)
+        const boxA = { left: a.x - budget / 2, right: a.x + budget / 2 }
+        const boxB = { left: b.x - budget / 2, right: b.x + budget / 2 }
+        // Le chevauchement horizontal n'est un défaut que si les ancres sont aussi proches en vertical.
+        const sameRow = Math.abs(a.y - b.y) < 12
+        if (sameRow) {
+          expect(
+            boxA.right <= boxB.left + 1e-9 || boxB.right <= boxA.left + 1e-9,
+            `count=${count} index=${index}`,
+          ).toBe(true)
+        }
       }
     }
   })

@@ -28,7 +28,7 @@ import { createHistory } from './core/history'
 import { DEFAULT_NATURE, NATURES, natureLabel, rearm } from './core/nature'
 import type { BarNature } from './core/nature'
 import { INNER_RADIUS, OUTER_RADIUS, fitWheel, labelAnchor, sectorAt } from './core/wheel'
-import type { Wheel } from './core/wheel'
+import type { Wheel, WheelAim } from './core/wheel'
 import {
   DEFAULT_INSTRUMENT,
   INSTRUMENTS,
@@ -498,6 +498,12 @@ function playBar(bar: Bar, gain: number): void {
 function removeBar(id: number): void {
   const index = world.bars.findIndex((bar) => bar.id === id)
   if (index >= 0) world.bars.splice(index, 1)
+  /*
+   * La roue qui visait cette barre est fermée. Sans ça, on pouvait jeter la barre par le bord pendant
+   * que sa roue épinglée restait à l'écran, avec ses trois options et son point de marquage : taper un
+   * secteur ne faisait alors **rien du tout**, sans un mot. Un widget mort qui ne dit pas qu'il l'est.
+   */
+  if (openWheel?.barId === id) openWheel = null
 }
 
 /** Valide l'instantané de préhension au moment où le geste devient réellement modifiant. */
@@ -579,7 +585,11 @@ interface OpenWheel {
   wheel: Wheel<string>
   /** barre visée pour une roue de nature ; `null` pour l'instrument */
   barId: number | null
-  aimed: number | null
+  /**
+   * Intention lue sous le pointeur, pas seulement un index de secteur : « ça va épingler » et « ça va
+   * annuler » sont deux issues opposées que le rendu doit montrer différemment.
+   */
+  aim: WheelAim | null
   pinned: boolean
   /**
    * Point où l'appui a commencé, et vrai dès que le doigt s'en est franchement éloigné.
@@ -603,7 +613,7 @@ function openNatureWheel(bar: Bar, point: Vec2): void {
       current: bar.nature,
     },
     barId: bar.id,
-    aimed: null,
+    aim: null,
     pinned: false,
     origin: point,
     committed: false,
@@ -618,11 +628,17 @@ function openInstrumentWheel(): void {
       // Au centre de la zone de jeu : l'origine du geste est un bouton du HUD, donc une roue posée là
       // serait à moitié hors de la scène — et `fitWheel` la recadrerait de toute façon.
       center: fitWheel(center, area),
-      options: INSTRUMENTS.map((candidate) => ({ value: candidate.id, label: candidate.label })),
+      // Le nom court sert de repli : à cinq options, « Corde (pizzicato) » et « Verre (cloches) » se
+      // recouvraient de 18 px, donc deux timbres sur cinq étaient illisibles.
+      options: INSTRUMENTS.map((candidate) => ({
+        value: candidate.id,
+        label: candidate.label,
+        short: candidate.short,
+      })),
       current: instrument.id,
     },
     barId: null,
-    aimed: null,
+    aim: null,
     // Épinglée d'entrée : le geste d'ouverture est un clic, il n'y a pas d'appui à tenir.
     pinned: true,
     // L'origine ne sert qu'aux roues à ressort ; le centre est la valeur neutre pour une roue épinglée.
@@ -643,28 +659,45 @@ function wheelStats(open: OpenWheel) {
       return { value: option.value, label: option.label, x: anchor.x, y: anchor.y }
     }),
     current: open.wheel.current,
-    aimed: open.aimed,
+    aimed: open.aim?.kind === 'sector' ? open.aim.index : null,
+    /** ce que le relâchement ferait : choisir un secteur, épingler, annuler, ou rien de lu encore */
+    aimKind: open.aim?.kind ?? null,
     pinned: open.pinned,
+    labels: renderer.wheelLabels({ wheel: open.wheel, aim: open.aim }),
     centerX: open.wheel.center.x,
     centerY: open.wheel.center.y,
     outerRadius: OUTER_RADIUS,
+    innerRadius: INNER_RADIUS,
   }
+}
+
+/**
+ * Annonce l'ouverture d'une roue. Elle dit **ce qui est en place** en plus du catalogue : annoncer
+ * seulement la liste laissait un lecteur d'écran entendre les options sans jamais savoir laquelle est
+ * la sienne — soit exactement ce que la roue a été construite pour montrer à l'œil.
+ */
+function announceWheel(current: string): void {
+  const options = openWheel?.wheel.options ?? []
+  const label = options.find((option) => option.value === current)?.label ?? current
+  announce(`${label}, parmi ${options.map((option) => option.label).join(', ')}`)
 }
 
 function aimWheel(point: Vec2): void {
   if (!openWheel) return
   if (!openWheel.committed) {
     const travelled = Math.hypot(point.x - openWheel.origin.x, point.y - openWheel.origin.y)
-    // Tant que le doigt n'a pas quitté son point de départ, rien n'est visé — et rien ne s'affiche
-    // comme visé, sinon la roue annoncerait un choix que le relâchement ne ferait pas.
+    /*
+     * Tant que le doigt n'a pas quitté son point de départ, rien n'est visé — et l'affichage annonce
+     * « ça va épingler », qui est bien ce que le relâchement ferait. Annoncer un secteur ici mentirait,
+     * puisque le garde ci-dessous l'ignorerait.
+     */
     if (travelled <= INNER_RADIUS) {
-      openWheel.aimed = null
+      openWheel.aim = { kind: 'pin' }
       return
     }
     openWheel.committed = true
   }
-  const aim = sectorAt(openWheel.wheel, point)
-  openWheel.aimed = aim.kind === 'sector' ? aim.index : null
+  openWheel.aim = sectorAt(openWheel.wheel, point)
 }
 
 function applyWheelChoice(index: number): void {
@@ -706,11 +739,11 @@ function applyWheelChoice(index: number): void {
  * Fin d'un geste sur la roue. Trois issues, et la troisième est celle qui rend la fonction découvrable
  * plutôt que secrète : relâcher dans la zone morte **épingle** au lieu d'annuler.
  */
-function resolveWheel(point: Vec2, cancelled: boolean): void {
-  if (!openWheel) return
+function resolveWheel(point: Vec2, cancelled: boolean): boolean {
+  if (!openWheel) return false
   if (cancelled) {
     openWheel = null
-    return
+    return false
   }
   /*
    * Un geste qui n'a jamais quitté son origine n'a rien visé : il épingle. Décidé sur le **geste** et
@@ -720,14 +753,16 @@ function resolveWheel(point: Vec2, cancelled: boolean): void {
   const aim = openWheel.committed ? sectorAt(openWheel.wheel, point) : ({ kind: 'pin' } as const)
   if (aim.kind === 'pin' && !openWheel.pinned) {
     openWheel.pinned = true
-    openWheel.aimed = null
+    openWheel.aim = null
     // Le geste suivant est un tap neuf : il se décide à sa position, et l'origine de l'appui qui vient
     // de s'achever ne le concerne plus. Sans ça, le premier tap dans un secteur ne choisissait rien.
     openWheel.committed = true
-    return
+    return true
   }
+  const picked = aim.kind === 'sector'
   if (aim.kind === 'sector') applyWheelChoice(aim.index)
   openWheel = null
+  return picked
 }
 
 function handleGesture(gesture: Gesture): void {
@@ -739,11 +774,29 @@ function handleGesture(gesture: Gesture): void {
    * Un glisser franc, lui, passe : il est sans ambiguïté (on veut dessiner), et il ferme la roue.
    */
   if (openWheel?.pinned) {
+    /*
+     * Le survol vise. Sans lui, une roue épinglée — c'est-à-dire **toute** roue d'instrument, ouverte
+     * au clic — ne mettait jamais en évidence le secteur sous le curseur : on choisissait à l'aveugle
+     * parmi cinq secteurs, et toute la branche « visé » du rendu était morte pour ce cas.
+     */
+    if (gesture.type === 'pointer-move') {
+      aimWheel(gesture.point)
+      return
+    }
     if (gesture.type === 'tap' || gesture.type === 'drop-ball' || gesture.type === 'long-press') {
       // Écouter ou choisir ne modifie rien par soi-même : l'instantané de préhension est jeté, et
       // `applyWheelChoice` empile le sien s'il change quelque chose.
       pendingSnapshot = null
-      resolveWheel(gesture.point, false)
+      const decided = resolveWheel(gesture.point, false)
+      /*
+       * Un appui long qui n'a rien choisi **rouvre** une roue sur la barre visée, au lieu de se
+       * contenter de congédier celle qui était là : sinon obtenir une roue demandait deux appuis longs,
+       * soit une seconde de maintien, alors que c'est LE geste qui l'ouvre.
+       */
+      if (!decided && gesture.type === 'long-press' && gesture.hit?.target === 'bar') {
+        openNatureWheel(gesture.hit.bar, gesture.point)
+        announceWheel(gesture.hit.bar.nature)
+      }
       return
     }
     if (gesture.type === 'draft' || gesture.type === 'create-bar') openWheel = null
@@ -794,7 +847,7 @@ function handleGesture(gesture: Gesture): void {
          * relâchement qui décide, donc l'instantané de préhension n'a rien à valider.
          */
         openNatureWheel(gesture.hit.bar, gesture.point)
-        announce(`Nature de la barre : ${NATURES.map(natureLabel).join(', ')}`)
+        announceWheel(gesture.hit.bar.nature)
         fadeHint()
         break
       }
@@ -815,6 +868,11 @@ function handleGesture(gesture: Gesture): void {
       }
       userOwnsScene = true
       fadeHint()
+      break
+
+    case 'pointer-move':
+      // Aucune roue épinglée : il n'y a rien à viser, et ce geste ne doit rien coûter. C'est
+      // l'interception en tête de fonction qui le traite quand une roue est ouverte.
       break
 
     case 'long-press-move':
@@ -999,6 +1057,12 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-control
   button.addEventListener('click', () => {
     void audio.unlock()
     fadeHint()
+    /*
+     * Tout bouton du HUD ferme la roue ouverte, sauf celui qui en ouvre une. Un contrôle qui agit sur
+     * la scène pendant qu'un sélecteur flotte au-dessus laisserait ce sélecteur décrire un état
+     * révolu — et « Effacer » ou la gamme sont exactement ça.
+     */
+    if (button.dataset.control !== 'instrument') openWheel = null
     switch (button.dataset.control) {
       case 'tuning': {
         const index = TUNINGS.findIndex((candidate) => candidate.id === tuning.id)
@@ -1018,7 +1082,7 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-control
          * timbre visé.
          */
         openInstrumentWheel()
-        announce(`Instrument : ${INSTRUMENTS.map((candidate) => candidate.label).join(', ')}`)
+        announceWheel(instrument.id)
         break
       }
       case 'share': {
@@ -1148,7 +1212,7 @@ function frame(now: number): void {
     revealHandles: world.time < revealHandlesUntil,
     // Injecté ici et pas dans `interaction` : cet objet est reconstruit à chaque survol depuis
     // `NO_INTERACTION`, ce qui fermerait la roue au premier mouvement de souris.
-    wheel: openWheel ? { wheel: openWheel.wheel, aimed: openWheel.aimed } : null,
+    wheel: openWheel ? { wheel: openWheel.wheel, aim: openWheel.aim } : null,
   })
   requestAnimationFrame(frame)
 }
@@ -1265,11 +1329,21 @@ interface CarillonDebug {
       options: readonly { value: string; label: string; x: number; y: number }[]
       current: string
       aimed: number | null
+      /** ce que le relâchement ferait : `sector`, `pin`, `cancel`, ou `null` si rien n'a encore été lu */
+      aimKind: 'sector' | 'pin' | 'cancel' | null
       pinned: boolean
+      /**
+       * Libellés tels qu'ils seront **dessinés** — long ou court selon ce qui tient — avec leur largeur
+       * mesurée et le budget de leur secteur. Sans ça, « les cinq timbres sont lisibles » ne s'asserte
+       * pas : deux libellés qui se recouvrent exposent la même liste de chaînes que deux libellés lisibles.
+       */
+      labels: readonly { text: string; width: number; x: number; y: number; budget: number }[]
       centerX: number
       centerY: number
       /** rayon du disque, exposé pour que « la roue tient dans la scène » s'asserte sans deviner sa taille */
       outerRadius: number
+      /** rayon de la zone morte — même raison : un seuil recopié en dur dans le harnais cesse de vouloir dire quelque chose le jour où il bouge */
+      innerRadius: number
     } | null
   }
 }

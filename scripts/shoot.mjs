@@ -2649,6 +2649,10 @@ async function runRoue(browser, url, rec) {
 
   // --- La roue des timbres : l'ensemble d'un coup, et un aller-retour en deux gestes ---
   const catalogue = await page.evaluate(() => window.__carillon.stats().instrumentIds)
+  // Scène vide : la mesure de pixels qui suit exige un **contrôle propre**. Une barre à l'écran a sa
+  // propre teinte — rouge dans le grave — et ses pixels se comptaient comme du liseré d'annulation.
+  await page.evaluate(() => window.__carillon.reset())
+  await tick(page)
   await page.click('[data-control="instrument"]')
   await tick(page)
   const instrumentWheel = await readWheel(page)
@@ -2659,6 +2663,103 @@ async function runRoue(browser, url, rec) {
       instrumentWheel.options.length === catalogue.length &&
       new Set(instrumentWheel.options.map((o) => o.label)).size === catalogue.length,
     instrumentWheel ? instrumentWheel.options.map((o) => o.label).join(', ') : 'aucune roue'
+  )
+
+  /*
+   * **Lisibles**, pas seulement présents. Une roue dont deux libellés se recouvrent expose exactement la
+   * même liste de chaînes qu'une roue lisible : c'est ce qui a laissé passer « Corde (pizzicdteje
+   * (cloches) » sur la capture des cinq timbres. On asserte donc des **boîtes** — largeur réellement
+   * mesurée par le rendu, budget géométrique du secteur, et absence de recouvrement deux à deux.
+   */
+  const labels = instrumentWheel.labels
+  const tooWide = labels.filter((l) => l.width > l.budget)
+  const overlaps = []
+  for (let i = 0; i < labels.length; i += 1) {
+    for (let j = i + 1; j < labels.length; j += 1) {
+      const a = labels[i]
+      const b = labels[j]
+      const dx = Math.abs(a.x - b.x)
+      const dy = Math.abs(a.y - b.y)
+      // Deux libellés ne se gênent que s'ils partagent une bande horizontale : au-delà, ils sont
+      // simplement l'un au-dessus de l'autre.
+      if (dy < 14 && dx < (a.width + b.width) / 2) overlaps.push(`${a.text}/${b.text}`)
+    }
+  }
+  const outsideDisc = labels.filter(
+    (l) =>
+      Math.hypot(l.x - instrumentWheel.centerX, l.y - instrumentWheel.centerY) + l.width / 2 >
+      instrumentWheel.outerRadius
+  )
+  console.log(`  [roue] libellés dessinés : ${labels.map((l) => `${l.text}(${Math.round(l.width)}/${Math.round(l.budget)}px)`).join(' ')}`)
+  rec.assert(
+    'les cinq timbres sont lisibles : chaque libellé tient dans son secteur, sans recouvrement',
+    tooWide.length === 0 && overlaps.length === 0 && outsideDisc.length === 0,
+    `trop larges=[${tooWide.map((l) => l.text)}] recouvrements=[${overlaps}] débordent du disque=[${outsideDisc.map((l) => l.text)}]`
+  )
+
+  // Le survol vise, roue épinglée comprise — sinon on choisit à l'aveugle parmi cinq secteurs.
+  const hoverTarget = instrumentWheel.options[2]
+  await page.mouse.move(hoverTarget.x, hoverTarget.y, { steps: 4 })
+  await tick(page)
+  const hovered = await page.evaluate(() => window.__carillon.stats().wheel)
+  rec.assert(
+    'promener le pointeur sur une roue épinglée met le secteur en évidence',
+    hovered?.aimed === 2 && hovered?.aimKind === 'sector',
+    `aimed=${hovered?.aimed} kind=${hovered?.aimKind}`
+  )
+
+  /*
+   * « Ça va épingler » et « ça va annuler » sont deux issues **opposées**. Elles doivent se distinguer
+   * avant le relâchement : les captures 01 et 04 étaient identiques au pixel près.
+   */
+  /*
+   * Mesuré **en pixels**, pas dans l'état : `aimKind === 'cancel'` prouve que l'app le sait, pas qu'on
+   * le voit — et la première version de ce liseré était effectivement invisible à l'écran tout en
+   * passant l'assertion d'état. On compte donc les pixels rougeâtres sur la couronne, dans deux états
+   * qui ne diffèrent que par la chose mesurée.
+   */
+  const ringRedness = async () =>
+    page.evaluate(() => {
+      const wheel = window.__carillon.stats().wheel
+      const canvas = document.querySelector('#stage')
+      const ctx = canvas.getContext('2d')
+      const dpr = canvas.width / canvas.clientWidth
+      let red = 0
+      // Balayage de la couronne extérieure, là où le liseré d'annulation est tracé.
+      for (let step = 0; step < 360; step += 1) {
+        const angle = (step / 360) * Math.PI * 2
+        for (const radius of [wheel.outerRadius - 3, wheel.outerRadius - 1, wheel.outerRadius + 1]) {
+          const px = Math.round((wheel.centerX + Math.cos(angle) * radius) * dpr)
+          const py = Math.round((wheel.centerY + Math.sin(angle) * radius) * dpr)
+          const [r, g, b] = ctx.getImageData(px, py, 1, 1).data
+          // « Rougeâtre » : le rouge domine nettement, ce que ne fait aucune couleur du décor bleu nuit.
+          if (r > 120 && r > g + 50 && r > b + 30) red += 1
+        }
+      }
+      return red
+    })
+
+  await page.mouse.move(instrumentWheel.centerX, instrumentWheel.centerY, { steps: 4 })
+  await tick(page)
+  const atCentre = await page.evaluate(() => window.__carillon.stats().wheel?.aimKind)
+  const redWhenPinning = await ringRedness()
+  await page.mouse.move(
+    instrumentWheel.centerX + instrumentWheel.outerRadius + 50,
+    instrumentWheel.centerY,
+    { steps: 4 }
+  )
+  await tick(page)
+  await rec.shot(page, 'roue-annulation-annoncee')
+  const outside = await page.evaluate(() => window.__carillon.stats().wheel?.aimKind)
+  const redWhenCancelling = await ringRedness()
+  console.log(`  [roue] liseré d'annulation : ${redWhenPinning} px rouges au centre -> ${redWhenCancelling} px hors anneau`)
+  rec.assert(
+    'la zone morte et l’extérieur de l’anneau annoncent deux issues distinctes, **à l’écran**',
+    atCentre === 'pin' &&
+      outside === 'cancel' &&
+      redWhenPinning === 0 &&
+      redWhenCancelling > 100,
+    `centre=${atCentre} (${redWhenPinning} px rouges) dehors=${outside} (${redWhenCancelling} px rouges)`
   )
 
   /*
@@ -2706,11 +2807,21 @@ async function runRoue(browser, url, rec) {
    * trouvé en regardant la capture ci-dessus, aucune assertion ne le voyait.
    */
   const natureAtEdge = await page.evaluate(() => window.__carillon.bars()[0].nature)
-  const pointerInSector = await page.evaluate(() => {
+  const edgeGeometry = await page.evaluate(() => {
     const w = window.__carillon.stats().wheel
     // Le doigt est resté au milieu de la barre, que `fitWheel` a laissée hors du centre de la roue.
-    return Math.abs(w.centerX - 90) > 26
+    return { offCentre: Math.abs(w.centerX - 90), innerRadius: w.innerRadius }
   })
+  const pointerInSector = edgeGeometry.offCentre > edgeGeometry.innerRadius
+  /*
+   * Un micro-mouvement **sous** le seuil, avant de relâcher. Sans lui, `aimWheel` n'est jamais appelée,
+   * `committed` reste faux, et l'assertion prouvait seulement que `resolveWheel` épingle — pas que le
+   * garde « la zone morte se mesure depuis l'origine du geste » existe. Vérifié : sans ce mouvement, la
+   * mutation qui remesure depuis le centre du dessin passait les douze assertions au vert.
+   */
+  await page.mouse.move(90 + 8, 300, { steps: 2 })
+  await tick(page)
+  const aimBeforeRelease = await page.evaluate(() => window.__carillon.stats().wheel?.aimKind)
   await page.mouse.up()
   await wait(150)
   const edgeRelease = await page.evaluate(() => ({
@@ -2718,12 +2829,14 @@ async function runRoue(browser, url, rec) {
     wheel: window.__carillon.stats().wheel,
   }))
   rec.assert(
-    'roue recadrée : relâcher sans avoir bougé épingle et n’applique rien',
+    'roue recadrée : un micro-mouvement ne vise rien, et le relâchement épingle sans rien appliquer',
     pointerInSector &&
+      // La visée est lue et vaut « ça va épingler », alors que le point est géométriquement dans un secteur.
+      aimBeforeRelease === 'pin' &&
       edgeRelease.wheel !== null &&
       edgeRelease.wheel.pinned === true &&
       edgeRelease.nature === natureAtEdge,
-    `recadrée=${pointerInSector} épinglée=${edgeRelease.wheel?.pinned} nature=${natureAtEdge}->${edgeRelease.nature}`
+    `recadrée de ${Math.round(edgeGeometry.offCentre)}px (zone morte ${edgeGeometry.innerRadius}) | visée=${aimBeforeRelease} | épinglée=${edgeRelease.wheel?.pinned} | nature=${natureAtEdge}->${edgeRelease.nature}`
   )
   // Refermée pour ne pas laisser la roue ouverte sur le viewport suivant.
   await page.mouse.click(atEdge.width - 40, atEdge.height / 2)
@@ -2795,6 +2908,16 @@ async function runRoue(browser, url, rec) {
       phone.scrollWidth <= phone.width,
     `disque ${Math.round(phoneDisc.left)}..${Math.round(phoneDisc.right)} dans ${phone.width}, scrollWidth=${phone.scrollWidth}, ${phoneUnderHud.length} chevauchement(s)`
   )
+
+  /*
+   * On ne laisse pas le scénario s'achever sur une roue épinglée. Un état ouvert survit aux gestes
+   * suivants et les capte : c'est ce qui a produit un faux négatif pendant la revue, une sonde ajoutée
+   * en fin de scénario voyant son appui long avalé par une roue oubliée là.
+   */
+  await page.mouse.click(20, phone.height / 2)
+  await wait(120)
+  const leftOpen = await readWheel(page)
+  rec.assert('le scénario ne laisse aucune roue ouverte derrière lui', leftOpen === null, `roue=${leftOpen}`)
 
   await page.close()
 }

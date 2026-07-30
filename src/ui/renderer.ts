@@ -12,8 +12,14 @@ import { isPresent } from '../core/nature'
 import { BAR_THICKNESS } from '../core/physics'
 import { createRng } from '../core/rng'
 import type { Bounds, ImpactEvent, Vec2, World } from '../core/types'
-import { INNER_RADIUS, OUTER_RADIUS, labelAnchor, sectorStartAngle } from '../core/wheel'
-import type { WheelView } from '../core/wheel'
+import {
+  INNER_RADIUS,
+  OUTER_RADIUS,
+  labelAnchor,
+  labelWidthBudget,
+  sectorStartAngle,
+} from '../core/wheel'
+import type { WheelOption, WheelView } from '../core/wheel'
 import { hueForMidi } from './notation'
 
 const BG_TOP = '#0b1030'
@@ -138,6 +144,18 @@ export const NO_INTERACTION: Interaction = {
   wheel: null,
 }
 
+/**
+ * Un libellé de roue tel qu'il a été **dessiné** : son texte (long ou court, selon ce qui tenait), sa
+ * largeur mesurée, son ancre, et le budget géométrique de son secteur.
+ */
+export interface LabelBox {
+  text: string
+  width: number
+  x: number
+  y: number
+  budget: number
+}
+
 export interface Renderer {
   resize(): Bounds
   draw(world: World, effects: Effects, draft: Draft | null, interaction: Interaction): void
@@ -159,6 +177,12 @@ export interface Renderer {
    * même si `syncReducedMotion` n'avait jamais propagé la valeur.
    */
   isReducedMotion(): boolean
+  /**
+   * Libellés de la roue tels qu'ils seraient dessinés maintenant. Exposé parce que « les cinq timbres
+   * sont lisibles » ne se démontre ni par une liste de chaînes (identique quand deux se recouvrent) ni
+   * par un comptage de pixels : il se démontre sur des boîtes.
+   */
+  wheelLabels(view: WheelView): LabelBox[]
 }
 
 /**
@@ -559,8 +583,42 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
    * Un voile sombre sous les secteurs plutôt qu'un simple contour : les libellés se posent sur une scène
    * qui bouge, et sans fond opaque ils deviennent illisibles dès qu'une traînée passe dessous.
    */
+  /**
+   * Libellé réellement dessiné pour un secteur, et sa largeur mesurée. Le long si sa mesure tient dans
+   * le budget géométrique, sinon le court. La mesure vit ici parce que c'est le seul endroit qui sache
+   * mesurer un texte ; le budget vient du cœur pur, qui sait la géométrie.
+   */
+  function labelFor(option: WheelOption<string>, count: number, aimed: boolean): { text: string; width: number } {
+    base.font = wheelFont(aimed)
+    const full = base.measureText(option.label).width
+    if (full <= labelWidthBudget(count) || !option.short) return { text: option.label, width: full }
+    return { text: option.short, width: base.measureText(option.short).width }
+  }
+
+  function wheelFont(aimed: boolean): string {
+    return aimed
+      ? '700 14px ui-sans-serif, system-ui, sans-serif'
+      : '600 13px ui-sans-serif, system-ui, sans-serif'
+  }
+
+  /**
+   * Ce qui a été dessiné, pour que « les cinq timbres sont lisibles » s'asserte sur des **boîtes**
+   * plutôt que sur une liste de chaînes. Une roue dont deux libellés se recouvrent expose exactement la
+   * même liste qu'une roue lisible — c'est le défaut qui est passé, et il s'est vu sur une capture.
+   */
+  function wheelLabelBoxes(view: WheelView): LabelBox[] {
+    const count = view.wheel.options.length
+    return view.wheel.options.flatMap((option, index) => {
+      const anchor = labelAnchor(view.wheel, index)
+      const aimed = view.aim?.kind === 'sector' && view.aim.index === index
+      const { text, width } = labelFor(option, count, aimed)
+      return [{ text, width, x: anchor.x, y: anchor.y, budget: labelWidthBudget(count) }]
+    })
+  }
+
   function drawWheel(view: WheelView): void {
-    const { wheel, aimed } = view
+    const { wheel } = view
+    const aimed = view.aim?.kind === 'sector' ? view.aim.index : null
     const count = wheel.options.length
     const { x, y } = wheel.center
     // Écart entre secteurs exprimé en pixels de l'anneau extérieur : à 3 secteurs comme à 8, le trait
@@ -592,13 +650,12 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
       base.stroke()
 
       const anchor = labelAnchor(wheel, index)
-      base.font = isAimed
-        ? '700 14px ui-sans-serif, system-ui, sans-serif'
-        : '600 13px ui-sans-serif, system-ui, sans-serif'
+      const drawn = labelFor(option, count, isAimed)
+      base.font = wheelFont(isAimed)
       base.textAlign = 'center'
       base.textBaseline = 'middle'
       base.fillStyle = isAimed ? '#ffffff' : 'rgba(232, 240, 255, 0.82)'
-      base.fillText(option.label, anchor.x, anchor.y)
+      base.fillText(drawn.text, anchor.x, anchor.y)
 
       /*
        * L'option en place est marquée par un point, pas par une couleur : la couleur est déjà prise par
@@ -613,15 +670,41 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
       }
     }
 
-    // Zone morte : relâcher ici laisse la roue ouverte, ce que le trait pointillé annonce comme « rien
-    // ne se décide ici ».
+    /*
+     * Zone morte : relâcher ici garde la roue. Le trait s'allume quand le pointeur y est, et **au rayon
+     * exact** de la zone — dessiné 4 px en dedans, il annonçait une cible plus petite que la vraie.
+     */
     base.beginPath()
-    base.arc(x, y, INNER_RADIUS - 4, 0, Math.PI * 2)
+    base.arc(x, y, INNER_RADIUS, 0, Math.PI * 2)
     base.setLineDash([4, 4])
     base.lineWidth = 1
-    base.strokeStyle = aimed === null ? 'rgba(214, 232, 255, 0.7)' : 'rgba(150, 180, 240, 0.3)'
+    base.strokeStyle = view.aim?.kind === 'pin' ? 'rgba(214, 232, 255, 0.8)' : 'rgba(150, 180, 240, 0.28)'
     base.stroke()
     base.setLineDash([])
+
+    /*
+     * Hors de l'anneau : relâcher **jette**. Sans signal distinct, cet état était identique au pixel
+     * près à celui de la zone morte, qui fait l'inverse — deux issues opposées, un seul dessin. La roue
+     * entière s'estompe, et un liseré rouge sur le bord dit où le choix s'arrête.
+     */
+    if (view.aim?.kind === 'cancel') {
+      base.fillStyle = 'rgba(6, 9, 24, 0.6)'
+      base.beginPath()
+      base.arc(x, y, OUTER_RADIUS, 0, Math.PI * 2)
+      base.fill()
+      /*
+       * Épais et franc. Une première version à 2 px et 0,85 d'opacité était **mesurable** (251 pixels
+       * rouges contre 0) et pourtant invisible en regardant la capture : un signal qui ne passe que le
+       * test n'est pas un signal. La même leçon que les étincelles de l'US6.
+       */
+      base.strokeStyle = 'rgba(255, 120, 140, 0.95)'
+      base.lineWidth = 5
+      base.setLineDash([10, 8])
+      base.beginPath()
+      base.arc(x, y, OUTER_RADIUS - 2, 0, Math.PI * 2)
+      base.stroke()
+      base.setLineDash([])
+    }
     base.restore()
   }
 
@@ -687,6 +770,9 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
     resize,
     isReducedMotion() {
       return reducedMotion
+    },
+    wheelLabels(view) {
+      return wheelLabelBoxes(view)
     },
     trailPointCount() {
       let total = 0

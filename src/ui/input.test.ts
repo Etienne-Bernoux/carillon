@@ -142,7 +142,30 @@ describe('machine à gestes', () => {
     h.move(50, 0)
     h.move(52, 0)
     h.move(54, 0)
-    expect(h.types()).toEqual(['hover'])
+    // `hover` reconstruit un état de mise en évidence : il reste émis au **changement de cible** et
+    // nulle part ailleurs. Le suivi continu, lui, est un geste distinct — c'est l'objet du test suivant.
+    expect(h.types().filter((type) => type === 'hover')).toEqual(['hover'])
+  })
+
+  it('suit le pointeur libre à chaque mouvement, pour viser dans une roue ouverte', () => {
+    /*
+     * Sans ce geste, promener la souris dans une roue épinglée ne produisait **aucun** événement :
+     * `hover` n'est émis qu'au changement de cible, et la cible ne change pas dans un disque. On
+     * choisissait donc à l'aveugle, sans jamais voir le secteur sous le curseur.
+     */
+    const h = harness(fakeHit())
+    h.move(50, 0)
+    h.move(52, 0)
+    h.move(54, 0)
+    const moves = h.gestures.filter((gesture) => gesture.type === 'pointer-move')
+    expect(moves).toHaveLength(3)
+    expect(moves.at(-1)).toMatchObject({ point: { x: 54, y: 0 } })
+  })
+
+  it('ne suit pas le pointeur au doigt : il n’y a pas de pointeur libre au tactile', () => {
+    const h = harness(fakeHit())
+    h.move(50, 0, 'touch')
+    expect(h.types()).not.toContain('pointer-move')
   })
 
   it('n’émet pas de survol au doigt (il n’y a pas de survol tactile)', () => {

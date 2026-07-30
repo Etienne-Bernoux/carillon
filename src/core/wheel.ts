@@ -25,6 +25,16 @@ export const OUTER_RADIUS = 104
 export interface WheelOption<T extends string> {
   value: T
   label: string
+  /**
+   * Libellé de repli, plus court, quand `label` ne tient pas dans son secteur. Absent = le libellé
+   * long est le seul disponible.
+   *
+   * Il existe parce que la largeur d'un secteur **décroît avec le nombre d'options** : à cinq timbres,
+   * « Corde (pizzicato) » et « Verre (cloches) » se chevauchaient de 18 px et l'un des deux devenait
+   * illisible — sur le réglage même qui justifiait la roue. Un libellé qu'on ne peut pas lire n'est pas
+   * une option qu'on peut choisir.
+   */
+  short?: string
 }
 
 export interface Wheel<T extends string> {
@@ -100,13 +110,30 @@ export function sectorAt<T extends string>(wheel: Wheel<T>, point: Vec2): WheelA
 }
 
 /**
- * Ce que le rendu doit montrer d'une roue ouverte. `aimed` est le secteur sous le pointeur — `null`
- * quand il est dans la zone morte ou hors de l'anneau, deux états qui ne choisissent rien et ne doivent
- * donc pas s'afficher comme un choix imminent.
+ * Largeur disponible pour un libellé, à son ancre : la **corde** du secteur au rayon du libellé, moins
+ * une marge des deux côtés.
+ *
+ * C'est de la géométrie, donc ça vit ici et c'est testable sans canvas. Le rendu, lui, sait mesurer un
+ * texte — la décision « ce libellé tient-il » a besoin des deux, et se prend là où le texte se mesure.
+ */
+export function labelWidthBudget(count: number): number {
+  const radius = (INNER_RADIUS + OUTER_RADIUS) / 2
+  const chord = 2 * radius * Math.sin(Math.PI / count)
+  // Marge de 6 px de chaque côté : deux libellés qui se touchent exactement se lisent comme un seul mot.
+  return Math.max(0, chord - 12)
+}
+
+/**
+ * Ce que le rendu doit montrer d'une roue ouverte.
+ *
+ * `aim` est l'intention lue sous le pointeur, **pas** seulement un index : la zone morte et l'extérieur
+ * de l'anneau ne choisissent ni l'un ni l'autre, mais l'un **épingle** et l'autre **annule**. Les
+ * confondre en un `aimed: number | null` donnait deux issues opposées avec un seul état visuel — deux
+ * captures identiques au pixel près pour « ça va rester ouvert » et « ça va être jeté ».
  */
 export interface WheelView {
   wheel: Wheel<string>
-  aimed: number | null
+  aim: WheelAim | null
 }
 
 export interface Rect {

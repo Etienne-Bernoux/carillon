@@ -17,6 +17,15 @@ export const LONG_PRESS_MS = 500
  */
 export type Gesture =
   | { type: 'hover'; hit: Grab | null }
+  /**
+   * Position du pointeur **libre** (aucun bouton enfoncé), à chaque mouvement.
+   *
+   * `hover` ne suffit pas : il n'est émis qu'au **changement de cible**, donc promener la souris dans
+   * un choix radial ouvert ne produisait aucun événement et rien ne se mettait en évidence. Le coût
+   * d'un événement par mouvement est assumé ici parce que son gestionnaire sort immédiatement quand
+   * rien n'est ouvert — c'est `hover` qui reconstruit un état, pas celui-ci.
+   */
+  | { type: 'pointer-move'; point: Vec2 }
   | { type: 'draft'; a: Vec2; b: Vec2 }
   | { type: 'draft-cancel' }
   | { type: 'create-bar'; a: Vec2; b: Vec2 }
@@ -150,6 +159,7 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
 
     if (event.pointerId !== activePointer || !start || !last) {
       if (event.pointerType === 'touch') return
+      handlers.onGesture({ type: 'pointer-move', point })
       // Survol : on ne réémet que sur changement, sinon c'est un événement par pixel parcouru.
       const hit = handlers.hitTest(point, radiiFor(event))
       // Clé d'identité du survol, valable pour les deux natures de cible : c'est elle qui évite de

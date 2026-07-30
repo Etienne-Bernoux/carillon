@@ -107,14 +107,6 @@ export function rearm(bar: Bar): void {
   bar.absentUntil = -1
 }
 
-/*
- * `cycleNature` a vécu ici jusqu'à l'US16. La roue de sélection l'a remplacée : elle **montre** les
- * trois natures et laisse en choisir une, là où le cycle les cachait derrière des appuis successifs.
- * La fonction est retirée plutôt que gardée « au cas où » — une fonction exportée et testée que rien
- * n'appelle affirme un comportement que le produit n'a plus. Le ré-armement, lui, reste : c'est
- * `rearm`, et il est appelé à chaque changement de nature.
- */
-
 /** Nom lisible, pour l'annonce accessible. */
 export function natureLabel(nature: BarNature): string {
   if (nature === 'trampoline') return 'trampoline'
