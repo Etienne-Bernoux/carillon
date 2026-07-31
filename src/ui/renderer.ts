@@ -15,6 +15,7 @@ import type { Bounds, ImpactEvent, Vec2, World } from '../core/types'
 import {
   INNER_RADIUS,
   OUTER_RADIUS,
+  chooseLabels,
   labelAnchor,
   labelWidthBudget,
   sectorStartAngle,
@@ -150,6 +151,8 @@ export const NO_INTERACTION: Interaction = {
  */
 export interface LabelBox {
   text: string
+  /** lignes réellement écrites : une, ou deux quand le libellé long ne tient qu'en le coupant */
+  lines: string[]
   width: number
   x: number
   y: number
@@ -588,11 +591,27 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
    * le budget géométrique, sinon le court. La mesure vit ici parce que c'est le seul endroit qui sache
    * mesurer un texte ; le budget vient du cœur pur, qui sait la géométrie.
    */
-  function labelFor(option: WheelOption<string>, count: number, aimed: boolean): { text: string; width: number } {
+  function labelFor(
+    option: WheelOption<string>,
+    options: readonly WheelOption<string>[],
+    count: number,
+    aimed: boolean,
+  ): { lines: string[]; width: number } {
+    /*
+     * `save`/`restore` autour d'une écriture de police : `measureText` en a besoin, mais une fonction
+     * qui **observe** ne doit pas laisser le contexte de dessin modifié derrière elle. C'était inoffensif
+     * tant que chaque `fillText` reposait sa police juste avant — soit un effet d'observateur à un
+     * refactor près.
+     */
+    base.save()
     base.font = wheelFont(aimed)
-    const full = base.measureText(option.label).width
-    if (full <= labelWidthBudget(count) || !option.short) return { text: option.label, width: full }
-    return { text: option.short, width: base.measureText(option.short).width }
+    const measure = (text: string) => base.measureText(text).width
+    // Toute la roue est consultée, pas seulement cette option : la stratégie est commune (cf. `chooseLabels`).
+    const index = options.indexOf(option)
+    const lines = chooseLabels(options, labelWidthBudget(count), measure)[index] ?? [option.label]
+    const width = Math.max(...lines.map(measure))
+    base.restore()
+    return { lines, width }
   }
 
   function wheelFont(aimed: boolean): string {
@@ -611,8 +630,10 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
     return view.wheel.options.flatMap((option, index) => {
       const anchor = labelAnchor(view.wheel, index)
       const aimed = view.aim?.kind === 'sector' && view.aim.index === index
-      const { text, width } = labelFor(option, count, aimed)
-      return [{ text, width, x: anchor.x, y: anchor.y, budget: labelWidthBudget(count) }]
+      const { lines, width } = labelFor(option, view.wheel.options, count, aimed)
+      return [
+        { text: lines.join(' '), lines, width, x: anchor.x, y: anchor.y, budget: labelWidthBudget(count) },
+      ]
     })
   }
 
@@ -626,7 +647,9 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
     const gap = 3 / OUTER_RADIUS
 
     base.save()
-    base.fillStyle = 'rgba(6, 9, 24, 0.82)'
+    // Presque opaque : le disque **capte** les gestes, il doit donc avoir l'air de les capter. À 0,82 on
+    // voyait les barres au travers, ce qui laissait croire qu'on pouvait encore les viser.
+    base.fillStyle = 'rgba(6, 9, 24, 0.94)'
     base.beginPath()
     base.arc(x, y, OUTER_RADIUS, 0, Math.PI * 2)
     base.fill()
@@ -650,12 +673,15 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
       base.stroke()
 
       const anchor = labelAnchor(wheel, index)
-      const drawn = labelFor(option, count, isAimed)
+      const drawn = labelFor(option, wheel.options, count, isAimed)
       base.font = wheelFont(isAimed)
       base.textAlign = 'center'
       base.textBaseline = 'middle'
       base.fillStyle = isAimed ? '#ffffff' : 'rgba(232, 240, 255, 0.82)'
-      base.fillText(drawn.text, anchor.x, anchor.y)
+      // Deux lignes centrées sur l'ancre : sans le décalage, elles se superposeraient exactement.
+      const lineHeight = 14
+      const top = anchor.y - ((drawn.lines.length - 1) * lineHeight) / 2
+      drawn.lines.forEach((line, row) => base.fillText(line, anchor.x, top + row * lineHeight))
 
       /*
        * L'option en place est marquée par un point, pas par une couleur : la couleur est déjà prise par
@@ -678,16 +704,27 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
     base.arc(x, y, INNER_RADIUS, 0, Math.PI * 2)
     base.setLineDash([4, 4])
     base.lineWidth = 1
-    base.strokeStyle = view.aim?.kind === 'pin' ? 'rgba(214, 232, 255, 0.8)' : 'rgba(150, 180, 240, 0.28)'
+    /*
+     * `aim === null` — rien n'a encore été lu — se dessine comme `pin`, parce que c'est **ce que le
+     * relâchement ferait**. Le traiter comme « pas pin » éteignait l'affordance « relâcher ici garde la
+     * roue » exactement à l'instant où elle s'adresse à quelqu'un qui découvre : première image, doigt
+     * encore immobile. À la souris c'était transitoire ; au doigt, ça durait tout l'appui.
+     */
+    const willPin = view.aim === null || view.aim.kind === 'pin'
+    base.strokeStyle = willPin ? 'rgba(214, 232, 255, 0.8)' : 'rgba(150, 180, 240, 0.28)'
     base.stroke()
     base.setLineDash([])
 
     /*
-     * Hors de l'anneau : relâcher **jette**. Sans signal distinct, cet état était identique au pixel
-     * près à celui de la zone morte, qui fait l'inverse — deux issues opposées, un seul dessin. La roue
-     * entière s'estompe, et un liseré rouge sur le bord dit où le choix s'arrête.
+     * Hors de l'anneau, **pointeur enfoncé** : relâcher jette. Sans signal distinct, cet état était
+     * identique au pixel près à celui de la zone morte, qui fait l'inverse — deux issues opposées, un
+     * seul dessin. La roue s'estompe, et un liseré rouge dit où le choix s'arrête.
+     *
+     * Réservé aux roues **à ressort** : sur une roue épinglée, le relâchement n'est pas imminent et
+     * sortir de l'anneau est le trajet normal depuis le bouton qui l'a ouverte. L'alarme s'affichait
+     * alors pendant tout le temps de lecture des options.
      */
-    if (view.aim?.kind === 'cancel') {
+    if (view.aim?.kind === 'cancel' && !view.pinned) {
       base.fillStyle = 'rgba(6, 9, 24, 0.6)'
       base.beginPath()
       base.arc(x, y, OUTER_RADIUS, 0, Math.PI * 2)

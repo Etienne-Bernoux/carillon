@@ -124,6 +124,63 @@ export function labelWidthBudget(count: number): number {
 }
 
 /**
+ * Ce qu'il faut écrire dans un secteur, en une ou deux lignes, sachant ce qu'on peut mesurer.
+ *
+ * Pur : la mesure du texte est **injectée**, donc la décision se teste sans canvas — c'est la seule
+ * façon d'épingler « le libellé long est gardé quand il tient », que rien ne prouvait tant que la
+ * décision vivait dans le rendu.
+ *
+ * L'ordre des replis n'est pas arbitraire. Tomber directement sur le nom court fait de la roue un
+ * afficheur d'initiales : « Bois » et « Verre » sont des matériaux, pas des timbres, et « Verre » comme
+ * « Carillon » sont deux cloches. On essaie donc **deux lignes** avant de renoncer à l'information —
+ * « Bois » / « (marimba) » tient là où « Bois (marimba) » ne tient pas.
+ */
+export function chooseLabel<T extends string>(
+  option: WheelOption<T>,
+  budget: number,
+  measure: (text: string) => number,
+): string[] {
+  if (measure(option.label) <= budget) return [option.label]
+
+  const cut = option.label.lastIndexOf(' ')
+  if (cut > 0) {
+    const lines = [option.label.slice(0, cut), option.label.slice(cut + 1)]
+    if (lines.every((line) => measure(line) <= budget)) return lines
+  }
+
+  // Dernier recours : le nom court. Retenu même s'il déborde — il n'y a rien de plus petit à dire.
+  return [option.short ?? option.label]
+}
+
+/**
+ * Libellés de **toute** la roue, avec une stratégie **unique** pour l'ensemble.
+ *
+ * La décision est prise une fois plutôt qu'option par option, parce qu'un secteur écrit « Verre
+ * (cloches) » à côté d'un secteur écrit « Corde » se lit comme un défaut, pas comme une règle : rien,
+ * du point de vue de celui qui regarde, ne justifie que deux options frères soient traitées
+ * différemment. On garde donc les noms complets **tant que tous** tiennent — au besoin sur deux
+ * lignes — et sinon on passe tout le monde au nom court.
+ *
+ * Le prix est assumé et connu : à cinq timbres, aucun nom complet ne tient, donc la roue affiche
+ * « Bois », « Verre », « Corde », qui sont des matériaux plutôt que des timbres. Les noms complets
+ * restent dans l'annonce accessible et sur le bouton. Élargir l'anneau les ferait tenir, mais un disque
+ * de 260 px occupe 69 % d'un écran de 375 px.
+ */
+export function chooseLabels<T extends string>(
+  options: readonly WheelOption<T>[],
+  budget: number,
+  measure: (text: string) => number,
+): string[][] {
+  const full = options.map((option) => chooseLabel(option, budget, measure))
+  const everyFullNameFits = full.every(
+    (lines, index) =>
+      lines.join(' ') === options[index]?.label && lines.every((line) => measure(line) <= budget),
+  )
+  if (everyFullNameFits) return full
+  return options.map((option) => [option.short ?? option.label])
+}
+
+/**
  * Ce que le rendu doit montrer d'une roue ouverte.
  *
  * `aim` est l'intention lue sous le pointeur, **pas** seulement un index : la zone morte et l'extérieur
@@ -134,6 +191,13 @@ export function labelWidthBudget(count: number): number {
 export interface WheelView {
   wheel: Wheel<string>
   aim: WheelAim | null
+  /**
+   * Roue épinglée : elle survit au relâchement, donc le pointeur hors de l'anneau est le **trajet
+   * normal** vers ses secteurs, pas une intention d'annuler. Sans cette distinction, la roue des timbres
+   * s'affichait estompée et cerclée de rouge pendant tout le temps où on la lisait — le signal était
+   * juste sur le fond et faux dans le temps.
+   */
+  pinned: boolean
 }
 
 export interface Rect {

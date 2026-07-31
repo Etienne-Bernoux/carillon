@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   INNER_RADIUS,
   OUTER_RADIUS,
+  chooseLabel,
+  chooseLabels,
   fitWheel,
   labelAnchor,
   labelWidthBudget,
@@ -189,6 +191,80 @@ describe('labelWidthBudget', () => {
         }
       }
     }
+  })
+})
+
+describe('chooseLabel', () => {
+  /** Mesure factice : une largeur proportionnelle au nombre de caractères, injectée comme le fait le rendu. */
+  const measure = (text: string) => text.length * 8
+
+  it('garde le libellé long quand il tient', () => {
+    // La branche que rien ne prouvait tant que la décision vivait dans le rendu : le catalogue des
+    // timbres déclare un nom court **identique** au long pour « Carillon », donc aucune divergence
+    // observable de ce côté-là.
+    const option = { value: 'a', label: 'Bois', short: 'B' }
+    expect(chooseLabel(option, 100, measure)).toEqual(['Bois'])
+  })
+
+  it('passe à deux lignes plutôt que de renoncer à l’information', () => {
+    const option = { value: 'a', label: 'Bois (marimba)', short: 'Bois' }
+    // 14 caractères = 112 px, trop large ; « Bois » et « (marimba) » tiennent tous deux.
+    expect(chooseLabel(option, 80, measure)).toEqual(['Bois', '(marimba)'])
+  })
+
+  it('ne coupe en deux que si les **deux** morceaux tiennent', () => {
+    const option = { value: 'a', label: 'Corde (pizzicato)', short: 'Corde' }
+    // « (pizzicato) » vaut 96 px : au-delà du budget, donc la coupe ne sauve rien et le court gagne.
+    expect(chooseLabel(option, 60, measure)).toEqual(['Corde'])
+  })
+
+  it('garde le libellé long faute de court, même s’il déborde', () => {
+    // Rien de plus petit à dire : mieux vaut un mot trop large qu'un secteur muet.
+    const option = { value: 'a', label: 'trampoline' }
+    expect(chooseLabel(option, 10, measure)).toEqual(['trampoline'])
+  })
+
+  it('ne coupe pas un libellé d’un seul mot', () => {
+    const option = { value: 'a', label: 'trampoline', short: 'tramp.' }
+    expect(chooseLabel(option, 40, measure)).toEqual(['tramp.'])
+  })
+})
+
+describe('chooseLabels — une stratégie pour toute la roue', () => {
+  const measure = (text: string) => text.length * 8
+
+  it('garde les noms complets quand ils tiennent tous', () => {
+    const options = [
+      { value: 'a', label: 'mur' },
+      { value: 'b', label: 'trampoline' },
+      { value: 'c', label: 'éphémère' },
+    ]
+    expect(chooseLabels(options, 100, measure)).toEqual([['mur'], ['trampoline'], ['éphémère']])
+  })
+
+  it('bascule **tout le monde** au nom court dès qu’un seul nom complet ne tient pas', () => {
+    /*
+     * La propriété qui compte : un secteur écrit « Verre (cloches) » à côté d'un secteur écrit
+     * « Corde » se lit comme un défaut, pas comme une règle. Rien, du point de vue de celui qui
+     * regarde, ne justifie que deux options frères soient traitées différemment.
+     */
+    const options = [
+      { value: 'a', label: 'Verre (cloches)', short: 'Verre' },
+      { value: 'b', label: 'Corde (pizzicato)', short: 'Corde' },
+    ]
+    // « Verre » + « (cloches) » tiendraient sur deux lignes ; « (pizzicato) » non.
+    expect(chooseLabels(options, 72, measure)).toEqual([['Verre'], ['Corde']])
+  })
+
+  it('accepte deux lignes pour tout le monde quand deux lignes suffisent à tout le monde', () => {
+    const options = [
+      { value: 'a', label: 'Verre (cloches)', short: 'Verre' },
+      { value: 'b', label: 'Bois (marimba)', short: 'Bois' },
+    ]
+    expect(chooseLabels(options, 76, measure)).toEqual([
+      ['Verre', '(cloches)'],
+      ['Bois', '(marimba)'],
+    ])
   })
 })
 

@@ -663,7 +663,7 @@ function wheelStats(open: OpenWheel) {
     /** ce que le relâchement ferait : choisir un secteur, épingler, annuler, ou rien de lu encore */
     aimKind: open.aim?.kind ?? null,
     pinned: open.pinned,
-    labels: renderer.wheelLabels({ wheel: open.wheel, aim: open.aim }),
+    labels: renderer.wheelLabels({ wheel: open.wheel, aim: open.aim, pinned: open.pinned }),
     centerX: open.wheel.center.x,
     centerY: open.wheel.center.y,
     outerRadius: OUTER_RADIUS,
@@ -765,6 +765,30 @@ function resolveWheel(point: Vec2, cancelled: boolean): boolean {
   return picked
 }
 
+/**
+ * Point d'un geste, quand il en porte un. Une seule fonction plutôt qu'un test par cas : c'est
+ * l'accumulation de ces tests qui avait laissé passer `drag`, et donc laissé déplacer une barre sous une
+ * roue épinglée.
+ */
+function pointOf(gesture: Gesture): Vec2 | null {
+  switch (gesture.type) {
+    case 'pointer-move':
+    case 'long-press-move':
+    case 'drop-ball':
+    case 'long-press':
+    case 'long-press-end':
+    case 'tap':
+    case 'drag':
+    case 'release':
+      return gesture.point
+    case 'draft':
+    case 'create-bar':
+      return gesture.b
+    default:
+      return null
+  }
+}
+
 function handleGesture(gesture: Gesture): void {
   /*
    * Une roue épinglée capte les gestes qui **décident**, et eux seuls. Sans cette interception, le tap
@@ -775,31 +799,61 @@ function handleGesture(gesture: Gesture): void {
    */
   if (openWheel?.pinned) {
     /*
-     * Le survol vise. Sans lui, une roue épinglée — c'est-à-dire **toute** roue d'instrument, ouverte
-     * au clic — ne mettait jamais en évidence le secteur sous le curseur : on choisissait à l'aveugle
-     * parmi cinq secteurs, et toute la branche « visé » du rendu était morte pour ce cas.
+     * **Rien ne passe.** Le premier jet ne captait que les gestes « décisifs », et la liste s'est
+     * allongée à chaque support : le survol pour viser à la souris, le tracé pour viser au doigt, puis
+     * le glisser — parce qu'un glisser commencé **sur une barre** émet `drag` et déplaçait la barre sous
+     * la roue. Chaque ajout était un aveu : la bonne règle n'est pas une liste, c'est que le disque est
+     * modal. Tant qu'il est là, il consomme tout, et le geste qui le résout ne fait rien d'autre.
+     *
+     * C'est aussi ce qui répond au reproche inverse : l'écran ne doit pas désigner une cible que le
+     * geste ne touchera pas. D'où le survol neutralisé et le disque presque opaque.
      */
-    if (gesture.type === 'pointer-move') {
-      aimWheel(gesture.point)
-      return
-    }
-    if (gesture.type === 'tap' || gesture.type === 'drop-ball' || gesture.type === 'long-press') {
-      // Écouter ou choisir ne modifie rien par soi-même : l'instantané de préhension est jeté, et
-      // `applyWheelChoice` empile le sien s'il change quelque chose.
-      pendingSnapshot = null
-      const decided = resolveWheel(gesture.point, false)
-      /*
-       * Un appui long qui n'a rien choisi **rouvre** une roue sur la barre visée, au lieu de se
-       * contenter de congédier celle qui était là : sinon obtenir une roue demandait deux appuis longs,
-       * soit une seconde de maintien, alors que c'est LE geste qui l'ouvre.
-       */
-      if (!decided && gesture.type === 'long-press' && gesture.hit?.target === 'bar') {
-        openNatureWheel(gesture.hit.bar, gesture.point)
-        announceWheel(gesture.hit.bar.nature)
+    const aimPoint = pointOf(gesture)
+    switch (gesture.type) {
+      // Viser : tout mouvement, quel que soit le support qui l'a produit.
+      case 'pointer-move':
+      case 'draft':
+      case 'drag':
+        if (aimPoint) aimWheel(aimPoint)
+        return
+
+      // Décider : tout geste qui s'achève.
+      case 'tap':
+      case 'drop-ball':
+      case 'long-press':
+      case 'create-bar':
+      case 'release': {
+        /*
+         * Le `release` qui **clôt la pression ayant déjà agi** ne décide rien : c'est précisément ce que
+         * dit `handled`. Sans cette garde, le relâchement qui vient d'épingler la roue la résolvait
+         * aussitôt — donc « relâcher au centre laisse la roue ouverte » redevenait faux.
+         */
+        if (gesture.type === 'release' && gesture.handled) return
+        // Choisir ne modifie rien par soi-même : l'instantané de préhension est jeté, et
+        // `applyWheelChoice` empile le sien s'il change quelque chose.
+        pendingSnapshot = null
+        const decided = aimPoint ? resolveWheel(aimPoint, false) : false
+        /*
+         * Un appui long qui n'a rien choisi **rouvre** une roue sur la barre visée, au lieu de se
+         * contenter de congédier celle qui était là : sinon obtenir une roue demandait deux appuis
+         * longs, soit une seconde de maintien, alors que c'est LE geste qui l'ouvre.
+         */
+        if (!decided && gesture.type === 'long-press' && gesture.hit?.target === 'bar') {
+          openNatureWheel(gesture.hit.bar, gesture.point)
+          announceWheel(gesture.hit.bar.nature)
+        }
+        return
       }
-      return
+
+      default:
+        /*
+         * Le reste est avalé sans effet : le survol ne doit **pas** surligner une barre derrière un
+         * secteur — l'écran désignerait cette barre-là alors que le geste touche celle que la roue vise.
+         */
+        interaction = { ...NO_INTERACTION }
+        canvas.style.cursor = 'pointer'
+        return
     }
-    if (gesture.type === 'draft' || gesture.type === 'create-bar') openWheel = null
   }
 
   switch (gesture.type) {
@@ -1212,7 +1266,9 @@ function frame(now: number): void {
     revealHandles: world.time < revealHandlesUntil,
     // Injecté ici et pas dans `interaction` : cet objet est reconstruit à chaque survol depuis
     // `NO_INTERACTION`, ce qui fermerait la roue au premier mouvement de souris.
-    wheel: openWheel ? { wheel: openWheel.wheel, aim: openWheel.aim } : null,
+    wheel: openWheel
+      ? { wheel: openWheel.wheel, aim: openWheel.aim, pinned: openWheel.pinned }
+      : null,
   })
   requestAnimationFrame(frame)
 }

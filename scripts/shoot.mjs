@@ -15,7 +15,7 @@
  */
 import { createServer } from 'vite'
 import puppeteer from 'puppeteer-core'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -68,6 +68,17 @@ class Recorder {
 
   async shot(page, step) {
     await mkdir(this.dir, { recursive: true })
+    /*
+     * Le dossier est **vidé** à la première capture du run. `docs/proofs/<scénario>/` ne contient que
+     * l'état courant : sans ce nettoyage, insérer une capture au milieu d'un scénario décale la
+     * numérotation et laisse les anciennes à côté des nouvelles. Deux fichiers pour le même plan, et
+     * on regarde le périmé en croyant juger le code d'aujourd'hui — déjà arrivé deux fois.
+     */
+    if (this.shotIndex === 0) {
+      for (const stale of await readdir(this.dir)) {
+        if (stale.endsWith('.png')) await rm(path.join(this.dir, stale))
+      }
+    }
     const n = String(++this.shotIndex).padStart(2, '0')
     const file = path.join(this.dir, `${n}-${step}.png`)
     await page.screenshot({ path: file })
@@ -2605,6 +2616,120 @@ async function runRoue(browser, url, rec) {
   )
 
   /*
+   * --- Au doigt : une roue épinglée se vise en glissant ---
+   *
+   * Il n'existe pas de pointeur libre au tactile, donc glisser **est** le seul moyen de viser. Sans
+   * traitement dédié, un glisser sur une roue épinglée dépassait le seuil de tap, devenait un tracé de
+   * barre et détruisait la roue : sur téléphone elle n'offrait que « taper à l'aveugle » ou « la jeter ».
+   * C'est pourtant le support sur lequel l'épinglage se justifie — il n'y a pas de survol au doigt.
+   */
+  await page.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    c.addBar(400, 460, 800, 460)
+  })
+  await tick(page)
+  const touchBar = await page.evaluate(() => window.__carillon.bars()[0])
+  const touchMid = { x: (touchBar.ax + touchBar.bx) / 2, y: touchBar.ay }
+  await page.touchscreen.touchStart(touchMid.x, touchMid.y)
+  await wait(700)
+  await page.touchscreen.touchEnd()
+  await wait(150)
+  const pinnedByTouch = await readWheel(page)
+  const touchTarget = pinnedByTouch?.options.find((option) => option.value === 'trampoline')
+  await page.touchscreen.touchStart(touchMid.x, touchMid.y)
+  for (let step = 1; step <= 6; step += 1) {
+    await page.touchscreen.touchMove(
+      touchMid.x + ((touchTarget.x - touchMid.x) * step) / 6,
+      touchMid.y + ((touchTarget.y - touchMid.y) * step) / 6
+    )
+  }
+  const aimedByTouch = await page.evaluate(() => window.__carillon.stats().wheel?.aimKind)
+  await page.touchscreen.touchEnd()
+  await wait(150)
+  const afterTouch = await page.evaluate(() => ({
+    nature: window.__carillon.bars()[0]?.nature,
+    bars: window.__carillon.stats().bars,
+    wheel: window.__carillon.stats().wheel,
+  }))
+  rec.assert(
+    'au doigt, glisser sur une roue épinglée vise et choisit — sans dessiner de barre',
+    pinnedByTouch?.pinned === true &&
+      aimedByTouch === 'sector' &&
+      afterTouch.nature === 'trampoline' &&
+      afterTouch.bars === 1 &&
+      afterTouch.wheel === null,
+    `épinglée=${pinnedByTouch?.pinned} visée=${aimedByTouch} nature=${afterTouch.nature} barres=${afterTouch.bars}`
+  )
+
+  /*
+   * --- « Ça va épingler » et « ça va annuler » se distinguent **à l'écran** ---
+   *
+   * Sur une roue à ressort, la seule où le relâchement est imminent. Mesuré en pixels, avec deux
+   * grandeurs distinctes : le **liseré** (encre rougeâtre) et le **voile** (assombrissement du disque).
+   * Le voile porte la lisibilité et n'était mesuré par rien — une mutation qui le retirait passait.
+   *
+   * Les seuils se dérivent du tracé, pas d'un nombre rond : liseré de 5 px centré sur `outerRadius - 2`,
+   * donc il couvre 99,5..104,5 et le rayon 100 n'est atteint **que** par lui (un trait de 2 px, la
+   * version rejetée pour invisibilité, couvre 102..104). Motif de tirets 10/8, soit 10/18 du tour.
+   */
+  const RING_PROBE_RADIUS_OFFSET = -4
+  const DASH_DUTY = 10 / 18
+  const inkAndVeil = async () =>
+    page.evaluate(
+      ([offset]) => {
+        const wheel = window.__carillon.stats().wheel
+        const canvas = document.querySelector('#stage')
+        const ctx = canvas.getContext('2d')
+        const dpr = canvas.width / canvas.clientWidth
+        const sample = (radius, angle) => {
+          const px = Math.round((wheel.centerX + Math.cos(angle) * radius) * dpr)
+          const py = Math.round((wheel.centerY + Math.sin(angle) * radius) * dpr)
+          return ctx.getImageData(px, py, 1, 1).data
+        }
+        let red = 0
+        let luminance = 0
+        let samples = 0
+        for (let step = 0; step < 360; step += 1) {
+          const angle = (step / 360) * Math.PI * 2
+          const [r, g, b] = sample(wheel.outerRadius + offset, angle)
+          if (r > 120 && r > g + 50 && r > b + 30) red += 1
+          // Voile : mesuré au milieu de l'anneau, là où vivent les secteurs et les libellés.
+          const [vr, vg, vb] = sample((wheel.innerRadius + wheel.outerRadius) / 2, angle)
+          luminance += 0.2126 * vr + 0.7152 * vg + 0.0722 * vb
+          samples += 1
+        }
+        return { red, luminance: luminance / samples }
+      },
+      [RING_PROBE_RADIUS_OFFSET]
+    )
+
+  await openNatureWheel(page, mid)
+  const springWheel = await readWheel(page)
+  await page.mouse.move(mid.x + 4, mid.y, { steps: 2 })
+  await tick(page)
+  const pinState = await inkAndVeil()
+  await page.mouse.move(mid.x + springWheel.outerRadius + 60, mid.y, { steps: 6 })
+  await tick(page)
+  await rec.shot(page, 'roue-annulation-annoncee')
+  const cancelState = await inkAndVeil()
+  await page.mouse.up()
+  await wait(120)
+  // Le liseré est tireté : au mieux 10/18 du tour est encré. On exige 70 % de ce maximum théorique.
+  const expectedInk = 360 * DASH_DUTY * 0.7
+  console.log(
+    `  [roue] annulation : liseré ${pinState.red} -> ${cancelState.red} px (attendu ≥ ${Math.round(expectedInk)}) | voile ${pinState.luminance.toFixed(1)} -> ${cancelState.luminance.toFixed(1)}`
+  )
+  rec.assert(
+    'annuler s’annonce à l’écran : un liseré épais **et** un assombrissement du disque',
+    cancelState.red >= expectedInk &&
+      pinState.red <= cancelState.red * 0.1 &&
+      // Le voile doit se voir : au moins un quart de luminance en moins sur l'anneau.
+      cancelState.luminance <= pinState.luminance * 0.75,
+    `liseré ${pinState.red}->${cancelState.red} (seuil ${Math.round(expectedInk)}) | voile ${pinState.luminance.toFixed(1)}->${cancelState.luminance.toFixed(1)}`
+  )
+
+  /*
    * --- Une roue ouverte ne survit pas à un saut d'état ---
    *
    * Son centre est en pixels absolus et elle vise une barre par identifiant : après un redimensionnement,
@@ -2671,31 +2796,31 @@ async function runRoue(browser, url, rec) {
    * (cloches) » sur la capture des cinq timbres. On asserte donc des **boîtes** — largeur réellement
    * mesurée par le rendu, budget géométrique du secteur, et absence de recouvrement deux à deux.
    */
-  const labels = instrumentWheel.labels
-  const tooWide = labels.filter((l) => l.width > l.budget)
-  const overlaps = []
-  for (let i = 0; i < labels.length; i += 1) {
-    for (let j = i + 1; j < labels.length; j += 1) {
-      const a = labels[i]
-      const b = labels[j]
-      const dx = Math.abs(a.x - b.x)
-      const dy = Math.abs(a.y - b.y)
-      // Deux libellés ne se gênent que s'ils partagent une bande horizontale : au-delà, ils sont
-      // simplement l'un au-dessus de l'autre.
-      if (dy < 14 && dx < (a.width + b.width) / 2) overlaps.push(`${a.text}/${b.text}`)
+  /*
+   * Une hauteur de ligne dérivée de la **police du secteur visé** (700 14px), pas d'un nombre choisi :
+   * c'est elle qui décide si deux ancres partagent une bande horizontale.
+   */
+  const LINE_HEIGHT = 14
+  const boxesAreReadable = (labels, wheel) => {
+    const tooWide = labels.filter((l) => l.width > l.budget)
+    const overlaps = []
+    for (let i = 0; i < labels.length; i += 1) {
+      for (let j = i + 1; j < labels.length; j += 1) {
+        const a = labels[i]
+        const b = labels[j]
+        if (Math.abs(a.y - b.y) < LINE_HEIGHT * a.lines.length && Math.abs(a.x - b.x) < (a.width + b.width) / 2) {
+          overlaps.push(`${a.text}/${b.text}`)
+        }
+      }
     }
+    const outsideDisc = labels.filter(
+      (l) => Math.hypot(l.x - wheel.centerX, l.y - wheel.centerY) + l.width / 2 > wheel.outerRadius
+    )
+    return { tooWide, overlaps, outsideDisc }
   }
-  const outsideDisc = labels.filter(
-    (l) =>
-      Math.hypot(l.x - instrumentWheel.centerX, l.y - instrumentWheel.centerY) + l.width / 2 >
-      instrumentWheel.outerRadius
-  )
-  console.log(`  [roue] libellés dessinés : ${labels.map((l) => `${l.text}(${Math.round(l.width)}/${Math.round(l.budget)}px)`).join(' ')}`)
-  rec.assert(
-    'les cinq timbres sont lisibles : chaque libellé tient dans son secteur, sans recouvrement',
-    tooWide.length === 0 && overlaps.length === 0 && outsideDisc.length === 0,
-    `trop larges=[${tooWide.map((l) => l.text)}] recouvrements=[${overlaps}] débordent du disque=[${outsideDisc.map((l) => l.text)}]`
-  )
+
+  const atRest = boxesAreReadable(instrumentWheel.labels, instrumentWheel)
+  console.log(`  [roue] libellés dessinés : ${instrumentWheel.labels.map((l) => `${l.lines.join('/')}(${Math.round(l.width)}/${Math.round(l.budget)}px)`).join(' ')}`)
 
   // Le survol vise, roue épinglée comprise — sinon on choisit à l'aveugle parmi cinq secteurs.
   const hoverTarget = instrumentWheel.options[2]
@@ -2709,58 +2834,58 @@ async function runRoue(browser, url, rec) {
   )
 
   /*
+   * Relu **pendant** que le secteur est visé : le libellé visé est écrit dans une police plus grande
+   * (700 14px contre 600 13px), et c'est la seule qui puisse déborder. Ne mesurer qu'à l'état au repos
+   * laissait ce cas hors de portée de l'assertion — vérifié : grossir la police du secteur visé passait
+   * les 17 assertions au vert.
+   */
+  const aimedLabels = boxesAreReadable(hovered.labels, hovered)
+  const tooWide = [...atRest.tooWide, ...aimedLabels.tooWide]
+  const overlaps = [...atRest.overlaps, ...aimedLabels.overlaps]
+  const outsideDisc = [...atRest.outsideDisc, ...aimedLabels.outsideDisc]
+  rec.assert(
+    'les cinq timbres sont lisibles, au repos **et** dans la police du secteur visé',
+    tooWide.length === 0 && overlaps.length === 0 && outsideDisc.length === 0,
+    `trop larges=[${tooWide.map((l) => l.text)}] recouvrements=[${overlaps}] débordent du disque=[${outsideDisc.map((l) => l.text)}]`
+  )
+
+  /*
    * « Ça va épingler » et « ça va annuler » sont deux issues **opposées**. Elles doivent se distinguer
    * avant le relâchement : les captures 01 et 04 étaient identiques au pixel près.
    */
   /*
-   * Mesuré **en pixels**, pas dans l'état : `aimKind === 'cancel'` prouve que l'app le sait, pas qu'on
-   * le voit — et la première version de ce liseré était effectivement invisible à l'écran tout en
-   * passant l'assertion d'état. On compte donc les pixels rougeâtres sur la couronne, dans deux états
-   * qui ne diffèrent que par la chose mesurée.
+   * Une roue **épinglée** ne montre pas l'annulation : le pointeur hors de l'anneau y est le trajet
+   * normal depuis le bouton qui l'a ouverte, et l'alarme s'affichait pendant toute la lecture des
+   * options. C'est donc une propriété à part entière, et elle s'asserte.
    */
-  const ringRedness = async () =>
-    page.evaluate(() => {
-      const wheel = window.__carillon.stats().wheel
-      const canvas = document.querySelector('#stage')
-      const ctx = canvas.getContext('2d')
-      const dpr = canvas.width / canvas.clientWidth
-      let red = 0
-      // Balayage de la couronne extérieure, là où le liseré d'annulation est tracé.
-      for (let step = 0; step < 360; step += 1) {
-        const angle = (step / 360) * Math.PI * 2
-        for (const radius of [wheel.outerRadius - 3, wheel.outerRadius - 1, wheel.outerRadius + 1]) {
-          const px = Math.round((wheel.centerX + Math.cos(angle) * radius) * dpr)
-          const py = Math.round((wheel.centerY + Math.sin(angle) * radius) * dpr)
-          const [r, g, b] = ctx.getImageData(px, py, 1, 1).data
-          // « Rougeâtre » : le rouge domine nettement, ce que ne fait aucune couleur du décor bleu nuit.
-          if (r > 120 && r > g + 50 && r > b + 30) red += 1
-        }
-      }
-      return red
-    })
-
-  await page.mouse.move(instrumentWheel.centerX, instrumentWheel.centerY, { steps: 4 })
-  await tick(page)
-  const atCentre = await page.evaluate(() => window.__carillon.stats().wheel?.aimKind)
-  const redWhenPinning = await ringRedness()
   await page.mouse.move(
-    instrumentWheel.centerX + instrumentWheel.outerRadius + 50,
+    instrumentWheel.centerX + instrumentWheel.outerRadius + 45,
     instrumentWheel.centerY,
     { steps: 4 }
   )
   await tick(page)
-  await rec.shot(page, 'roue-annulation-annoncee')
-  const outside = await page.evaluate(() => window.__carillon.stats().wheel?.aimKind)
-  const redWhenCancelling = await ringRedness()
-  console.log(`  [roue] liseré d'annulation : ${redWhenPinning} px rouges au centre -> ${redWhenCancelling} px hors anneau`)
+  await rec.shot(page, 'roue-instruments-approche')
+  const approach = await page.evaluate(() => {
+    const wheel = window.__carillon.stats().wheel
+    const canvas = document.querySelector('#stage')
+    const ctx = canvas.getContext('2d')
+    const dpr = canvas.width / canvas.clientWidth
+    let red = 0
+    for (let step = 0; step < 360; step += 1) {
+      const angle = (step / 360) * Math.PI * 2
+      const px = Math.round((wheel.centerX + Math.cos(angle) * (wheel.outerRadius - 4)) * dpr)
+      const py = Math.round((wheel.centerY + Math.sin(angle) * (wheel.outerRadius - 4)) * dpr)
+      const [r, g, b] = ctx.getImageData(px, py, 1, 1).data
+      if (r > 120 && r > g + 50 && r > b + 30) red += 1
+    }
+    return { aimKind: wheel?.aimKind, red }
+  })
   rec.assert(
-    'la zone morte et l’extérieur de l’anneau annoncent deux issues distinctes, **à l’écran**',
-    atCentre === 'pin' &&
-      outside === 'cancel' &&
-      redWhenPinning === 0 &&
-      redWhenCancelling > 100,
-    `centre=${atCentre} (${redWhenPinning} px rouges) dehors=${outside} (${redWhenCancelling} px rouges)`
+    'sur le trajet vers une roue épinglée, aucune alarme d’annulation ne s’affiche',
+    approach.aimKind === 'cancel' && approach.red === 0,
+    `visée=${approach.aimKind}, ${approach.red} px d'alarme`
   )
+  await page.mouse.move(instrumentWheel.options[0].x, instrumentWheel.options[0].y, { steps: 4 })
 
   /*
    * Le point de douleur d'origine, mesuré : avec un cycle, revenir au timbre précédent coûtait
