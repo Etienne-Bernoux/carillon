@@ -20,7 +20,7 @@ import {
   labelWidthBudget,
   sectorStartAngle,
 } from '../core/wheel'
-import type { WheelOption, WheelView } from '../core/wheel'
+import type { WheelView } from '../core/wheel'
 import { hueForMidi } from './notation'
 
 const BG_TOP = '#0b1030'
@@ -151,8 +151,6 @@ export const NO_INTERACTION: Interaction = {
  */
 export interface LabelBox {
   text: string
-  /** lignes réellement écrites : une, ou deux quand le libellé long ne tient qu'en le coupant */
-  lines: string[]
   width: number
   x: number
   y: number
@@ -591,27 +589,34 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
    * le budget géométrique, sinon le court. La mesure vit ici parce que c'est le seul endroit qui sache
    * mesurer un texte ; le budget vient du cœur pur, qui sait la géométrie.
    */
-  function labelFor(
-    option: WheelOption<string>,
-    options: readonly WheelOption<string>[],
-    count: number,
-    aimed: boolean,
-  ): { lines: string[]; width: number } {
-    /*
-     * `save`/`restore` autour d'une écriture de police : `measureText` en a besoin, mais une fonction
-     * qui **observe** ne doit pas laisser le contexte de dessin modifié derrière elle. C'était inoffensif
-     * tant que chaque `fillText` reposait sa police juste avant — soit un effet d'observateur à un
-     * refactor près.
-     */
+  /**
+   * Textes de **toute** la roue, décidés une seule fois et dans la police de repos.
+   *
+   * Une seule police pour la décision, exprès : mesurer chaque option dans **sa** police laissait la
+   * stratégie commune se recalculer autant de fois qu'il y a d'options, avec des résultats possiblement
+   * différents — le secteur visé, écrit 8 % plus gros, pouvait basculer au nom court pendant que ses
+   * voisins gardaient le nom complet. Soit exactement l'incohérence que `chooseLabels` interdit.
+   *
+   * `save`/`restore` parce qu'une fonction qui **observe** ne doit pas laisser le contexte de dessin
+   * modifié derrière elle : `measureText` a besoin de la police, mais l'effet doit s'arrêter là.
+   */
+  function wheelTexts(wheel: WheelView['wheel']): string[] {
+    base.save()
+    base.font = wheelFont(false)
+    const texts = chooseLabels(wheel.options, labelWidthBudget(wheel.options.length), (text) =>
+      base.measureText(text).width,
+    )
+    base.restore()
+    return texts
+  }
+
+  /** Largeur réellement occupée par un texte, dans la police où il sera écrit. */
+  function labelWidth(text: string, aimed: boolean): number {
     base.save()
     base.font = wheelFont(aimed)
-    const measure = (text: string) => base.measureText(text).width
-    // Toute la roue est consultée, pas seulement cette option : la stratégie est commune (cf. `chooseLabels`).
-    const index = options.indexOf(option)
-    const lines = chooseLabels(options, labelWidthBudget(count), measure)[index] ?? [option.label]
-    const width = Math.max(...lines.map(measure))
+    const width = base.measureText(text).width
     base.restore()
-    return { lines, width }
+    return width
   }
 
   function wheelFont(aimed: boolean): string {
@@ -627,18 +632,24 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
    */
   function wheelLabelBoxes(view: WheelView): LabelBox[] {
     const count = view.wheel.options.length
-    return view.wheel.options.flatMap((option, index) => {
+    const texts = wheelTexts(view.wheel)
+    return view.wheel.options.map((option, index) => {
       const anchor = labelAnchor(view.wheel, index)
       const aimed = view.aim?.kind === 'sector' && view.aim.index === index
-      const { lines, width } = labelFor(option, view.wheel.options, count, aimed)
-      return [
-        { text: lines.join(' '), lines, width, x: anchor.x, y: anchor.y, budget: labelWidthBudget(count) },
-      ]
+      const text = texts[index] ?? option.label
+      return {
+        text,
+        width: labelWidth(text, aimed),
+        x: anchor.x,
+        y: anchor.y,
+        budget: labelWidthBudget(count),
+      }
     })
   }
 
   function drawWheel(view: WheelView): void {
     const { wheel } = view
+    const texts = wheelTexts(wheel)
     const aimed = view.aim?.kind === 'sector' ? view.aim.index : null
     const count = wheel.options.length
     const { x, y } = wheel.center
@@ -673,15 +684,11 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
       base.stroke()
 
       const anchor = labelAnchor(wheel, index)
-      const drawn = labelFor(option, wheel.options, count, isAimed)
       base.font = wheelFont(isAimed)
       base.textAlign = 'center'
       base.textBaseline = 'middle'
       base.fillStyle = isAimed ? '#ffffff' : 'rgba(232, 240, 255, 0.82)'
-      // Deux lignes centrées sur l'ancre : sans le décalage, elles se superposeraient exactement.
-      const lineHeight = 14
-      const top = anchor.y - ((drawn.lines.length - 1) * lineHeight) / 2
-      drawn.lines.forEach((line, row) => base.fillText(line, anchor.x, top + row * lineHeight))
+      base.fillText(texts[index] ?? option.label, anchor.x, anchor.y)
 
       /*
        * L'option en place est marquée par un point, pas par une couleur : la couleur est déjà prise par

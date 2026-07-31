@@ -203,30 +203,26 @@ describe('chooseLabel', () => {
     // timbres déclare un nom court **identique** au long pour « Carillon », donc aucune divergence
     // observable de ce côté-là.
     const option = { value: 'a', label: 'Bois', short: 'B' }
-    expect(chooseLabel(option, 100, measure)).toEqual(['Bois'])
+    expect(chooseLabel(option, 100, measure)).toBe('Bois')
   })
 
-  it('passe à deux lignes plutôt que de renoncer à l’information', () => {
-    const option = { value: 'a', label: 'Bois (marimba)', short: 'Bois' }
-    // 14 caractères = 112 px, trop large ; « Bois » et « (marimba) » tiennent tous deux.
-    expect(chooseLabel(option, 80, measure)).toEqual(['Bois', '(marimba)'])
-  })
-
-  it('ne coupe en deux que si les **deux** morceaux tiennent', () => {
+  it('tombe sur le nom court dès que le long déborde', () => {
     const option = { value: 'a', label: 'Corde (pizzicato)', short: 'Corde' }
-    // « (pizzicato) » vaut 96 px : au-delà du budget, donc la coupe ne sauve rien et le court gagne.
-    expect(chooseLabel(option, 60, measure)).toEqual(['Corde'])
+    expect(chooseLabel(option, 60, measure)).toBe('Corde')
   })
 
   it('garde le libellé long faute de court, même s’il déborde', () => {
     // Rien de plus petit à dire : mieux vaut un mot trop large qu'un secteur muet.
     const option = { value: 'a', label: 'trampoline' }
-    expect(chooseLabel(option, 10, measure)).toEqual(['trampoline'])
+    expect(chooseLabel(option, 10, measure)).toBe('trampoline')
   })
 
-  it('ne coupe pas un libellé d’un seul mot', () => {
-    const option = { value: 'a', label: 'trampoline', short: 'tramp.' }
-    expect(chooseLabel(option, 40, measure)).toEqual(['tramp.'])
+  it('choisit sur la mesure, pas sur le nombre de caractères', () => {
+    // Une mesure large fait déborder un libellé court : c'est la mesure qui décide, elle est injectée.
+    const wide = (text: string) => text.length * 40
+    const option = { value: 'a', label: 'mur', short: 'm' }
+    expect(chooseLabel(option, 100, wide)).toBe('m')
+    expect(chooseLabel(option, 200, measure)).toBe('mur')
   })
 })
 
@@ -239,7 +235,7 @@ describe('chooseLabels — une stratégie pour toute la roue', () => {
       { value: 'b', label: 'trampoline' },
       { value: 'c', label: 'éphémère' },
     ]
-    expect(chooseLabels(options, 100, measure)).toEqual([['mur'], ['trampoline'], ['éphémère']])
+    expect(chooseLabels(options, 100, measure)).toEqual(['mur', 'trampoline', 'éphémère'])
   })
 
   it('bascule **tout le monde** au nom court dès qu’un seul nom complet ne tient pas', () => {
@@ -249,22 +245,20 @@ describe('chooseLabels — une stratégie pour toute la roue', () => {
      * regarde, ne justifie que deux options frères soient traitées différemment.
      */
     const options = [
-      { value: 'a', label: 'Verre (cloches)', short: 'Verre' },
+      // « Verre » tiendrait tout seul (40 px) ; « Corde (pizzicato) » non (136 px).
+      { value: 'a', label: 'Verre', short: 'V' },
       { value: 'b', label: 'Corde (pizzicato)', short: 'Corde' },
     ]
-    // « Verre » + « (cloches) » tiendraient sur deux lignes ; « (pizzicato) » non.
-    expect(chooseLabels(options, 72, measure)).toEqual([['Verre'], ['Corde']])
+    expect(chooseLabels(options, 72, measure)).toEqual(['V', 'Corde'])
   })
 
-  it('accepte deux lignes pour tout le monde quand deux lignes suffisent à tout le monde', () => {
+  it('ne bascule personne quand tous les noms complets tiennent, même de justesse', () => {
     const options = [
-      { value: 'a', label: 'Verre (cloches)', short: 'Verre' },
-      { value: 'b', label: 'Bois (marimba)', short: 'Bois' },
+      { value: 'a', label: 'mur', short: 'm' },
+      { value: 'b', label: 'éphémère', short: 'é' },
     ]
-    expect(chooseLabels(options, 76, measure)).toEqual([
-      ['Verre', '(cloches)'],
-      ['Bois', '(marimba)'],
-    ])
+    // 8 caractères = 64 px, soit exactement le budget : la frontière compte comme « tient ».
+    expect(chooseLabels(options, 64, measure)).toEqual(['mur', 'éphémère'])
   })
 })
 

@@ -124,32 +124,26 @@ export function labelWidthBudget(count: number): number {
 }
 
 /**
- * Ce qu'il faut écrire dans un secteur, en une ou deux lignes, sachant ce qu'on peut mesurer.
+ * Ce qu'il faut écrire dans un secteur, sachant ce qu'on peut mesurer.
  *
  * Pur : la mesure du texte est **injectée**, donc la décision se teste sans canvas — c'est la seule
  * façon d'épingler « le libellé long est gardé quand il tient », que rien ne prouvait tant que la
  * décision vivait dans le rendu.
  *
- * L'ordre des replis n'est pas arbitraire. Tomber directement sur le nom court fait de la roue un
- * afficheur d'initiales : « Bois » et « Verre » sont des matériaux, pas des timbres, et « Verre » comme
- * « Carillon » sont deux cloches. On essaie donc **deux lignes** avant de renoncer à l'information —
- * « Bois » / « (marimba) » tient là où « Bois (marimba) » ne tient pas.
+ * Un repli sur **deux lignes** a existé ici et a été retiré : au catalogue réel, aucun nom complet ne
+ * tenait même coupé (« (pizzicato) » dépasse à lui seul le budget), donc le produit n'empruntait jamais
+ * cette branche — elle ne vivait que dans ses propres tests. C'est le reproche que cette US a fait à
+ * `cycleNature`, il vaut aussi pour du code neuf. Pour que la roue montre des timbres plutôt que des
+ * matériaux, c'est la **copie** qu'il faut raccourcir (« Corde (pizz.) »), pas la mise en page.
  */
 export function chooseLabel<T extends string>(
   option: WheelOption<T>,
   budget: number,
   measure: (text: string) => number,
-): string[] {
-  if (measure(option.label) <= budget) return [option.label]
-
-  const cut = option.label.lastIndexOf(' ')
-  if (cut > 0) {
-    const lines = [option.label.slice(0, cut), option.label.slice(cut + 1)]
-    if (lines.every((line) => measure(line) <= budget)) return lines
-  }
-
-  // Dernier recours : le nom court. Retenu même s'il déborde — il n'y a rien de plus petit à dire.
-  return [option.short ?? option.label]
+): string {
+  if (measure(option.label) <= budget) return option.label
+  // Le nom court, retenu même s'il déborde : il n'y a rien de plus petit à dire.
+  return option.short ?? option.label
 }
 
 /**
@@ -158,8 +152,8 @@ export function chooseLabel<T extends string>(
  * La décision est prise une fois plutôt qu'option par option, parce qu'un secteur écrit « Verre
  * (cloches) » à côté d'un secteur écrit « Corde » se lit comme un défaut, pas comme une règle : rien,
  * du point de vue de celui qui regarde, ne justifie que deux options frères soient traitées
- * différemment. On garde donc les noms complets **tant que tous** tiennent — au besoin sur deux
- * lignes — et sinon on passe tout le monde au nom court.
+ * différemment. On garde donc les noms complets **tant que tous** tiennent, et sinon on passe tout le
+ * monde au nom court.
  *
  * Le prix est assumé et connu : à cinq timbres, aucun nom complet ne tient, donc la roue affiche
  * « Bois », « Verre », « Corde », qui sont des matériaux plutôt que des timbres. Les noms complets
@@ -170,14 +164,10 @@ export function chooseLabels<T extends string>(
   options: readonly WheelOption<T>[],
   budget: number,
   measure: (text: string) => number,
-): string[][] {
-  const full = options.map((option) => chooseLabel(option, budget, measure))
-  const everyFullNameFits = full.every(
-    (lines, index) =>
-      lines.join(' ') === options[index]?.label && lines.every((line) => measure(line) <= budget),
-  )
-  if (everyFullNameFits) return full
-  return options.map((option) => [option.short ?? option.label])
+): string[] {
+  const everyFullNameFits = options.every((option) => measure(option.label) <= budget)
+  if (everyFullNameFits) return options.map((option) => option.label)
+  return options.map((option) => option.short ?? option.label)
 }
 
 /**

@@ -2623,43 +2623,60 @@ async function runRoue(browser, url, rec) {
    * barre et détruisait la roue : sur téléphone elle n'offrait que « taper à l'aveugle » ou « la jeter ».
    * C'est pourtant le support sur lequel l'épinglage se justifie — il n'y a pas de survol au doigt.
    */
-  await page.evaluate(() => {
-    const c = window.__carillon
-    c.reset()
-    c.addBar(400, 460, 800, 460)
-  })
-  await tick(page)
-  const touchBar = await page.evaluate(() => window.__carillon.bars()[0])
-  const touchMid = { x: (touchBar.ax + touchBar.bx) / 2, y: touchBar.ay }
-  await page.touchscreen.touchStart(touchMid.x, touchMid.y)
-  await wait(700)
-  await page.touchscreen.touchEnd()
-  await wait(150)
-  const pinnedByTouch = await readWheel(page)
-  const touchTarget = pinnedByTouch?.options.find((option) => option.value === 'trampoline')
-  await page.touchscreen.touchStart(touchMid.x, touchMid.y)
-  for (let step = 1; step <= 6; step += 1) {
-    await page.touchscreen.touchMove(
-      touchMid.x + ((touchTarget.x - touchMid.x) * step) / 6,
-      touchMid.y + ((touchTarget.y - touchMid.y) * step) / 6
-    )
+  /*
+   * Deux départs, parce qu'ils empruntent **deux chemins d'entrée différents** : depuis la barre le
+   * geste émet `drag` puis `release`, depuis le vide il émet `draft` puis `create-bar`. La sonde ne
+   * partait que de la barre, donc deux des cinq entrées de l'interception n'étaient jamais exercées —
+   * les retirer laissait l'assertion verte.
+   */
+  const touchPick = async (from, wanted) => {
+    await page.evaluate(() => {
+      const c = window.__carillon
+      c.reset()
+      c.addBar(400, 460, 800, 460)
+    })
+    await tick(page)
+    const bar = await page.evaluate(() => window.__carillon.bars()[0])
+    const barMid = { x: (bar.ax + bar.bx) / 2, y: bar.ay }
+    await page.touchscreen.touchStart(barMid.x, barMid.y)
+    await wait(700)
+    await page.touchscreen.touchEnd()
+    await wait(150)
+    const pinned = await readWheel(page)
+    const target = pinned?.options.find((option) => option.value === wanted)
+    const start = from === 'barre' ? barMid : { x: pinned.centerX - 70, y: pinned.centerY + 55 }
+    await page.touchscreen.touchStart(start.x, start.y)
+    for (let step = 1; step <= 6; step += 1) {
+      await page.touchscreen.touchMove(
+        start.x + ((target.x - start.x) * step) / 6,
+        start.y + ((target.y - start.y) * step) / 6
+      )
+    }
+    const aimed = await page.evaluate(() => window.__carillon.stats().wheel?.aimKind)
+    await page.touchscreen.touchEnd()
+    await wait(150)
+    const after = await page.evaluate(() => ({
+      nature: window.__carillon.bars()[0]?.nature,
+      bars: window.__carillon.stats().bars,
+      wheel: window.__carillon.stats().wheel,
+    }))
+    return {
+      from,
+      ok:
+        pinned?.pinned === true &&
+        aimed === 'sector' &&
+        after.nature === wanted &&
+        after.bars === 1 &&
+        after.wheel === null,
+      detail: `${from}: épinglée=${pinned?.pinned} visée=${aimed} nature=${after.nature} barres=${after.bars}`,
+    }
   }
-  const aimedByTouch = await page.evaluate(() => window.__carillon.stats().wheel?.aimKind)
-  await page.touchscreen.touchEnd()
-  await wait(150)
-  const afterTouch = await page.evaluate(() => ({
-    nature: window.__carillon.bars()[0]?.nature,
-    bars: window.__carillon.stats().bars,
-    wheel: window.__carillon.stats().wheel,
-  }))
+
+  const touchRuns = [await touchPick('barre', 'trampoline'), await touchPick('vide', 'ephemeral')]
   rec.assert(
-    'au doigt, glisser sur une roue épinglée vise et choisit — sans dessiner de barre',
-    pinnedByTouch?.pinned === true &&
-      aimedByTouch === 'sector' &&
-      afterTouch.nature === 'trampoline' &&
-      afterTouch.bars === 1 &&
-      afterTouch.wheel === null,
-    `épinglée=${pinnedByTouch?.pinned} visée=${aimedByTouch} nature=${afterTouch.nature} barres=${afterTouch.bars}`
+    'au doigt, glisser sur une roue épinglée vise et choisit — depuis une barre **comme** depuis le vide',
+    touchRuns.every((run) => run.ok),
+    touchRuns.map((run) => run.detail).join(' | ')
   )
 
   /*
@@ -2673,11 +2690,19 @@ async function runRoue(browser, url, rec) {
    * donc il couvre 99,5..104,5 et le rayon 100 n'est atteint **que** par lui (un trait de 2 px, la
    * version rejetée pour invisibilité, couvre 102..104). Motif de tirets 10/8, soit 10/18 du tour.
    */
-  const RING_PROBE_RADIUS_OFFSET = -4
+  /*
+   * L'encre est comptée sur **plusieurs rayons**, et il en faut sur chacun.
+   *
+   * Une sonde à un seul rayon ne mesure pas l'épaisseur : elle mesure une position. N'importe quel filet
+   * posé là la satisfait — la review l'a prouvé en ramenant le trait à 2 px **et** en le décalant de
+   * 2 px vers l'intérieur, ce qui passait. Trois rayons espacés de 2 px couvrent 4 unités : seul un trait
+   * de 5 px les atteint tous les trois.
+   */
+  const RING_PROBE_OFFSETS = [-4, -2, 0]
   const DASH_DUTY = 10 / 18
   const inkAndVeil = async () =>
     page.evaluate(
-      ([offset]) => {
+      ([offsets]) => {
         const wheel = window.__carillon.stats().wheel
         const canvas = document.querySelector('#stage')
         const ctx = canvas.getContext('2d')
@@ -2687,21 +2712,23 @@ async function runRoue(browser, url, rec) {
           const py = Math.round((wheel.centerY + Math.sin(angle) * radius) * dpr)
           return ctx.getImageData(px, py, 1, 1).data
         }
-        let red = 0
+        const red = offsets.map(() => 0)
         let luminance = 0
         let samples = 0
         for (let step = 0; step < 360; step += 1) {
           const angle = (step / 360) * Math.PI * 2
-          const [r, g, b] = sample(wheel.outerRadius + offset, angle)
-          if (r > 120 && r > g + 50 && r > b + 30) red += 1
+          offsets.forEach((offset, i) => {
+            const [r, g, b] = sample(wheel.outerRadius + offset, angle)
+            if (r > 120 && r > g + 50 && r > b + 30) red[i] += 1
+          })
           // Voile : mesuré au milieu de l'anneau, là où vivent les secteurs et les libellés.
           const [vr, vg, vb] = sample((wheel.innerRadius + wheel.outerRadius) / 2, angle)
           luminance += 0.2126 * vr + 0.7152 * vg + 0.0722 * vb
           samples += 1
         }
-        return { red, luminance: luminance / samples }
+        return { red, thinnest: Math.min(...red), luminance: luminance / samples }
       },
-      [RING_PROBE_RADIUS_OFFSET]
+      [RING_PROBE_OFFSETS]
     )
 
   await openNatureWheel(page, mid)
@@ -2709,6 +2736,12 @@ async function runRoue(browser, url, rec) {
   await page.mouse.move(mid.x + 4, mid.y, { steps: 2 })
   await tick(page)
   const pinState = await inkAndVeil()
+  // Troisième contrôle : viser un **secteur** ne doit pas déclencher l'alarme. Sans lui, l'alarme
+  // pouvait signifier « une visée existe » au lieu de « ça va être jeté », et rien ne le voyait.
+  const sectorTarget = springWheel.options[1]
+  await page.mouse.move(sectorTarget.x, sectorTarget.y, { steps: 4 })
+  await tick(page)
+  const sectorState = await inkAndVeil()
   await page.mouse.move(mid.x + springWheel.outerRadius + 60, mid.y, { steps: 6 })
   await tick(page)
   await rec.shot(page, 'roue-annulation-annoncee')
@@ -2717,16 +2750,22 @@ async function runRoue(browser, url, rec) {
   await wait(120)
   // Le liseré est tireté : au mieux 10/18 du tour est encré. On exige 70 % de ce maximum théorique.
   const expectedInk = 360 * DASH_DUTY * 0.7
+  /*
+   * Seuil de voile serré sur la mesure réelle (0,51 du repos), pas un rapport confortable : à 0,75 la
+   * review a montré qu'on pouvait diviser le voile par deux et rester vert.
+   */
+  const VEIL_RATIO = 0.55
   console.log(
-    `  [roue] annulation : liseré ${pinState.red} -> ${cancelState.red} px (attendu ≥ ${Math.round(expectedInk)}) | voile ${pinState.luminance.toFixed(1)} -> ${cancelState.luminance.toFixed(1)}`
+    `  [roue] annulation : liseré ${JSON.stringify(pinState.red)} -> ${JSON.stringify(cancelState.red)} (le plus fin ≥ ${Math.round(expectedInk)}) | secteur visé ${sectorState.thinnest} | voile ${pinState.luminance.toFixed(1)} -> ${cancelState.luminance.toFixed(1)}`
   )
   rec.assert(
-    'annuler s’annonce à l’écran : un liseré épais **et** un assombrissement du disque',
-    cancelState.red >= expectedInk &&
-      pinState.red <= cancelState.red * 0.1 &&
-      // Le voile doit se voir : au moins un quart de luminance en moins sur l'anneau.
-      cancelState.luminance <= pinState.luminance * 0.75,
-    `liseré ${pinState.red}->${cancelState.red} (seuil ${Math.round(expectedInk)}) | voile ${pinState.luminance.toFixed(1)}->${cancelState.luminance.toFixed(1)}`
+    'annuler s’annonce à l’écran : un liseré épais, un assombrissement, et rien de tout ça sur un secteur',
+    // Encre sur **chacun** des rayons sondés : c'est ce qui mesure l'épaisseur et non la position.
+    cancelState.thinnest >= expectedInk &&
+      pinState.thinnest <= cancelState.thinnest * 0.1 &&
+      sectorState.thinnest === 0 &&
+      cancelState.luminance <= pinState.luminance * VEIL_RATIO,
+    `liseré ${pinState.thinnest}->${cancelState.thinnest} (seuil ${Math.round(expectedInk)}) | secteur ${sectorState.thinnest} | voile ${pinState.luminance.toFixed(1)}->${cancelState.luminance.toFixed(1)} (max ${(pinState.luminance * VEIL_RATIO).toFixed(1)})`
   )
 
   /*
@@ -2808,7 +2847,7 @@ async function runRoue(browser, url, rec) {
       for (let j = i + 1; j < labels.length; j += 1) {
         const a = labels[i]
         const b = labels[j]
-        if (Math.abs(a.y - b.y) < LINE_HEIGHT * a.lines.length && Math.abs(a.x - b.x) < (a.width + b.width) / 2) {
+        if (Math.abs(a.y - b.y) < LINE_HEIGHT && Math.abs(a.x - b.x) < (a.width + b.width) / 2) {
           overlaps.push(`${a.text}/${b.text}`)
         }
       }
@@ -2820,7 +2859,13 @@ async function runRoue(browser, url, rec) {
   }
 
   const atRest = boxesAreReadable(instrumentWheel.labels, instrumentWheel)
-  console.log(`  [roue] libellés dessinés : ${instrumentWheel.labels.map((l) => `${l.lines.join('/')}(${Math.round(l.width)}/${Math.round(l.budget)}px)`).join(' ')}`)
+  // Luminance de référence : la roue au repos, avant tout mouvement de pointeur.
+  const { luminance: restVeil } = await inkAndVeil()
+  console.log(
+    `  [roue] libellés dessinés : ${instrumentWheel.labels
+      .map((l) => `${l.text}(${Math.round(l.width)}/${Math.round(l.budget)}px)`)
+      .join(' ')}`
+  )
 
   // Le survol vise, roue épinglée comprise — sinon on choisit à l'aveugle parmi cinq secteurs.
   const hoverTarget = instrumentWheel.options[2]
@@ -2834,17 +2879,25 @@ async function runRoue(browser, url, rec) {
   )
 
   /*
-   * Relu **pendant** que le secteur est visé : le libellé visé est écrit dans une police plus grande
-   * (700 14px contre 600 13px), et c'est la seule qui puisse déborder. Ne mesurer qu'à l'état au repos
-   * laissait ce cas hors de portée de l'assertion — vérifié : grossir la police du secteur visé passait
-   * les 17 assertions au vert.
+   * Relu **pendant** que chaque secteur est visé, l'un après l'autre. Le libellé visé est écrit dans une
+   * police plus grande (700 14px contre 600 13px), et c'est la seule qui puisse déborder. Ne mesurer
+   * qu'au repos laissait ce cas hors de portée ; ne viser qu'un seul secteur laissait les quatre autres
+   * jamais mesurés dans cette police.
    */
-  const aimedLabels = boxesAreReadable(hovered.labels, hovered)
-  const tooWide = [...atRest.tooWide, ...aimedLabels.tooWide]
-  const overlaps = [...atRest.overlaps, ...aimedLabels.overlaps]
-  const outsideDisc = [...atRest.outsideDisc, ...aimedLabels.outsideDisc]
+  const tooWide = [...atRest.tooWide]
+  const overlaps = [...atRest.overlaps]
+  const outsideDisc = [...atRest.outsideDisc]
+  for (const option of instrumentWheel.options) {
+    await page.mouse.move(option.x, option.y, { steps: 3 })
+    await tick(page)
+    const state = await page.evaluate(() => window.__carillon.stats().wheel)
+    const checked = boxesAreReadable(state.labels, state)
+    tooWide.push(...checked.tooWide)
+    overlaps.push(...checked.overlaps)
+    outsideDisc.push(...checked.outsideDisc)
+  }
   rec.assert(
-    'les cinq timbres sont lisibles, au repos **et** dans la police du secteur visé',
+    'les cinq timbres sont lisibles au repos **et** chacun dans la police qu’il prend quand il est visé',
     tooWide.length === 0 && overlaps.length === 0 && outsideDisc.length === 0,
     `trop larges=[${tooWide.map((l) => l.text)}] recouvrements=[${overlaps}] débordent du disque=[${outsideDisc.map((l) => l.text)}]`
   )
@@ -2865,25 +2918,20 @@ async function runRoue(browser, url, rec) {
   )
   await tick(page)
   await rec.shot(page, 'roue-instruments-approche')
-  const approach = await page.evaluate(() => {
-    const wheel = window.__carillon.stats().wheel
-    const canvas = document.querySelector('#stage')
-    const ctx = canvas.getContext('2d')
-    const dpr = canvas.width / canvas.clientWidth
-    let red = 0
-    for (let step = 0; step < 360; step += 1) {
-      const angle = (step / 360) * Math.PI * 2
-      const px = Math.round((wheel.centerX + Math.cos(angle) * (wheel.outerRadius - 4)) * dpr)
-      const py = Math.round((wheel.centerY + Math.sin(angle) * (wheel.outerRadius - 4)) * dpr)
-      const [r, g, b] = ctx.getImageData(px, py, 1, 1).data
-      if (r > 120 && r > g + 50 && r > b + 30) red += 1
-    }
-    return { aimKind: wheel?.aimKind, red }
-  })
+  /*
+   * Le **voile** est mesuré ici, pas seulement l'encre : le défaut d'origine était que les cinq libellés
+   * apparaissaient délavés derrière un voile pendant tout le trajet, et une assertion qui ne compte que
+   * le liseré laisse revenir exactement ça. La luminance de repos sert de référence.
+   */
+  const approach = await inkAndVeil()
+  const approachAim = await page.evaluate(() => window.__carillon.stats().wheel?.aimKind)
+  console.log(
+    `  [roue] trajet : visée=${approachAim}, liseré ${approach.thinnest} px, voile ${approach.luminance.toFixed(1)} (repos ${restVeil.toFixed(1)})`
+  )
   rec.assert(
-    'sur le trajet vers une roue épinglée, aucune alarme d’annulation ne s’affiche',
-    approach.aimKind === 'cancel' && approach.red === 0,
-    `visée=${approach.aimKind}, ${approach.red} px d'alarme`
+    'sur le trajet vers une roue épinglée, ni liseré ni voile : elle reste lisible',
+    approachAim === 'cancel' && approach.thinnest === 0 && approach.luminance >= restVeil * 0.95,
+    `visée=${approachAim}, ${approach.thinnest} px de liseré, voile ${approach.luminance.toFixed(1)} contre ${restVeil.toFixed(1)} au repos`
   )
   await page.mouse.move(instrumentWheel.options[0].x, instrumentWheel.options[0].y, { steps: 4 })
 
@@ -2939,29 +2987,50 @@ async function runRoue(browser, url, rec) {
   })
   const pointerInSector = edgeGeometry.offCentre > edgeGeometry.innerRadius
   /*
-   * Un micro-mouvement **sous** le seuil, avant de relâcher. Sans lui, `aimWheel` n'est jamais appelée,
-   * `committed` reste faux, et l'assertion prouvait seulement que `resolveWheel` épingle — pas que le
-   * garde « la zone morte se mesure depuis l'origine du geste » existe. Vérifié : sans ce mouvement, la
-   * mutation qui remesure depuis le centre du dessin passait les douze assertions au vert.
+   * Le seuil est **encadré**, comme les frontières de secteurs dans `wheel.test.ts` : deux pixels en
+   * dedans ne doit rien viser, deux pixels au-delà doit viser un secteur. Un déplacement en dur (8 px)
+   * n'épinglait que l'*existence* du garde et laissait son seuil rétrécir de 26 à 10 sans rougir — soit
+   * un tremblement de pouce ordinaire qui applique une option. Le rayon vient de l'app, pas d'ici.
    */
-  await page.mouse.move(90 + 8, 300, { steps: 2 })
+  const deadZone = edgeGeometry.innerRadius
+  /*
+   * **Deux gestes**, pas un. Une fois le seuil franchi, la visée est engagée pour tout le reste de
+   * l'appui — c'est voulu, on ne se dé-engage pas en revenant vers son point de départ. Vérifier les
+   * deux côtés du seuil dans le même appui testait donc autre chose que ce qu'annonçait son nom.
+   */
+  await page.mouse.move(90 + deadZone - 2, 300, { steps: 2 })
   await tick(page)
-  const aimBeforeRelease = await page.evaluate(() => window.__carillon.stats().wheel?.aimKind)
+  const aimJustInside = await page.evaluate(() => window.__carillon.stats().wheel?.aimKind)
   await page.mouse.up()
   await wait(150)
   const edgeRelease = await page.evaluate(() => ({
     nature: window.__carillon.bars()[0].nature,
     wheel: window.__carillon.stats().wheel,
   }))
+  // Roue épinglée congédiée avant le second geste, pour repartir d'un état propre.
+  await page.mouse.click(atEdge.width - 40, atEdge.height / 2)
+  await wait(120)
+
+  const edgeBar = await page.evaluate(() => window.__carillon.bars()[0])
+  await openNatureWheel(page, { x: (edgeBar.ax + edgeBar.bx) / 2, y: edgeBar.ay })
+  await page.mouse.move(90 + deadZone + 2, 300, { steps: 2 })
+  await tick(page)
+  const aimJustOutside = await page.evaluate(() => window.__carillon.stats().wheel?.aimKind)
+  // Relâché hors de l'anneau : on ne veut pas appliquer, seulement avoir mesuré la visée.
+  await page.mouse.move(90 + edgeGeometry.offCentre + 200, 300, { steps: 4 })
+  await page.mouse.up()
+  await wait(150)
   rec.assert(
-    'roue recadrée : un micro-mouvement ne vise rien, et le relâchement épingle sans rien appliquer',
+    'roue recadrée : la zone morte du geste vaut son rayon annoncé, de part et d’autre',
     pointerInSector &&
-      // La visée est lue et vaut « ça va épingler », alors que le point est géométriquement dans un secteur.
-      aimBeforeRelease === 'pin' &&
+      // Sous le seuil : rien n'est visé, alors que le point est géométriquement dans un secteur.
+      aimJustInside === 'pin' &&
+      // Au-delà : un secteur est visé. C'est ce qui épingle le **seuil** et pas seulement l'existence du garde.
+      aimJustOutside === 'sector' &&
       edgeRelease.wheel !== null &&
       edgeRelease.wheel.pinned === true &&
       edgeRelease.nature === natureAtEdge,
-    `recadrée de ${Math.round(edgeGeometry.offCentre)}px (zone morte ${edgeGeometry.innerRadius}) | visée=${aimBeforeRelease} | épinglée=${edgeRelease.wheel?.pinned} | nature=${natureAtEdge}->${edgeRelease.nature}`
+    `recadrée de ${Math.round(edgeGeometry.offCentre)}px | zone morte ${deadZone} : ${deadZone - 2}px->${aimJustInside}, ${deadZone + 2}px->${aimJustOutside} | épinglée=${edgeRelease.wheel?.pinned} | nature=${natureAtEdge}->${edgeRelease.nature}`
   )
   // Refermée pour ne pas laisser la roue ouverte sur le viewport suivant.
   await page.mouse.click(atEdge.width - 40, atEdge.height / 2)
