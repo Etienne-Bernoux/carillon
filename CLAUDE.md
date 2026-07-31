@@ -88,6 +88,19 @@ Pièges déjà connus (issus des règles cortex, à ne pas réapprendre) :
   destiné à l'œil se dimensionne en le regardant, puis se mesure — dans cet ordre. Et sa mesure exige un
   **contrôle propre** : les premiers pixels « rouges » comptés venaient d'une barre grave à l'écran, pas
   du liseré.
+- **Le seuil d'une mesure se dérive du tracé, et l'assertion doit exclure la version rejetée.** Suite du
+  point précédent, et c'est la review qui l'a trouvé : après avoir jugé une version invisible « à
+  refaire », l'assertion écrite ensuite portait un seuil rond (`> 100`) que cette version passait
+  largement (251). Un seuil rond est un nombre déguisé. Le bon réflexe : poser la sonde là où **seule**
+  la version acceptée arrive (rayon atteint par un trait de 5 px et pas par un de 2 px) et déduire
+  l'attendu de la géométrie du tracé (épaisseur, motif de tirets). Corollaire : mesurer **chaque**
+  composante de l'effet — le voile n'était compté par rien, donc le retirer passait.
+- **Une liste de cas qui s'allonge à chaque support est un aveu.** Une roue épinglée captait d'abord les
+  gestes « décisifs », puis le survol pour viser à la souris, puis le tracé pour viser au doigt, puis le
+  glisser — parce qu'un glisser commencé sur une barre émet `drag` et déplaçait la barre **sous** la
+  roue. Le troisième ajout aurait dû être le signal : la bonne règle n'était pas une liste mais une
+  propriété (le sélecteur est **modal**, il consomme tout jusqu'à décision). Quand un troisième cas
+  particulier arrive, chercher l'invariant qui les remplace tous.
 - **Une mutation se restaure depuis une copie, jamais par `git checkout`, et jamais avant d'avoir
   commité.** Les deux moitiés de la règle ont été payées dans le même tour (US16) : sur un fichier
   **neuf**, `git checkout -- <fichier>` échoue (« pathspec did not match ») et les mutations

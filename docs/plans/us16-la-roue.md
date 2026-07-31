@@ -1,8 +1,9 @@
 # US16 — La roue
 
-> Statut : **livrée** · Branche `feat/us16-la-roue` · PR #14 · 311 tests unitaires, 17 scénarios
-> navigateur (248 assertions), 16 mutations tuées sur 16 · une passe de review adverse déléguée, qui a
-> trouvé trois défauts réels dont une assertion creuse sur le correctif principal
+> Statut : **livrée** · Branche `feat/us16-la-roue` · PR #14 · 319 tests unitaires, 17 scénarios
+> navigateur (249 assertions), 22 mutations tuées sur 22 · **deux** passes de review adverse déléguées,
+> qui ont trouvé six défauts réels — dont deux assertions creuses portant précisément sur les correctifs
+> que cette US revendique
 
 ## Intent
 
@@ -200,6 +201,33 @@ et un estompage — dont la **première version était mesurable et invisible** 
 et rien à l'œil sur la capture). Épaissie, puis remesurée avec un contrôle propre : 0 → 589. Un signal
 qui ne passe que le test n'est pas un signal.
 
+### Deuxième passe de review : le seuil qui validait ce que je venais de rejeter
+
+Le constat le plus utile des deux passes. Après avoir jugé « à refaire » un liseré d'annulation
+invisible — mesuré à 251 pixels rouges contre 0 —, l'assertion écrite juste après portait le seuil
+`> 100`. **251 > 100** : elle aurait validé la version rejetée. Un seuil rond est un nombre déguisé.
+
+Corrigé en posant la sonde là où **seule** la version acceptée arrive (le rayon `outerRadius - 4`, que
+couvre un trait de 5 px et pas un de 2 px) et en déduisant l'attendu du tracé lui-même — épaisseur et
+motif de tirets. Et en mesurant le **voile** séparément, par sa luminance : il ne l'était par rien, donc
+le retirer passait.
+
+Deux autres trous de la même famille : les libellés n'étaient mesurés que dans la police au repos, alors
+que le secteur visé est écrit 8 % plus gros et que c'est la seule police qui puisse déborder ; et le
+tactile — le support sur lequel l'épinglage se justifie, puisqu'il n'y a pas de survol au doigt — n'avait
+aucune assertion, alors qu'un glisser y **dessinait une barre** au lieu de viser.
+
+### La liste de cas qui aurait dû être un invariant
+
+Une roue épinglée captait d'abord les gestes « décisifs ». Puis il a fallu le survol pour viser à la
+souris. Puis le tracé pour viser au doigt. Puis le glisser — parce qu'un glisser commencé **sur une
+barre** émet `drag` et déplaçait la barre sous la roue.
+
+Le troisième ajout était l'aveu : la bonne règle n'est pas une liste, c'est une propriété. Le disque est
+**modal** — il consomme tout jusqu'à décision. Et son corollaire visuel, que la review a formulé mieux
+que moi : *un disque qui capte les gestes doit avoir l'air de les capter*. D'où le survol neutralisé sous
+la roue et l'opacité portée à 0,94.
+
 ### Les mutations
 
 Géométrie (Vitest) : zone morte neutralisée · anneau extérieur sans borne · recadrage neutralisé ·
@@ -209,5 +237,10 @@ morte mesurée depuis le centre · roue épinglée qui ne capte plus les gestes 
 de `clearAll`, de `undo`, du redimensionnement (trois mutations distinctes) · libellé long imposé sans
 repli court · survol qui ne vise plus.
 
-Seize mutations, seize tuées — dont celle que la review avait vue **survivre**, et qui est le vrai
-verdict sur l'assertion : c'est elle qui a montré que la preuve manquait, pas le code.
+Rendu (harnais) : voile d'annulation retiré · liseré ramené à 2 px, la version rejetée que la review
+avait fait passer · police du secteur visé grossie · annulation affichée aussi sur une roue épinglée ·
+glisser plus capté par une roue épinglée · garde `handled` du relâchement retirée.
+
+**Vingt-deux mutations, vingt-deux tuées** — dont celle que la première passe de review avait vue
+**survivre**, et les trois que la seconde avait prouvées passantes. C'est le vrai verdict sur une
+assertion : ce sont elles qui ont montré que la preuve manquait, pas le code.
