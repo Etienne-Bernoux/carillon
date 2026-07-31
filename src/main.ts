@@ -239,8 +239,15 @@ function clearAll(): void {
   world.droppers.length = 0
   effects.clear()
   impactsTotal = 0
-  // Une roue ouverte visait une barre de cette scène : la laisser ouverte afficherait un choix sur un
-  // objet qui n'existe plus, et le tap suivant ne pourrait que ne rien faire — un widget mort à l'écran.
+  /*
+   * Une roue ouverte visait une barre de cette scène : la laisser ouverte afficherait un choix sur un
+   * objet qui n'existe plus, et le tap suivant ne pourrait que ne rien faire — un widget mort à l'écran.
+   *
+   * Redondant avec le garde des boutons du HUD pour le chemin « Effacer », et c'est **volontaire** : ce
+   * qui passe par ici et pas par là, c'est le `reset()` du harnais. Sans cette ligne, une roue oubliée
+   * survivait entre deux étapes d'un scénario et avalait l'appui long suivant — le faux négatif qui a
+   * coûté une passe de review. À ne pas retirer au prochain nettoyage sous prétexte de doublon.
+   */
   openWheel = null
 }
 

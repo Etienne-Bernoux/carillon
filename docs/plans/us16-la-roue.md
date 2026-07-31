@@ -1,9 +1,9 @@
 # US16 — La roue
 
-> Statut : **livrée** · Branche `feat/us16-la-roue` · PR #14 · 319 tests unitaires, 17 scénarios
-> navigateur (249 assertions), 22 mutations tuées sur 22 · **deux** passes de review adverse déléguées,
-> qui ont trouvé six défauts réels — dont deux assertions creuses portant précisément sur les correctifs
-> que cette US revendique
+> Statut : **livrée** · Branche `feat/us16-la-roue` · PR #14 · 318 tests unitaires, 17 scénarios
+> navigateur (230 assertions), 28 mutations tuées sur 28 · **trois** passes de review adverse déléguées,
+> qui ont trouvé onze défauts réels — dont sept assertions creuses ou contournables portant précisément
+> sur les correctifs que cette US revendique
 
 ## Intent
 
@@ -216,6 +216,30 @@ Deux autres trous de la même famille : les libellés n'étaient mesurés que da
 que le secteur visé est écrit 8 % plus gros et que c'est la seule police qui puisse déborder ; et le
 tactile — le support sur lequel l'épinglage se justifie, puisqu'il n'y a pas de survol au doigt — n'avait
 aucune assertion, alors qu'un glisser y **dessinait une barre** au lieu de viser.
+
+### Troisième passe : cinq assertions sur six contournables
+
+La passe la plus instructive, et la plus humiliante. Les six assertions écrites *en réponse* aux deux
+premières passes ont été attaquées une par une : **cinq se laissaient contourner**, toutes pour la même
+raison de fond. Elles mesuraient une **position** ou une **existence** là où la propriété porte sur une
+**épaisseur** ou un **seuil**.
+
+- Le liseré était compté à **un seul rayon** : n'importe quel filet posé là satisfaisait la sonde, et un
+  trait de 2 px — l'épaisseur rejetée pour invisibilité — décalé de 2 px vers l'intérieur passait.
+- Le seuil de voile à 0,75 laissait 40 % de mou quand la mesure réelle vaut 0,51 : on pouvait diviser le
+  voile par deux et rester vert.
+- Rien n'exigeait l'**absence** d'alarme quand on vise un secteur, donc l'alarme pouvait vouloir dire
+  « une visée existe » plutôt que « ça va être jeté ».
+- L'assertion du trajet ne comptait que l'encre, alors que le défaut d'origine était le **voile**.
+- La sonde tactile ne partait que d'une barre, donc deux des cinq entrées de la modalité n'étaient jamais
+  exercées : les retirer laissait l'assertion verte.
+- Le micro-mouvement de 8 px en dur n'épinglait que l'*existence* du garde ; son seuil pouvait tomber de
+  26 à 10 px sans rougir, soit un tremblement de pouce ordinaire qui applique une option.
+
+Ce qu'il faut en retenir tient en une phrase : **une sonde à un seul point mesure une position, pas une
+grandeur.** Quand la propriété porte sur une épaisseur, un seuil ou une plage, la sonde doit encadrer —
+deux côtés de la frontière, plusieurs rayons, toutes les polices — et son paramètre doit être **lu dans
+l'app**, jamais recopié dans le test.
 
 ### La liste de cas qui aurait dû être un invariant
 

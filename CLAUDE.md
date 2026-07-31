@@ -88,6 +88,16 @@ Pièges déjà connus (issus des règles cortex, à ne pas réapprendre) :
   destiné à l'œil se dimensionne en le regardant, puis se mesure — dans cet ordre. Et sa mesure exige un
   **contrôle propre** : les premiers pixels « rouges » comptés venaient d'une barre grave à l'écran, pas
   du liseré.
+- **Une sonde à un seul point mesure une position, pas une grandeur.** Trois fois le même piège dans la
+  même US, chaque fois trouvé par la review : compter l'encre à **un** rayon laissait passer un trait
+  deux fois plus fin qu'il suffisait de déplacer ; pousser le pointeur de 8 px en dur épinglait
+  l'*existence* d'un seuil dont la valeur pouvait tomber de 26 à 10 ; mesurer les libellés dans **une**
+  police laissait l'autre déborder. Quand la propriété porte sur une épaisseur, un seuil ou une plage,
+  la sonde doit **encadrer** — deux côtés de la frontière, plusieurs rayons, toutes les polices — et le
+  paramètre doit être **lu dans l'app**, jamais recopié dans le test.
+- **Un signal a un sens, pas seulement une présence.** Vérifier que l'alarme d'annulation s'affiche ne
+  dit pas qu'elle veut dire « annuler » : sans un contrôle exigeant son **absence** quand on vise un
+  secteur, elle pouvait signifier « une visée existe » et l'assertion restait verte.
 - **Le seuil d'une mesure se dérive du tracé, et l'assertion doit exclure la version rejetée.** Suite du
   point précédent, et c'est la review qui l'a trouvé : après avoir jugé une version invisible « à
   refaire », l'assertion écrite ensuite portait un seuil rond (`> 100`) que cette version passait
