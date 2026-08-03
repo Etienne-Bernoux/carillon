@@ -6,10 +6,10 @@ import {
   EPHEMERAL_HITS,
   MIN_ABSENCE_SECONDS,
   NATURES,
-  cycleNature,
   isPresent,
   maxBounceSpeed,
   natureLabel,
+  rearm,
   registerHit,
   restitutionFor,
 } from './nature'
@@ -38,19 +38,22 @@ describe('catalogue des natures', () => {
     expect(isPresent(bar, 0)).toBe(true)
   })
 
-  it('le cycle parcourt les trois natures, boucle, et ré-arme au passage', () => {
+  it('ré-armer rend la vie pleine et la présence immédiate', () => {
+    /*
+     * Cette propriété était vérifiée à travers `cycleNature`, retirée à l'US16 au profit de la roue.
+     * Elle compte toujours, et pour la même raison : sans elle, une barre qui cesse d'être éphémère
+     * resterait absente pour toujours.
+     */
     const w = world()
     const bar = floor(w, 'ephemeral')
     bar.hitsLeft = 1
     bar.absentUntil = 999
 
-    expect(cycleNature(bar)).toBe('wall')
-    // Ré-armée : sans ça, une barre qui cesse d'être éphémère resterait absente pour toujours.
+    rearm(bar)
+
     expect(bar.absentUntil).toBe(-1)
     expect(bar.hitsLeft).toBe(EPHEMERAL_HITS)
-    expect(cycleNature(bar)).toBe('trampoline')
-    expect(cycleNature(bar)).toBe('ephemeral')
-    expect(cycleNature(bar)).toBe('wall')
+    expect(isPresent(bar, 0)).toBe(true)
   })
 
   it('chaque nature a un nom lisible et distinct', () => {

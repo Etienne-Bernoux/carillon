@@ -12,6 +12,15 @@ import { isPresent } from '../core/nature'
 import { BAR_THICKNESS } from '../core/physics'
 import { createRng } from '../core/rng'
 import type { Bounds, ImpactEvent, Vec2, World } from '../core/types'
+import {
+  INNER_RADIUS,
+  OUTER_RADIUS,
+  chooseLabels,
+  labelAnchor,
+  labelWidthBudget,
+  sectorStartAngle,
+} from '../core/wheel'
+import type { WheelView } from '../core/wheel'
 import { hueForMidi } from './notation'
 
 const BG_TOP = '#0b1030'
@@ -120,6 +129,8 @@ export interface Interaction {
   pendingDeleteEmitterId: number | null
   hoveredDropperId: number | null
   pendingDeleteDropperId: number | null
+  /** roue de sélection ouverte, ou `null` : rien n'est dessiné et rien n'est calculé quand elle est fermée */
+  wheel: WheelView | null
 }
 
 export const NO_INTERACTION: Interaction = {
@@ -131,6 +142,19 @@ export const NO_INTERACTION: Interaction = {
   pendingDeleteEmitterId: null,
   hoveredDropperId: null,
   pendingDeleteDropperId: null,
+  wheel: null,
+}
+
+/**
+ * Un libellé de roue tel qu'il a été **dessiné** : son texte (long ou court, selon ce qui tenait), sa
+ * largeur mesurée, son ancre, et le budget géométrique de son secteur.
+ */
+export interface LabelBox {
+  text: string
+  width: number
+  x: number
+  y: number
+  budget: number
 }
 
 export interface Renderer {
@@ -154,6 +178,12 @@ export interface Renderer {
    * même si `syncReducedMotion` n'avait jamais propagé la valeur.
    */
   isReducedMotion(): boolean
+  /**
+   * Libellés de la roue tels qu'ils seraient dessinés maintenant. Exposé parce que « les cinq timbres
+   * sont lisibles » ne se démontre ni par une liste de chaînes (identique quand deux se recouvrent) ni
+   * par un comptage de pixels : il se démontre sur des boîtes.
+   */
+  wheelLabels(view: WheelView): LabelBox[]
 }
 
 /**
@@ -547,6 +577,181 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
     }
   }
 
+  /**
+   * La roue de sélection. Dessinée **par-dessus tout** : c'est un choix en cours, et une bille qui
+   * passerait devant un secteur le rendrait illisible au moment précis où on le lit.
+   *
+   * Un voile sombre sous les secteurs plutôt qu'un simple contour : les libellés se posent sur une scène
+   * qui bouge, et sans fond opaque ils deviennent illisibles dès qu'une traînée passe dessous.
+   */
+  /**
+   * Libellé réellement dessiné pour un secteur, et sa largeur mesurée. Le long si sa mesure tient dans
+   * le budget géométrique, sinon le court. La mesure vit ici parce que c'est le seul endroit qui sache
+   * mesurer un texte ; le budget vient du cœur pur, qui sait la géométrie.
+   */
+  /**
+   * Textes de **toute** la roue, décidés une seule fois et dans la police de repos.
+   *
+   * Une seule police pour la décision, exprès : mesurer chaque option dans **sa** police laissait la
+   * stratégie commune se recalculer autant de fois qu'il y a d'options, avec des résultats possiblement
+   * différents — le secteur visé, écrit 8 % plus gros, pouvait basculer au nom court pendant que ses
+   * voisins gardaient le nom complet. Soit exactement l'incohérence que `chooseLabels` interdit.
+   *
+   * `save`/`restore` parce qu'une fonction qui **observe** ne doit pas laisser le contexte de dessin
+   * modifié derrière elle : `measureText` a besoin de la police, mais l'effet doit s'arrêter là.
+   */
+  function wheelTexts(wheel: WheelView['wheel']): string[] {
+    base.save()
+    base.font = wheelFont(false)
+    const texts = chooseLabels(wheel.options, labelWidthBudget(wheel.options.length), (text) =>
+      base.measureText(text).width,
+    )
+    base.restore()
+    return texts
+  }
+
+  /** Largeur réellement occupée par un texte, dans la police où il sera écrit. */
+  function labelWidth(text: string, aimed: boolean): number {
+    base.save()
+    base.font = wheelFont(aimed)
+    const width = base.measureText(text).width
+    base.restore()
+    return width
+  }
+
+  function wheelFont(aimed: boolean): string {
+    return aimed
+      ? '700 14px ui-sans-serif, system-ui, sans-serif'
+      : '600 13px ui-sans-serif, system-ui, sans-serif'
+  }
+
+  /**
+   * Ce qui a été dessiné, pour que « les cinq timbres sont lisibles » s'asserte sur des **boîtes**
+   * plutôt que sur une liste de chaînes. Une roue dont deux libellés se recouvrent expose exactement la
+   * même liste qu'une roue lisible — c'est le défaut qui est passé, et il s'est vu sur une capture.
+   */
+  function wheelLabelBoxes(view: WheelView): LabelBox[] {
+    const count = view.wheel.options.length
+    const texts = wheelTexts(view.wheel)
+    return view.wheel.options.map((option, index) => {
+      const anchor = labelAnchor(view.wheel, index)
+      const aimed = view.aim?.kind === 'sector' && view.aim.index === index
+      const text = texts[index] ?? option.label
+      return {
+        text,
+        width: labelWidth(text, aimed),
+        x: anchor.x,
+        y: anchor.y,
+        budget: labelWidthBudget(count),
+      }
+    })
+  }
+
+  function drawWheel(view: WheelView): void {
+    const { wheel } = view
+    const texts = wheelTexts(wheel)
+    const aimed = view.aim?.kind === 'sector' ? view.aim.index : null
+    const count = wheel.options.length
+    const { x, y } = wheel.center
+    // Écart entre secteurs exprimé en pixels de l'anneau extérieur : à 3 secteurs comme à 8, le trait
+    // de séparation garde la même épaisseur à l'œil.
+    const gap = 3 / OUTER_RADIUS
+
+    base.save()
+    // Presque opaque : le disque **capte** les gestes, il doit donc avoir l'air de les capter. À 0,82 on
+    // voyait les barres au travers, ce qui laissait croire qu'on pouvait encore les viser.
+    base.fillStyle = 'rgba(6, 9, 24, 0.94)'
+    base.beginPath()
+    base.arc(x, y, OUTER_RADIUS, 0, Math.PI * 2)
+    base.fill()
+
+    for (let index = 0; index < count; index += 1) {
+      const start = sectorStartAngle(count, index) + gap
+      const end = sectorStartAngle(count, index + 1) - gap
+      const option = wheel.options[index]
+      if (!option) continue
+      const isAimed = index === aimed
+      const isCurrent = option.value === wheel.current
+
+      base.beginPath()
+      base.arc(x, y, OUTER_RADIUS, start, end)
+      base.arc(x, y, INNER_RADIUS, end, start, true)
+      base.closePath()
+      base.fillStyle = isAimed ? 'rgba(150, 196, 255, 0.34)' : 'rgba(120, 160, 230, 0.13)'
+      base.fill()
+      base.lineWidth = isAimed ? 2 : 1
+      base.strokeStyle = isAimed ? 'rgba(214, 232, 255, 0.95)' : 'rgba(150, 180, 240, 0.35)'
+      base.stroke()
+
+      const anchor = labelAnchor(wheel, index)
+      base.font = wheelFont(isAimed)
+      base.textAlign = 'center'
+      base.textBaseline = 'middle'
+      base.fillStyle = isAimed ? '#ffffff' : 'rgba(232, 240, 255, 0.82)'
+      base.fillText(texts[index] ?? option.label, anchor.x, anchor.y)
+
+      /*
+       * L'option en place est marquée par un point, pas par une couleur : la couleur est déjà prise par
+       * la visée, et deux significations sur le même canal se confondent exactement au moment où elles
+       * comptent — quand on vise l'option courante.
+       */
+      if (isCurrent) {
+        base.beginPath()
+        base.arc(anchor.x, anchor.y + 13, 2.5, 0, Math.PI * 2)
+        base.fillStyle = 'rgba(255, 236, 170, 0.95)'
+        base.fill()
+      }
+    }
+
+    /*
+     * Zone morte : relâcher ici garde la roue. Le trait s'allume quand le pointeur y est, et **au rayon
+     * exact** de la zone — dessiné 4 px en dedans, il annonçait une cible plus petite que la vraie.
+     */
+    base.beginPath()
+    base.arc(x, y, INNER_RADIUS, 0, Math.PI * 2)
+    base.setLineDash([4, 4])
+    base.lineWidth = 1
+    /*
+     * `aim === null` — rien n'a encore été lu — se dessine comme `pin`, parce que c'est **ce que le
+     * relâchement ferait**. Le traiter comme « pas pin » éteignait l'affordance « relâcher ici garde la
+     * roue » exactement à l'instant où elle s'adresse à quelqu'un qui découvre : première image, doigt
+     * encore immobile. À la souris c'était transitoire ; au doigt, ça durait tout l'appui.
+     */
+    const willPin = view.aim === null || view.aim.kind === 'pin'
+    base.strokeStyle = willPin ? 'rgba(214, 232, 255, 0.8)' : 'rgba(150, 180, 240, 0.28)'
+    base.stroke()
+    base.setLineDash([])
+
+    /*
+     * Hors de l'anneau, **pointeur enfoncé** : relâcher jette. Sans signal distinct, cet état était
+     * identique au pixel près à celui de la zone morte, qui fait l'inverse — deux issues opposées, un
+     * seul dessin. La roue s'estompe, et un liseré rouge dit où le choix s'arrête.
+     *
+     * Réservé aux roues **à ressort** : sur une roue épinglée, le relâchement n'est pas imminent et
+     * sortir de l'anneau est le trajet normal depuis le bouton qui l'a ouverte. L'alarme s'affichait
+     * alors pendant tout le temps de lecture des options.
+     */
+    if (view.aim?.kind === 'cancel' && !view.pinned) {
+      base.fillStyle = 'rgba(6, 9, 24, 0.6)'
+      base.beginPath()
+      base.arc(x, y, OUTER_RADIUS, 0, Math.PI * 2)
+      base.fill()
+      /*
+       * Épais et franc. Une première version à 2 px et 0,85 d'opacité était **mesurable** (251 pixels
+       * rouges contre 0) et pourtant invisible en regardant la capture : un signal qui ne passe que le
+       * test n'est pas un signal. La même leçon que les étincelles de l'US6.
+       */
+      base.strokeStyle = 'rgba(255, 120, 140, 0.95)'
+      base.lineWidth = 5
+      base.setLineDash([10, 8])
+      base.beginPath()
+      base.arc(x, y, OUTER_RADIUS - 2, 0, Math.PI * 2)
+      base.stroke()
+      base.setLineDash([])
+    }
+    base.restore()
+  }
+
   function recordTrails(world: World): void {
     for (const ball of world.balls) {
       let points = trails.get(ball.id)
@@ -610,6 +815,9 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
     isReducedMotion() {
       return reducedMotion
     },
+    wheelLabels(view) {
+      return wheelLabelBoxes(view)
+    },
     trailPointCount() {
       let total = 0
       for (const points of trails.values()) total += points.length / 3
@@ -634,6 +842,8 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
       drawBars(world, interaction)
       if (draft) drawDraft(draft)
       drawBalls(world)
+      // En dernier : un choix en cours ne doit pas passer sous une bille au moment où on le lit.
+      if (interaction.wheel) drawWheel(interaction.wheel)
     },
   }
 }

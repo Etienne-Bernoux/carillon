@@ -17,6 +17,15 @@ export const LONG_PRESS_MS = 500
  */
 export type Gesture =
   | { type: 'hover'; hit: Grab | null }
+  /**
+   * Position du pointeur **libre** (aucun bouton enfoncé), à chaque mouvement.
+   *
+   * `hover` ne suffit pas : il n'est émis qu'au **changement de cible**, donc promener la souris dans
+   * un choix radial ouvert ne produisait aucun événement et rien ne se mettait en évidence. Le coût
+   * d'un événement par mouvement est assumé ici parce que son gestionnaire sort immédiatement quand
+   * rien n'est ouvert — c'est `hover` qui reconstruit un état, pas celui-ci.
+   */
+  | { type: 'pointer-move'; point: Vec2 }
   | { type: 'draft'; a: Vec2; b: Vec2 }
   | { type: 'draft-cancel' }
   | { type: 'create-bar'; a: Vec2; b: Vec2 }
@@ -27,6 +36,17 @@ export type Gesture =
    * concepts.
    */
   | { type: 'long-press'; point: Vec2; hit: Grab | null }
+  /**
+   * Le pointeur bouge **après** qu'un appui long a agi. Émis pour qu'un choix radial puisse se viser
+   * dans le même geste que l'ouverture, sans que ce calque sache qu'une roue existe : il ne dit que
+   * « l'appui long continue, ici ». Jusqu'ici le mouvement était purement supprimé après un appui long.
+   */
+  | { type: 'long-press-move'; point: Vec2 }
+  /**
+   * Fin de cet appui long, avec **où** il se termine. C'est ce point qui décide, et lui seul —
+   * `release` ne le porte que pour les barres, et `drop-ball` n'est pas émis dans ce cas.
+   */
+  | { type: 'long-press-end'; point: Vec2; cancelled: boolean }
   /**
    * Premier contact **tactile** de la session. Il n'existe pas de survol au doigt, donc les poignées
    * d'extrémité — la seule chose qui annonce qu'une barre s'attrape et s'accorde — n'apparaissaient
@@ -41,8 +61,11 @@ export type Gesture =
    * rien décider de plus. Distingué de `cancelled`, qui veut dire l'inverse — personne n'a décidé.
    */
   | { type: 'release'; hit: Grab; point: Vec2; cancelled: boolean; handled: boolean }
-  /** relâchement sans mouvement sur une cible — barre **ou** source */
-  | { type: 'tap'; hit: Grab }
+  /**
+   * Relâchement sans mouvement sur une cible — barre **ou** source. Porte son point : un choix radial
+   * épinglé se décide au tap, et le gestionnaire doit savoir **où**, pas seulement sur quoi.
+   */
+  | { type: 'tap'; hit: Grab; point: Vec2 }
 
 export interface InputHandlers {
   /** premier geste de la session : c'est là qu'on déverrouille l'audio */
@@ -136,6 +159,7 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
 
     if (event.pointerId !== activePointer || !start || !last) {
       if (event.pointerType === 'touch') return
+      handlers.onGesture({ type: 'pointer-move', point })
       // Survol : on ne réémet que sur changement, sinon c'est un événement par pixel parcouru.
       const hit = handlers.hitTest(point, radiiFor(event))
       // Clé d'identité du survol, valable pour les deux natures de cible : c'est elle qui évite de
@@ -154,11 +178,21 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
       // création, mais un glisser franc ne doit pas la déclencher.
       cancelLongPress()
     }
-    if (!moved) return
+    /*
+     * Un appui long a déjà agi : le pointeur reste **suivi** — c'est ce qui permet de viser dans un
+     * choix radial sans relever le doigt — mais il n'y a ni glisser ni aperçu de barre, qui
+     * mentiraient sur ce que le relâchement va produire.
+     *
+     * Placé avant le seuil de tap, exprès : la visée doit être continue dès le premier pixel, sinon
+     * rien ne réagit tant qu'on n'a pas dépassé le rayon de tap.
+     */
+    if (longPressFired) {
+      handlers.onGesture({ type: 'long-press-move', point })
+      last = point
+      return
+    }
 
-    // Un appui long a déjà agi : continuer à glisser ne doit pas afficher un aperçu de barre qui
-    // ne sera jamais créée. L'aperçu mentirait sur ce que le relâchement va produire.
-    if (longPressFired) return
+    if (!moved) return
 
     if (grabbed) {
       handlers.onGesture({
@@ -178,6 +212,12 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
     cancelLongPress()
     const point = cancelled ? last : toLocal(event)
 
+    /*
+     * Émis **avant** `release` / `draft-cancel` : c'est ce geste qui décide, les autres ne font que
+     * remettre à zéro la mise en évidence. L'ordre inverse fermerait la visée avant de la lire.
+     */
+    if (longPressFired) handlers.onGesture({ type: 'long-press-end', point, cancelled })
+
     if (grabbed) {
       // Toujours un `release`, y compris interrompu : c'est lui qui remet à zéro la mise en évidence
       // et la zone de glisser. Sans ça, une interruption laissait la barre surlignée indéfiniment.
@@ -190,7 +230,7 @@ export function attachInput(canvas: HTMLCanvasElement, handlers: InputHandlers):
           handled: longPressFired,
         })
       } else {
-        handlers.onGesture({ type: 'tap', hit: grabbed })
+        handlers.onGesture({ type: 'tap', hit: grabbed, point })
       }
     } else {
       handlers.onGesture({ type: 'draft-cancel' })

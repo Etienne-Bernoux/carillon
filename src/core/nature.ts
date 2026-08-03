@@ -107,18 +107,6 @@ export function rearm(bar: Bar): void {
   bar.absentUntil = -1
 }
 
-/**
- * Nature suivante, en cycle. Ré-arme au passage : une barre qui devient éphémère part avec sa vie
- * pleine, et une barre qui cesse de l'être ne doit pas rester absente pour toujours.
- */
-export function cycleNature(bar: Bar): BarNature {
-  const index = NATURES.indexOf(bar.nature)
-  const next = NATURES[(index + 1) % NATURES.length] ?? DEFAULT_NATURE
-  bar.nature = next
-  rearm(bar)
-  return next
-}
-
 /** Nom lisible, pour l'annonce accessible. */
 export function natureLabel(nature: BarNature): string {
   if (nature === 'trampoline') return 'trampoline'

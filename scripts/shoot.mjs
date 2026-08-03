@@ -15,7 +15,7 @@
  */
 import { createServer } from 'vite'
 import puppeteer from 'puppeteer-core'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -24,7 +24,7 @@ const ROOT = path.resolve(__dirname, '..')
 const PROOFS_DIR = path.join(ROOT, 'docs', 'proofs')
 const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
-const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis', 'rythme', 'timbres', 'natures', 'air', 'partage', 'lacher']
+const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis', 'rythme', 'timbres', 'natures', 'air', 'partage', 'lacher', 'roue']
 
 const rawArgs = process.argv.slice(2)
 const flags = new Set(rawArgs.filter((a) => a.startsWith('--')))
@@ -68,6 +68,17 @@ class Recorder {
 
   async shot(page, step) {
     await mkdir(this.dir, { recursive: true })
+    /*
+     * Le dossier est **vidé** à la première capture du run. `docs/proofs/<scénario>/` ne contient que
+     * l'état courant : sans ce nettoyage, insérer une capture au milieu d'un scénario décale la
+     * numérotation et laisse les anciennes à côté des nouvelles. Deux fichiers pour le même plan, et
+     * on regarde le périmé en croyant juger le code d'aujourd'hui — déjà arrivé deux fois.
+     */
+    if (this.shotIndex === 0) {
+      for (const stale of await readdir(this.dir)) {
+        if (stale.endsWith('.png')) await rm(path.join(this.dir, stale))
+      }
+    }
     const n = String(++this.shotIndex).padStart(2, '0')
     const file = path.join(this.dir, `${n}-${step}.png`)
     await page.screenshot({ path: file })
@@ -130,6 +141,61 @@ async function dragBar(page, from, to, steps = 6) {
     await page.mouse.move(x, y)
   }
   await page.mouse.up()
+}
+
+/**
+ * Roue de sélection : on vise le point où le libellé est **dessiné**, pas un angle recalculé ici.
+ *
+ * C'est ce qui fait parcourir le vrai chemin — `labelAnchor` place le texte, `sectorAt` relit le point —
+ * plutôt que de vérifier la géométrie contre elle-même. Recalculer l'angle dans le harnais donnerait une
+ * seconde implémentation, qui dériverait de la première sans rien prouver.
+ */
+async function readWheel(page) {
+  return page.evaluate(() => window.__carillon.stats().wheel)
+}
+
+async function requireWheelOption(page, value) {
+  const wheel = await readWheel(page)
+  if (!wheel) throw new Error(`aucune roue ouverte (option attendue : ${value})`)
+  const option = wheel.options.find((candidate) => candidate.value === value)
+  if (!option) {
+    throw new Error(
+      `option « ${value} » absente de la roue : ${wheel.options.map((o) => o.value).join(', ')}`
+    )
+  }
+  return { wheel, option }
+}
+
+/** Choix par tap sur une roue **épinglée** (celle du bouton d'instrument). */
+async function pickInPinnedWheel(page, value) {
+  const { option } = await requireWheelOption(page, value)
+  await page.mouse.click(option.x, option.y)
+  await wait(120)
+}
+
+/**
+ * Choix **à ressort** : le pointeur est déjà enfoncé (appui long en cours), on glisse jusqu'au secteur
+ * et on relâche. C'est le geste d'un seul tenant, celui qu'on fait sans y penser.
+ */
+async function pickBySpring(page, value) {
+  const { option } = await requireWheelOption(page, value)
+  await page.mouse.move(option.x, option.y, { steps: 6 })
+  await page.mouse.up()
+  await wait(120)
+}
+
+/** Ouvre la roue de nature d'une barre par appui long, pointeur laissé **enfoncé**. */
+async function openNatureWheel(page, at) {
+  await page.mouse.move(at.x, at.y)
+  await page.mouse.down()
+  await wait(700)
+}
+
+/** Change d'instrument : le bouton ouvre la roue, un tap choisit. Deux gestes, quel que soit le timbre. */
+async function chooseInstrument(page, id) {
+  await page.click('[data-control="instrument"]')
+  await tick(page)
+  await pickInPinnedWheel(page, id)
 }
 
 /** Même geste que `dragBar`, mais avec de vrais événements tactiles (US3, C7). */
@@ -762,7 +828,7 @@ async function runPartageV2(browser, url, rec) {
   await waitForCarillon(author)
 
   // On pose une scène signée : trois natures, un instrument qui n'est pas le défaut, un tempo choisi.
-  const sent = await author.evaluate(() => {
+  await author.evaluate(() => {
     const c = window.__carillon
     c.reset()
     const ids = [
@@ -773,9 +839,15 @@ async function runPartageV2(browser, url, rec) {
     c.setBar(ids[1], { nature: 'trampoline' })
     c.setBar(ids[2], { nature: 'ephemeral' })
     c.addEmitter(400, 120, 3)
-    // Deux clics : on quitte le carillon, donc l'instrument transporté n'est pas le défaut.
-    document.querySelector('[data-control="instrument"]').click()
-    document.querySelector('[data-control="instrument"]').click()
+  })
+  // Un instrument qui n'est pas le défaut, choisi dans la roue : sinon « l'instrument traverse le
+  // lien » serait vrai même si le champ ne voyageait pas.
+  const notDefault = await author.evaluate(
+    () => window.__carillon.stats().instrumentIds.find((id) => id !== window.__carillon.stats().instrument)
+  )
+  await chooseInstrument(author, notDefault)
+  const sent = await author.evaluate(() => {
+    const c = window.__carillon
     return {
       natures: c.bars().map((bar) => bar.nature),
       instrument: c.stats().instrument,
@@ -1580,10 +1652,17 @@ async function runTimbres(browser, url, rec) {
 
   const button = '[data-control="instrument"]'
   // Le nombre vient de l'app : ajouter un instrument ne doit pas casser l'assertion, mais en oublier
-  // un dans le cycle doit la casser.
+  // un dans la roue doit la casser.
   const catalogue = await page.evaluate(() => window.__carillon.stats().instrumentIds)
   const seen = []
-  for (let i = 0; i < catalogue.length + 1; i += 1) {
+  for (const wanted of catalogue) {
+    /*
+     * Chaque timbre est choisi **explicitement** dans la roue. Le cycle du bouton, jusqu'à l'US16,
+     * imposait de traverser le catalogue dans l'ordre : l'assertion prouvait alors « le bouton avance »,
+     * pas « ce timbre-là est atteignable ». Elle prouve maintenant le second, qui est ce qui compte.
+     */
+    await chooseInstrument(page, wanted)
+    await tick(page)
     const state = await page.evaluate((sel) => {
       const el = document.querySelector(sel)
       const label = el.querySelector('.label')
@@ -1623,15 +1702,18 @@ async function runTimbres(browser, url, rec) {
       c.advance(2.5)
       return c.stats()
     })
-    seen.push({ id: state.id, label: state.label, notes: after.notes - state.notesBefore })
+    seen.push({
+      wanted,
+      id: state.id,
+      label: state.label,
+      notes: after.notes - state.notesBefore,
+    })
 
     rec.assert(
       `l'instrument « ${state.label} » produit réellement des notes`,
       after.notes - state.notesBefore > 0,
       `${after.notes - state.notesBefore} notes`
     )
-    await page.click(button)
-    await tick(page)
   }
 
   console.log(
@@ -1639,11 +1721,9 @@ async function runTimbres(browser, url, rec) {
   )
   const ids = seen.map((s) => s.id)
   rec.assert(
-    'le bouton parcourt tout le catalogue et revient au début',
-    ids.length === catalogue.length + 1 &&
-      new Set(ids.slice(0, catalogue.length)).size === catalogue.length &&
-      ids[catalogue.length] === ids[0],
-    ids.join(' -> ')
+    'chaque timbre du catalogue est atteignable, et c’est bien celui demandé qui s’applique',
+    ids.length === catalogue.length && seen.every((s) => s.id === s.wanted),
+    seen.map((s) => `${s.wanted}->${s.id}`).join(' | ')
   )
   /*
    * Le libellé doit **changer avec** l'instrument. `label.length > 2` passait alors que le bouton
@@ -1651,30 +1731,41 @@ async function runTimbres(browser, url, rec) {
    * `applyInstrument`. Pire, les libellés des autres assertions étant construits depuis ce même texte,
    * le journal devenait trompeur et non seulement muet.
    */
-  const distinctLabels = new Set(seen.slice(0, catalogue.length).map((s) => s.label))
+  const distinctLabels = new Set(seen.map((s) => s.label))
+  // Retour au premier timbre : le libellé doit revenir avec lui, pas rester sur le dernier affiché.
+  await chooseInstrument(page, catalogue[0])
+  await tick(page)
+  const backLabel = await page.evaluate((sel) =>
+    (document.querySelector(sel).querySelector('.label')?.textContent ?? '').trim(), button)
   rec.assert(
     'le libellé visible suit l’instrument courant',
-    distinctLabels.size === catalogue.length &&
-      seen[catalogue.length]?.label === seen[0]?.label,
-    seen.map((s) => s.label).join(', ')
+    distinctLabels.size === catalogue.length && backLabel === seen[0]?.label,
+    `${seen.map((s) => s.label).join(', ')} | retour : ${backLabel}`
   )
 
   // Le timbre est un réglage de **lecture** : il ne touche aucune hauteur.
-  const pitches = await page.evaluate(() => {
+  const before = await page.evaluate(() => {
     const c = window.__carillon
     c.reset()
     // Longueurs **variées** : six barres identiques donnent six fois la même note, et l'assertion
     // comparerait alors deux listes constantes — vraie quoi qu'il arrive.
     for (let b = 0; b < 6; b += 1) c.addBar(120 + b * 180, 400, 120 + b * 180 + 40 + b * 45, 440)
-    const before = c.bars().map((bar) => bar.midi)
-    document.querySelector('[data-control="instrument"]').click()
-    return { before, after: c.bars().map((bar) => bar.midi) }
+    return { midis: c.bars().map((bar) => bar.midi), instrument: c.stats().instrument }
   })
+  // Un timbre **différent** de celui en place : rechoisir le courant ne changerait rien par définition.
+  const other = catalogue.find((id) => id !== before.instrument)
+  await chooseInstrument(page, other)
+  await tick(page)
+  const after = await page.evaluate(() => ({
+    midis: window.__carillon.bars().map((bar) => bar.midi),
+    instrument: window.__carillon.stats().instrument,
+  }))
   rec.assert(
     'changer d’instrument ne change aucune hauteur',
-    new Set(pitches.before).size >= 4 &&
-      JSON.stringify(pitches.before) === JSON.stringify(pitches.after),
-    `${pitches.before.join(',')} vs ${pitches.after.join(',')}`
+    new Set(before.midis).size >= 4 &&
+      after.instrument !== before.instrument &&
+      JSON.stringify(before.midis) === JSON.stringify(after.midis),
+    `${before.instrument}->${after.instrument} : ${before.midis.join(',')} vs ${after.midis.join(',')}`
   )
 
   /*
@@ -1688,14 +1779,14 @@ async function runTimbres(browser, url, rec) {
    */
   const audio = []
   for (const target of catalogue) {
-    const m = await page.evaluate(async (id) => {
-      const btn = document.querySelector('[data-control="instrument"]')
-      let guard = 0
-      while (window.__carillon.stats().instrument !== id && guard++ < 8) btn.click()
+    // Choisi par le vrai geste, comme le reste du scénario : la boucle de clics qui vivait ici
+    // dépendait de l'ordre du cycle, que la roue n'a plus.
+    await chooseInstrument(page, target)
+    const m = await page.evaluate(async () => {
       const dense = await window.__carillon.measureAudio(24)
       const sparse = await window.__carillon.measureAudio(1)
       return { id: window.__carillon.stats().instrument, dense, sparse }
-    }, target)
+    })
     audio.push(m)
     rec.assert(
       `aucun écrêtage sur « ${m.id} » à 24 voix simultanées`,
@@ -1785,28 +1876,31 @@ async function runNatures(browser, url, rec) {
   })
   const mid = { x: (bar.ax + bar.bx) / 2, y: (bar.ay + bar.by) / 2 }
 
-  // Appui long : on presse **sans bouger** au-delà du seuil, sinon c'est un déplacement de barre.
-  const longPress = async () => {
-    await page.mouse.move(mid.x, mid.y)
-    await page.mouse.down()
-    await wait(700)
-    await page.mouse.up()
-    await wait(120)
+  /*
+   * Appui long **sans bouger** au-delà du seuil (sinon c'est un déplacement), puis choix dans la roue
+   * en glissant jusqu'au secteur voulu et en relâchant : un seul geste, celui de l'US16. Le cyclage
+   * qu'on pilotait ici jusque-là n'existe plus.
+   */
+  const setNature = async (nature) => {
+    await openNatureWheel(page, mid)
+    await pickBySpring(page, nature)
     return page.evaluate(() => window.__carillon.bars()[0])
   }
 
   const seen = [bar.nature]
-  for (let i = 0; i < 3; i += 1) seen.push((await longPress()).nature)
-  console.log(`  [natures] cycle par appui long : ${seen.join(' -> ')}`)
+  for (const nature of ['ephemeral', 'trampoline', 'wall']) {
+    seen.push((await setNature(nature)).nature)
+  }
+  console.log(`  [natures] choix dans la roue : ${seen.join(' -> ')}`)
   rec.assert(
-    'un appui long sur une barre parcourt les trois natures et boucle',
-    seen.length === 4 && new Set(seen.slice(0, 3)).size === 3 && seen[3] === seen[0],
+    'chaque nature s’atteint directement, sans passer par les autres',
+    JSON.stringify(seen) === JSON.stringify(['wall', 'ephemeral', 'trampoline', 'wall']),
     seen.join(' -> ')
   )
 
   // Le geste d'écoute n'est pas volé : l'appui long ne doit produire **aucune** note.
   const silent = await page.evaluate(() => window.__carillon.stats().notes)
-  await longPress()
+  await setNature('trampoline')
   await wait(150)
   const afterPress = await page.evaluate(() => window.__carillon.stats().notes)
   rec.assert(
@@ -1833,7 +1927,7 @@ async function runNatures(browser, url, rec) {
   )
 
   // Annulable comme toute modification de scène — ce que la déduplication avalait avant la review.
-  const changed = (await longPress()).nature
+  const changed = (await setNature('ephemeral')).nature
   await page.keyboard.down('Meta')
   await page.keyboard.press('KeyZ')
   await page.keyboard.up('Meta')
@@ -1858,7 +1952,7 @@ async function runNatures(browser, url, rec) {
   })
   mid.x = (target.ax + target.bx) / 2
   mid.y = (target.ay + target.by) / 2
-  const asTrampoline = await longPress()
+  const asTrampoline = await setNature('trampoline')
 
   const trampoline = await page.evaluate(() => {
     const c = window.__carillon
@@ -2376,6 +2470,652 @@ async function runTouch(browser, url, rec) {
   await page.close()
 }
 
+/**
+ * La roue de sélection (US16). Ce qui se vérifie ici et pas en Vitest : que le geste réel ouvre la roue,
+ * que le relâchement décide **ce qu'il annonce**, et que la roue reste entièrement dans la scène.
+ *
+ * La géométrie, elle, est prouvée dans `src/core/wheel.test.ts` — la répéter ici ne mesurerait que le
+ * même code par un chemin plus lent.
+ */
+async function runRoue(browser, url, rec) {
+  const page = await browser.newPage()
+  rec.attachConsoleListeners(page)
+  await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await page.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(page)
+  await page.mouse.click(640, 740)
+
+  const bar = await page.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    c.addBar(400, 460, 800, 460)
+    return c.bars()[0]
+  })
+  const mid = { x: (bar.ax + bar.bx) / 2, y: (bar.ay + bar.by) / 2 }
+
+  // --- Elle s'ouvre, et elle montre l'ensemble des options ---
+  await openNatureWheel(page, mid)
+  await tick(page)
+  const opened = await readWheel(page)
+  await rec.shot(page, 'roue-nature-ouverte')
+  rec.assert(
+    'l’appui long ouvre la roue sur les trois natures, la courante marquée',
+    opened !== null &&
+      opened.options.length === 3 &&
+      new Set(opened.options.map((o) => o.label)).size === 3 &&
+      opened.current === bar.nature,
+    opened ? `${opened.options.map((o) => o.label).join(', ')} | courante=${opened.current}` : 'aucune roue'
+  )
+
+  // --- Viser met en évidence le secteur, sans encore rien changer ---
+  const trampoline = opened.options.find((o) => o.value === 'trampoline')
+  await page.mouse.move(trampoline.x, trampoline.y, { steps: 6 })
+  await tick(page)
+  const aiming = await page.evaluate(() => ({
+    wheel: window.__carillon.stats().wheel,
+    nature: window.__carillon.bars()[0].nature,
+  }))
+  await rec.shot(page, 'roue-nature-visee')
+  rec.assert(
+    'viser un secteur le désigne sans rien appliquer avant le relâchement',
+    aiming.wheel?.aimed === opened.options.indexOf(trampoline) && aiming.nature === 'wall',
+    `aimed=${aiming.wheel?.aimed} nature=${aiming.nature}`
+  )
+
+  // --- Relâcher dans le secteur applique ---
+  await page.mouse.up()
+  await wait(150)
+  const picked = await page.evaluate(() => ({
+    nature: window.__carillon.bars()[0].nature,
+    wheel: window.__carillon.stats().wheel,
+    undoDepth: window.__carillon.stats().undoDepth,
+  }))
+  await rec.shot(page, 'roue-nature-choisie')
+  rec.assert(
+    'relâcher dans un secteur applique ce secteur et ferme la roue',
+    picked.nature === 'trampoline' && picked.wheel === null && picked.undoDepth > 0,
+    `nature=${picked.nature} roue=${picked.wheel} undo=${picked.undoDepth}`
+  )
+
+  // --- Relâcher **au-delà de l'anneau** annule ---
+  await openNatureWheel(page, mid)
+  const ring = await readWheel(page)
+  await page.mouse.move(ring.centerX + ring.outerRadius + 40, ring.centerY, { steps: 6 })
+  await tick(page)
+  await rec.shot(page, 'roue-hors-anneau')
+  await page.mouse.up()
+  await wait(150)
+  const cancelled = await page.evaluate(() => ({
+    nature: window.__carillon.bars()[0].nature,
+    wheel: window.__carillon.stats().wheel,
+  }))
+  rec.assert(
+    'relâcher hors de l’anneau annule : la nature ne bouge pas',
+    cancelled.nature === 'trampoline' && cancelled.wheel === null,
+    `nature=${cancelled.nature} roue=${cancelled.wheel}`
+  )
+
+  /*
+   * --- Relâcher au centre **épingle** ---
+   *
+   * C'est le geste de quelqu'un qui découvre : appuyer long, relâcher sans avoir bougé. Traité comme une
+   * annulation, il ne ferait rien et la fonction resterait invisible.
+   */
+  await openNatureWheel(page, mid)
+  await page.mouse.up()
+  await wait(150)
+  const pinned = await readWheel(page)
+  await rec.shot(page, 'roue-epinglee')
+  rec.assert(
+    'relâcher au centre laisse la roue ouverte plutôt que de ne rien faire',
+    pinned !== null && pinned.pinned === true,
+    pinned ? `épinglée, ${pinned.options.length} options` : 'roue fermée'
+  )
+
+  // Un tap dans un secteur choisit, roue épinglée comprise.
+  await pickInPinnedWheel(page, 'ephemeral')
+  const afterPinnedPick = await page.evaluate(() => ({
+    nature: window.__carillon.bars()[0].nature,
+    wheel: window.__carillon.stats().wheel,
+    notes: window.__carillon.stats().notes,
+  }))
+  rec.assert(
+    'un tap dans un secteur de roue épinglée choisit et ferme',
+    afterPinnedPick.nature === 'ephemeral' && afterPinnedPick.wheel === null,
+    `nature=${afterPinnedPick.nature} roue=${afterPinnedPick.wheel}`
+  )
+
+  // Et ce tap ne fait pas sonner la barre en dessous : la roue ne vole pas le geste à l'envers.
+  await openNatureWheel(page, mid)
+  await page.mouse.up()
+  await wait(150)
+  const beforeCloseTap = await page.evaluate(() => ({
+    nature: window.__carillon.bars()[0].nature,
+    notes: window.__carillon.stats().notes,
+    undoDepth: window.__carillon.stats().undoDepth,
+  }))
+  const wheelToClose = await readWheel(page)
+  await page.mouse.click(
+    wheelToClose.centerX + wheelToClose.outerRadius + 60,
+    wheelToClose.centerY - wheelToClose.outerRadius - 60
+  )
+  await wait(200)
+  const afterCloseTap = await page.evaluate(() => ({
+    nature: window.__carillon.bars()[0].nature,
+    notes: window.__carillon.stats().notes,
+    undoDepth: window.__carillon.stats().undoDepth,
+    wheel: window.__carillon.stats().wheel,
+  }))
+  rec.assert(
+    'un tap hors des secteurs ferme sans rien changer, et sans lâcher de bille',
+    afterCloseTap.wheel === null &&
+      afterCloseTap.nature === beforeCloseTap.nature &&
+      afterCloseTap.notes === beforeCloseTap.notes &&
+      afterCloseTap.undoDepth === beforeCloseTap.undoDepth,
+    `nature=${afterCloseTap.nature} notes=${beforeCloseTap.notes}->${afterCloseTap.notes} undo=${beforeCloseTap.undoDepth}->${afterCloseTap.undoDepth}`
+  )
+
+  /*
+   * --- Au doigt : une roue épinglée se vise en glissant ---
+   *
+   * Il n'existe pas de pointeur libre au tactile, donc glisser **est** le seul moyen de viser. Sans
+   * traitement dédié, un glisser sur une roue épinglée dépassait le seuil de tap, devenait un tracé de
+   * barre et détruisait la roue : sur téléphone elle n'offrait que « taper à l'aveugle » ou « la jeter ».
+   * C'est pourtant le support sur lequel l'épinglage se justifie — il n'y a pas de survol au doigt.
+   */
+  /*
+   * Deux départs, parce qu'ils empruntent **deux chemins d'entrée différents** : depuis la barre le
+   * geste émet `drag` puis `release`, depuis le vide il émet `draft` puis `create-bar`. La sonde ne
+   * partait que de la barre, donc deux des cinq entrées de l'interception n'étaient jamais exercées —
+   * les retirer laissait l'assertion verte.
+   */
+  const touchPick = async (from, wanted) => {
+    await page.evaluate(() => {
+      const c = window.__carillon
+      c.reset()
+      c.addBar(400, 460, 800, 460)
+    })
+    await tick(page)
+    const bar = await page.evaluate(() => window.__carillon.bars()[0])
+    const barMid = { x: (bar.ax + bar.bx) / 2, y: bar.ay }
+    await page.touchscreen.touchStart(barMid.x, barMid.y)
+    await wait(700)
+    await page.touchscreen.touchEnd()
+    await wait(150)
+    const pinned = await readWheel(page)
+    const target = pinned?.options.find((option) => option.value === wanted)
+    const start = from === 'barre' ? barMid : { x: pinned.centerX - 70, y: pinned.centerY + 55 }
+    await page.touchscreen.touchStart(start.x, start.y)
+    for (let step = 1; step <= 6; step += 1) {
+      await page.touchscreen.touchMove(
+        start.x + ((target.x - start.x) * step) / 6,
+        start.y + ((target.y - start.y) * step) / 6
+      )
+    }
+    const aimed = await page.evaluate(() => window.__carillon.stats().wheel?.aimKind)
+    await page.touchscreen.touchEnd()
+    await wait(150)
+    const after = await page.evaluate(() => ({
+      nature: window.__carillon.bars()[0]?.nature,
+      bars: window.__carillon.stats().bars,
+      wheel: window.__carillon.stats().wheel,
+    }))
+    return {
+      from,
+      ok:
+        pinned?.pinned === true &&
+        aimed === 'sector' &&
+        after.nature === wanted &&
+        after.bars === 1 &&
+        after.wheel === null,
+      detail: `${from}: épinglée=${pinned?.pinned} visée=${aimed} nature=${after.nature} barres=${after.bars}`,
+    }
+  }
+
+  const touchRuns = [await touchPick('barre', 'trampoline'), await touchPick('vide', 'ephemeral')]
+  rec.assert(
+    'au doigt, glisser sur une roue épinglée vise et choisit — depuis une barre **comme** depuis le vide',
+    touchRuns.every((run) => run.ok),
+    touchRuns.map((run) => run.detail).join(' | ')
+  )
+
+  /*
+   * --- « Ça va épingler » et « ça va annuler » se distinguent **à l'écran** ---
+   *
+   * Sur une roue à ressort, la seule où le relâchement est imminent. Mesuré en pixels, avec deux
+   * grandeurs distinctes : le **liseré** (encre rougeâtre) et le **voile** (assombrissement du disque).
+   * Le voile porte la lisibilité et n'était mesuré par rien — une mutation qui le retirait passait.
+   *
+   * Les seuils se dérivent du tracé, pas d'un nombre rond : liseré de 5 px centré sur `outerRadius - 2`,
+   * donc il couvre 99,5..104,5 et le rayon 100 n'est atteint **que** par lui (un trait de 2 px, la
+   * version rejetée pour invisibilité, couvre 102..104). Motif de tirets 10/8, soit 10/18 du tour.
+   */
+  /*
+   * L'encre est comptée sur **plusieurs rayons**, et il en faut sur chacun.
+   *
+   * Une sonde à un seul rayon ne mesure pas l'épaisseur : elle mesure une position. N'importe quel filet
+   * posé là la satisfait — la review l'a prouvé en ramenant le trait à 2 px **et** en le décalant de
+   * 2 px vers l'intérieur, ce qui passait. Trois rayons espacés de 2 px couvrent 4 unités : seul un trait
+   * de 5 px les atteint tous les trois.
+   */
+  const RING_PROBE_OFFSETS = [-4, -2, 0]
+  const DASH_DUTY = 10 / 18
+  const inkAndVeil = async () =>
+    page.evaluate(
+      ([offsets]) => {
+        const wheel = window.__carillon.stats().wheel
+        const canvas = document.querySelector('#stage')
+        const ctx = canvas.getContext('2d')
+        const dpr = canvas.width / canvas.clientWidth
+        const sample = (radius, angle) => {
+          const px = Math.round((wheel.centerX + Math.cos(angle) * radius) * dpr)
+          const py = Math.round((wheel.centerY + Math.sin(angle) * radius) * dpr)
+          return ctx.getImageData(px, py, 1, 1).data
+        }
+        const red = offsets.map(() => 0)
+        let luminance = 0
+        let samples = 0
+        for (let step = 0; step < 360; step += 1) {
+          const angle = (step / 360) * Math.PI * 2
+          offsets.forEach((offset, i) => {
+            const [r, g, b] = sample(wheel.outerRadius + offset, angle)
+            if (r > 120 && r > g + 50 && r > b + 30) red[i] += 1
+          })
+          // Voile : mesuré au milieu de l'anneau, là où vivent les secteurs et les libellés.
+          const [vr, vg, vb] = sample((wheel.innerRadius + wheel.outerRadius) / 2, angle)
+          luminance += 0.2126 * vr + 0.7152 * vg + 0.0722 * vb
+          samples += 1
+        }
+        return { red, thinnest: Math.min(...red), luminance: luminance / samples }
+      },
+      [RING_PROBE_OFFSETS]
+    )
+
+  await openNatureWheel(page, mid)
+  const springWheel = await readWheel(page)
+  await page.mouse.move(mid.x + 4, mid.y, { steps: 2 })
+  await tick(page)
+  const pinState = await inkAndVeil()
+  // Troisième contrôle : viser un **secteur** ne doit pas déclencher l'alarme. Sans lui, l'alarme
+  // pouvait signifier « une visée existe » au lieu de « ça va être jeté », et rien ne le voyait.
+  const sectorTarget = springWheel.options[1]
+  await page.mouse.move(sectorTarget.x, sectorTarget.y, { steps: 4 })
+  await tick(page)
+  const sectorState = await inkAndVeil()
+  await page.mouse.move(mid.x + springWheel.outerRadius + 60, mid.y, { steps: 6 })
+  await tick(page)
+  await rec.shot(page, 'roue-annulation-annoncee')
+  const cancelState = await inkAndVeil()
+  await page.mouse.up()
+  await wait(120)
+  // Le liseré est tireté : au mieux 10/18 du tour est encré. On exige 70 % de ce maximum théorique.
+  const expectedInk = 360 * DASH_DUTY * 0.7
+  /*
+   * Seuil de voile serré sur la mesure réelle (0,51 du repos), pas un rapport confortable : à 0,75 la
+   * review a montré qu'on pouvait diviser le voile par deux et rester vert.
+   */
+  const VEIL_RATIO = 0.55
+  console.log(
+    `  [roue] annulation : liseré ${JSON.stringify(pinState.red)} -> ${JSON.stringify(cancelState.red)} (le plus fin ≥ ${Math.round(expectedInk)}) | secteur visé ${sectorState.thinnest} | voile ${pinState.luminance.toFixed(1)} -> ${cancelState.luminance.toFixed(1)}`
+  )
+  rec.assert(
+    'annuler s’annonce à l’écran : un liseré épais, un assombrissement, et rien de tout ça sur un secteur',
+    // Encre sur **chacun** des rayons sondés : c'est ce qui mesure l'épaisseur et non la position.
+    cancelState.thinnest >= expectedInk &&
+      pinState.thinnest <= cancelState.thinnest * 0.1 &&
+      sectorState.thinnest === 0 &&
+      cancelState.luminance <= pinState.luminance * VEIL_RATIO,
+    `liseré ${pinState.thinnest}->${cancelState.thinnest} (seuil ${Math.round(expectedInk)}) | secteur ${sectorState.thinnest} | voile ${pinState.luminance.toFixed(1)}->${cancelState.luminance.toFixed(1)} (max ${(pinState.luminance * VEIL_RATIO).toFixed(1)})`
+  )
+
+  /*
+   * --- Une roue ouverte ne survit pas à un saut d'état ---
+   *
+   * Son centre est en pixels absolus et elle vise une barre par identifiant : après un redimensionnement,
+   * un « Effacer » ou une annulation, la laisser ouverte afficherait un choix sur une scène qui n'est
+   * plus celle-là — secteurs passés sous le HUD, ou option marquée qui n'est plus en place.
+   */
+  const survivors = []
+  for (const [label, jump] of [
+    ['Effacer', async () => page.click('[data-control="clear"]')],
+    ['annulation', async () => {
+      await page.keyboard.down('Meta')
+      await page.keyboard.press('KeyZ')
+      await page.keyboard.up('Meta')
+    }],
+    ['redimensionnement', async () => page.setViewport({ width: 1024, height: 720, deviceScaleFactor: 2 })],
+  ]) {
+    await page.evaluate(() => {
+      const c = window.__carillon
+      c.reset()
+      c.addBar(400, 460, 800, 460)
+    })
+    await tick(page)
+    const target = await page.evaluate(() => window.__carillon.bars()[0])
+    await openNatureWheel(page, { x: (target.ax + target.bx) / 2, y: target.ay })
+    await page.mouse.up()
+    await wait(150)
+    const openBefore = await readWheel(page)
+    await jump()
+    await wait(250)
+    await tick(page)
+    const openAfter = await readWheel(page)
+    survivors.push(`${label}: ${openBefore ? 'ouverte' : 'fermée'} -> ${openAfter ? 'ENCORE OUVERTE' : 'fermée'}`)
+  }
+  await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await tick(page)
+  rec.assert(
+    'un saut d’état (Effacer, annulation, redimensionnement) ferme la roue',
+    survivors.every((line) => line.endsWith('-> fermée')) &&
+      survivors.every((line) => line.includes('ouverte ->')),
+    survivors.join(' | ')
+  )
+
+  // --- La roue des timbres : l'ensemble d'un coup, et un aller-retour en deux gestes ---
+  const catalogue = await page.evaluate(() => window.__carillon.stats().instrumentIds)
+  // Scène vide : la mesure de pixels qui suit exige un **contrôle propre**. Une barre à l'écran a sa
+  // propre teinte — rouge dans le grave — et ses pixels se comptaient comme du liseré d'annulation.
+  await page.evaluate(() => window.__carillon.reset())
+  await tick(page)
+  await page.click('[data-control="instrument"]')
+  await tick(page)
+  const instrumentWheel = await readWheel(page)
+  await rec.shot(page, 'roue-instruments')
+  rec.assert(
+    'la roue des timbres montre tout le catalogue d’un coup',
+    instrumentWheel !== null &&
+      instrumentWheel.options.length === catalogue.length &&
+      new Set(instrumentWheel.options.map((o) => o.label)).size === catalogue.length,
+    instrumentWheel ? instrumentWheel.options.map((o) => o.label).join(', ') : 'aucune roue'
+  )
+
+  /*
+   * **Lisibles**, pas seulement présents. Une roue dont deux libellés se recouvrent expose exactement la
+   * même liste de chaînes qu'une roue lisible : c'est ce qui a laissé passer « Corde (pizzicdteje
+   * (cloches) » sur la capture des cinq timbres. On asserte donc des **boîtes** — largeur réellement
+   * mesurée par le rendu, budget géométrique du secteur, et absence de recouvrement deux à deux.
+   */
+  /*
+   * Une hauteur de ligne dérivée de la **police du secteur visé** (700 14px), pas d'un nombre choisi :
+   * c'est elle qui décide si deux ancres partagent une bande horizontale.
+   */
+  const LINE_HEIGHT = 14
+  const boxesAreReadable = (labels, wheel) => {
+    const tooWide = labels.filter((l) => l.width > l.budget)
+    const overlaps = []
+    for (let i = 0; i < labels.length; i += 1) {
+      for (let j = i + 1; j < labels.length; j += 1) {
+        const a = labels[i]
+        const b = labels[j]
+        if (Math.abs(a.y - b.y) < LINE_HEIGHT && Math.abs(a.x - b.x) < (a.width + b.width) / 2) {
+          overlaps.push(`${a.text}/${b.text}`)
+        }
+      }
+    }
+    const outsideDisc = labels.filter(
+      (l) => Math.hypot(l.x - wheel.centerX, l.y - wheel.centerY) + l.width / 2 > wheel.outerRadius
+    )
+    return { tooWide, overlaps, outsideDisc }
+  }
+
+  const atRest = boxesAreReadable(instrumentWheel.labels, instrumentWheel)
+  // Luminance de référence : la roue au repos, avant tout mouvement de pointeur.
+  const { luminance: restVeil } = await inkAndVeil()
+  console.log(
+    `  [roue] libellés dessinés : ${instrumentWheel.labels
+      .map((l) => `${l.text}(${Math.round(l.width)}/${Math.round(l.budget)}px)`)
+      .join(' ')}`
+  )
+
+  // Le survol vise, roue épinglée comprise — sinon on choisit à l'aveugle parmi cinq secteurs.
+  const hoverTarget = instrumentWheel.options[2]
+  await page.mouse.move(hoverTarget.x, hoverTarget.y, { steps: 4 })
+  await tick(page)
+  const hovered = await page.evaluate(() => window.__carillon.stats().wheel)
+  rec.assert(
+    'promener le pointeur sur une roue épinglée met le secteur en évidence',
+    hovered?.aimed === 2 && hovered?.aimKind === 'sector',
+    `aimed=${hovered?.aimed} kind=${hovered?.aimKind}`
+  )
+
+  /*
+   * Relu **pendant** que chaque secteur est visé, l'un après l'autre. Le libellé visé est écrit dans une
+   * police plus grande (700 14px contre 600 13px), et c'est la seule qui puisse déborder. Ne mesurer
+   * qu'au repos laissait ce cas hors de portée ; ne viser qu'un seul secteur laissait les quatre autres
+   * jamais mesurés dans cette police.
+   */
+  const tooWide = [...atRest.tooWide]
+  const overlaps = [...atRest.overlaps]
+  const outsideDisc = [...atRest.outsideDisc]
+  for (const option of instrumentWheel.options) {
+    await page.mouse.move(option.x, option.y, { steps: 3 })
+    await tick(page)
+    const state = await page.evaluate(() => window.__carillon.stats().wheel)
+    const checked = boxesAreReadable(state.labels, state)
+    tooWide.push(...checked.tooWide)
+    overlaps.push(...checked.overlaps)
+    outsideDisc.push(...checked.outsideDisc)
+  }
+  rec.assert(
+    'les cinq timbres sont lisibles au repos **et** chacun dans la police qu’il prend quand il est visé',
+    tooWide.length === 0 && overlaps.length === 0 && outsideDisc.length === 0,
+    `trop larges=[${tooWide.map((l) => l.text)}] recouvrements=[${overlaps}] débordent du disque=[${outsideDisc.map((l) => l.text)}]`
+  )
+
+  /*
+   * « Ça va épingler » et « ça va annuler » sont deux issues **opposées**. Elles doivent se distinguer
+   * avant le relâchement : les captures 01 et 04 étaient identiques au pixel près.
+   */
+  /*
+   * Une roue **épinglée** ne montre pas l'annulation : le pointeur hors de l'anneau y est le trajet
+   * normal depuis le bouton qui l'a ouverte, et l'alarme s'affichait pendant toute la lecture des
+   * options. C'est donc une propriété à part entière, et elle s'asserte.
+   */
+  await page.mouse.move(
+    instrumentWheel.centerX + instrumentWheel.outerRadius + 45,
+    instrumentWheel.centerY,
+    { steps: 4 }
+  )
+  await tick(page)
+  await rec.shot(page, 'roue-instruments-approche')
+  /*
+   * Le **voile** est mesuré ici, pas seulement l'encre : le défaut d'origine était que les cinq libellés
+   * apparaissaient délavés derrière un voile pendant tout le trajet, et une assertion qui ne compte que
+   * le liseré laisse revenir exactement ça. La luminance de repos sert de référence.
+   */
+  const approach = await inkAndVeil()
+  const approachAim = await page.evaluate(() => window.__carillon.stats().wheel?.aimKind)
+  console.log(
+    `  [roue] trajet : visée=${approachAim}, liseré ${approach.thinnest} px, voile ${approach.luminance.toFixed(1)} (repos ${restVeil.toFixed(1)})`
+  )
+  rec.assert(
+    'sur le trajet vers une roue épinglée, ni liseré ni voile : elle reste lisible',
+    approachAim === 'cancel' && approach.thinnest === 0 && approach.luminance >= restVeil * 0.95,
+    `visée=${approachAim}, ${approach.thinnest} px de liseré, voile ${approach.luminance.toFixed(1)} contre ${restVeil.toFixed(1)} au repos`
+  )
+  await page.mouse.move(instrumentWheel.options[0].x, instrumentWheel.options[0].y, { steps: 4 })
+
+  /*
+   * Le point de douleur d'origine, mesuré : avec un cycle, revenir au timbre précédent coûtait
+   * `catalogue.length - 1` clics. On compte les gestes, pas les millisecondes.
+   */
+  const start = await page.evaluate(() => window.__carillon.stats().instrument)
+  const far = catalogue[catalogue.length - 1] === start ? catalogue[1] : catalogue[catalogue.length - 1]
+  await pickInPinnedWheel(page, far)
+  let gestures = 2
+  const reached = await page.evaluate(() => window.__carillon.stats().instrument)
+  await chooseInstrument(page, start)
+  gestures += 2
+  const back = await page.evaluate(() => window.__carillon.stats().instrument)
+  console.log(`  [roue] ${start} -> ${reached} -> ${back} en ${gestures} gestes (cycle : ${(catalogue.length - 1) * 2})`)
+  rec.assert(
+    'un aller-retour entre deux timbres coûte deux gestes par choix, quel que soit l’écart',
+    reached === far && back === start && gestures === 4,
+    `${start} -> ${reached} -> ${back}, ${gestures} gestes`
+  )
+
+  // --- Ouverte au bord de la scène, elle reste entièrement visible ---
+  const edge = await page.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    // Une barre collée au bord gauche : la roue s'ouvrirait à moitié hors champ sans recadrage.
+    c.addBar(30, 300, 150, 300)
+    return c.bars()[0]
+  })
+  await openNatureWheel(page, { x: (edge.ax + edge.bx) / 2, y: edge.ay })
+  await tick(page)
+  const atEdge = await page.evaluate(() => {
+    const wheel = window.__carillon.stats().wheel
+    const hud = Array.from(document.querySelectorAll('[data-hud]'))
+      .map((el) => el.getBoundingClientRect())
+      .filter((r) => r.width > 0 && r.height > 0)
+      .map((r) => ({ left: r.left, right: r.right, top: r.top, bottom: r.bottom }))
+    return { wheel, hud, width: window.innerWidth, height: window.innerHeight }
+  })
+  await rec.shot(page, 'roue-au-bord')
+
+  /*
+   * Au bord, la roue est **recadrée loin du doigt** : le pointeur immobile tombe alors dans un secteur.
+   * Relâcher sans avoir bougé doit tout de même épingler, et surtout ne rien appliquer — ce défaut a été
+   * trouvé en regardant la capture ci-dessus, aucune assertion ne le voyait.
+   */
+  const natureAtEdge = await page.evaluate(() => window.__carillon.bars()[0].nature)
+  const edgeGeometry = await page.evaluate(() => {
+    const w = window.__carillon.stats().wheel
+    // Le doigt est resté au milieu de la barre, que `fitWheel` a laissée hors du centre de la roue.
+    return { offCentre: Math.abs(w.centerX - 90), innerRadius: w.innerRadius }
+  })
+  const pointerInSector = edgeGeometry.offCentre > edgeGeometry.innerRadius
+  /*
+   * Le seuil est **encadré**, comme les frontières de secteurs dans `wheel.test.ts` : deux pixels en
+   * dedans ne doit rien viser, deux pixels au-delà doit viser un secteur. Un déplacement en dur (8 px)
+   * n'épinglait que l'*existence* du garde et laissait son seuil rétrécir de 26 à 10 sans rougir — soit
+   * un tremblement de pouce ordinaire qui applique une option. Le rayon vient de l'app, pas d'ici.
+   */
+  const deadZone = edgeGeometry.innerRadius
+  /*
+   * **Deux gestes**, pas un. Une fois le seuil franchi, la visée est engagée pour tout le reste de
+   * l'appui — c'est voulu, on ne se dé-engage pas en revenant vers son point de départ. Vérifier les
+   * deux côtés du seuil dans le même appui testait donc autre chose que ce qu'annonçait son nom.
+   */
+  await page.mouse.move(90 + deadZone - 2, 300, { steps: 2 })
+  await tick(page)
+  const aimJustInside = await page.evaluate(() => window.__carillon.stats().wheel?.aimKind)
+  await page.mouse.up()
+  await wait(150)
+  const edgeRelease = await page.evaluate(() => ({
+    nature: window.__carillon.bars()[0].nature,
+    wheel: window.__carillon.stats().wheel,
+  }))
+  // Roue épinglée congédiée avant le second geste, pour repartir d'un état propre.
+  await page.mouse.click(atEdge.width - 40, atEdge.height / 2)
+  await wait(120)
+
+  const edgeBar = await page.evaluate(() => window.__carillon.bars()[0])
+  await openNatureWheel(page, { x: (edgeBar.ax + edgeBar.bx) / 2, y: edgeBar.ay })
+  await page.mouse.move(90 + deadZone + 2, 300, { steps: 2 })
+  await tick(page)
+  const aimJustOutside = await page.evaluate(() => window.__carillon.stats().wheel?.aimKind)
+  // Relâché hors de l'anneau : on ne veut pas appliquer, seulement avoir mesuré la visée.
+  await page.mouse.move(90 + edgeGeometry.offCentre + 200, 300, { steps: 4 })
+  await page.mouse.up()
+  await wait(150)
+  rec.assert(
+    'roue recadrée : la zone morte du geste vaut son rayon annoncé, de part et d’autre',
+    pointerInSector &&
+      // Sous le seuil : rien n'est visé, alors que le point est géométriquement dans un secteur.
+      aimJustInside === 'pin' &&
+      // Au-delà : un secteur est visé. C'est ce qui épingle le **seuil** et pas seulement l'existence du garde.
+      aimJustOutside === 'sector' &&
+      edgeRelease.wheel !== null &&
+      edgeRelease.wheel.pinned === true &&
+      edgeRelease.nature === natureAtEdge,
+    `recadrée de ${Math.round(edgeGeometry.offCentre)}px | zone morte ${deadZone} : ${deadZone - 2}px->${aimJustInside}, ${deadZone + 2}px->${aimJustOutside} | épinglée=${edgeRelease.wheel?.pinned} | nature=${natureAtEdge}->${edgeRelease.nature}`
+  )
+  // Refermée pour ne pas laisser la roue ouverte sur le viewport suivant.
+  await page.mouse.click(atEdge.width - 40, atEdge.height / 2)
+  await wait(120)
+  const disc = {
+    left: atEdge.wheel.centerX - atEdge.wheel.outerRadius,
+    right: atEdge.wheel.centerX + atEdge.wheel.outerRadius,
+    top: atEdge.wheel.centerY - atEdge.wheel.outerRadius,
+    bottom: atEdge.wheel.centerY + atEdge.wheel.outerRadius,
+  }
+  const insideViewport =
+    disc.left >= 0 && disc.top >= 0 && disc.right <= atEdge.width && disc.bottom <= atEdge.height
+  const underHud = atEdge.hud.filter(
+    (r) => disc.left < r.right && disc.right > r.left && disc.top < r.bottom && disc.bottom > r.top
+  )
+  rec.assert(
+    'ouverte au bord, la roue est recadrée : entièrement visible et hors du HUD',
+    insideViewport && underHud.length === 0,
+    `disque ${Math.round(disc.left)}..${Math.round(disc.right)} x ${Math.round(disc.top)}..${Math.round(disc.bottom)} dans ${atEdge.width}x${atEdge.height}, ${underHud.length} chevauchement(s) de HUD`
+  )
+
+  // --- Téléphone : même exigence, sur 375 px ---
+  await page.setViewport({ width: 375, height: 667, deviceScaleFactor: 2 })
+  await tick(page)
+  const phoneBar = await page.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    c.addBar(60, 300, 300, 300)
+    return c.bars()[0]
+  })
+  await openNatureWheel(page, { x: (phoneBar.ax + phoneBar.bx) / 2, y: phoneBar.ay })
+  await tick(page)
+  const phone = await page.evaluate(() => {
+    const wheel = window.__carillon.stats().wheel
+    const hud = Array.from(document.querySelectorAll('[data-hud]'))
+      .map((el) => el.getBoundingClientRect())
+      .filter((r) => r.width > 0 && r.height > 0)
+      .map((r) => ({ left: r.left, right: r.right, top: r.top, bottom: r.bottom }))
+    return {
+      wheel,
+      hud,
+      width: window.innerWidth,
+      height: window.innerHeight,
+      scrollWidth: document.documentElement.scrollWidth,
+    }
+  })
+  await rec.shot(page, 'roue-mobile')
+  await page.mouse.up()
+  const phoneDisc = {
+    left: phone.wheel.centerX - phone.wheel.outerRadius,
+    right: phone.wheel.centerX + phone.wheel.outerRadius,
+    top: phone.wheel.centerY - phone.wheel.outerRadius,
+    bottom: phone.wheel.centerY + phone.wheel.outerRadius,
+  }
+  const phoneUnderHud = phone.hud.filter(
+    (r) =>
+      phoneDisc.left < r.right &&
+      phoneDisc.right > r.left &&
+      phoneDisc.top < r.bottom &&
+      phoneDisc.bottom > r.top
+  )
+  rec.assert(
+    'sur 375 px la roue tient dans la scène, hors du HUD, sans débordement horizontal',
+    phoneDisc.left >= 0 &&
+      phoneDisc.right <= phone.width &&
+      phoneDisc.top >= 0 &&
+      phoneDisc.bottom <= phone.height &&
+      phoneUnderHud.length === 0 &&
+      phone.scrollWidth <= phone.width,
+    `disque ${Math.round(phoneDisc.left)}..${Math.round(phoneDisc.right)} dans ${phone.width}, scrollWidth=${phone.scrollWidth}, ${phoneUnderHud.length} chevauchement(s)`
+  )
+
+  /*
+   * On ne laisse pas le scénario s'achever sur une roue épinglée. Un état ouvert survit aux gestes
+   * suivants et les capte : c'est ce qui a produit un faux négatif pendant la revue, une sonde ajoutée
+   * en fin de scénario voyant son appui long avalé par une roue oubliée là.
+   */
+  await page.mouse.click(20, phone.height / 2)
+  await wait(120)
+  const leftOpen = await readWheel(page)
+  rec.assert('le scénario ne laisse aucune roue ouverte derrière lui', leftOpen === null, `roue=${leftOpen}`)
+
+  await page.close()
+}
+
 const SCENARIOS = {
   sandbox: runSandbox,
   stress: runStress,
@@ -2393,6 +3133,7 @@ const SCENARIOS = {
   lacher: runLacher,
   edit: runEdit,
   touch: runTouch,
+  roue: runRoue,
 }
 
 // --- Mode --smoke : auto-vérification du harnais sur une fixture ----------

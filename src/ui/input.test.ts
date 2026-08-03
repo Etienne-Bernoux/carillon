@@ -142,7 +142,30 @@ describe('machine à gestes', () => {
     h.move(50, 0)
     h.move(52, 0)
     h.move(54, 0)
-    expect(h.types()).toEqual(['hover'])
+    // `hover` reconstruit un état de mise en évidence : il reste émis au **changement de cible** et
+    // nulle part ailleurs. Le suivi continu, lui, est un geste distinct — c'est l'objet du test suivant.
+    expect(h.types().filter((type) => type === 'hover')).toEqual(['hover'])
+  })
+
+  it('suit le pointeur libre à chaque mouvement, pour viser dans une roue ouverte', () => {
+    /*
+     * Sans ce geste, promener la souris dans une roue épinglée ne produisait **aucun** événement :
+     * `hover` n'est émis qu'au changement de cible, et la cible ne change pas dans un disque. On
+     * choisissait donc à l'aveugle, sans jamais voir le secteur sous le curseur.
+     */
+    const h = harness(fakeHit())
+    h.move(50, 0)
+    h.move(52, 0)
+    h.move(54, 0)
+    const moves = h.gestures.filter((gesture) => gesture.type === 'pointer-move')
+    expect(moves).toHaveLength(3)
+    expect(moves.at(-1)).toMatchObject({ point: { x: 54, y: 0 } })
+  })
+
+  it('ne suit pas le pointeur au doigt : il n’y a pas de pointeur libre au tactile', () => {
+    const h = harness(fakeHit())
+    h.move(50, 0, 'touch')
+    expect(h.types()).not.toContain('pointer-move')
   })
 
   it('n’émet pas de survol au doigt (il n’y a pas de survol tactile)', () => {
@@ -263,13 +286,69 @@ describe('machine à gestes', () => {
     vi.advanceTimersByTime(LONG_PRESS_MS + 10)
     h.up(50, 0)
 
-    expect(h.types()).toEqual(['grab', 'long-press', 'release'])
+    expect(h.types()).toEqual(['grab', 'long-press', 'long-press-end', 'release'])
     // Le geste d'écoute n'est pas volé : pas de `tap`, donc la barre ne sonne pas.
     expect(h.types()).not.toContain('tap')
     const press = h.gestures.find((g) => g.type === 'long-press')
     expect(press?.hit?.target).toBe('bar')
     const release = h.gestures.find((g) => g.type === 'release')
     expect(release?.handled).toBe(true)
+  })
+
+  it('le pointeur reste suivi après un appui long, et le relâchement dit où', () => {
+    /*
+     * C'est ce qui rend un choix radial visable dans le même geste que son ouverture. Avant l'US16, le
+     * mouvement était **supprimé** après un appui long : rien ne pouvait suivre le doigt.
+     */
+    const h = harness(fakeHit())
+    h.down(50, 0)
+    vi.advanceTimersByTime(LONG_PRESS_MS + 10)
+    h.move(50, -60)
+    h.move(90, -20)
+    h.up(90, -20)
+
+    const aims = h.gestures.filter((g) => g.type === 'long-press-move')
+    expect(aims).toHaveLength(2)
+    expect(aims[0]).toMatchObject({ point: { x: 50, y: -60 } })
+    expect(aims[1]).toMatchObject({ point: { x: 90, y: -20 } })
+    const end = h.gestures.find((g) => g.type === 'long-press-end')
+    expect(end).toMatchObject({ point: { x: 90, y: -20 }, cancelled: false })
+    // Le mouvement d'après l'appui long ne dessine pas et ne déplace pas la barre.
+    expect(h.types()).not.toContain('drag')
+    expect(h.types()).not.toContain('draft')
+  })
+
+  it('la visée commence dès le premier pixel, sans attendre le seuil de tap', () => {
+    // Sinon la roue ne réagirait pas dans ses 14 premiers pixels, ce qui se lit comme un widget mort.
+    const h = harness(null)
+    h.down(300, 300)
+    vi.advanceTimersByTime(LONG_PRESS_MS + 10)
+    h.move(303, 301)
+
+    expect(h.types()).toContain('long-press-move')
+  })
+
+  it('un appui long interrompu par le système est annoncé comme tel', () => {
+    const h = harness(null)
+    h.down(300, 300)
+    vi.advanceTimersByTime(LONG_PRESS_MS + 10)
+    h.cancel(300, 300)
+
+    expect(h.gestures.find((g) => g.type === 'long-press-end')).toMatchObject({ cancelled: true })
+  })
+
+  it('sans appui long, aucun geste de visée n’est émis', () => {
+    // Test de non-vol : les quatre gestes historiques gardent exactement leur séquence.
+    const empty = harness(null)
+    empty.down(100, 100)
+    empty.move(140, 100)
+    empty.up(140, 100)
+    expect(empty.types()).toEqual(['draft', 'draft-cancel', 'create-bar'])
+
+    const bar = harness(fakeHit())
+    bar.down(50, 0)
+    bar.up(50, 0)
+    expect(bar.types()).toEqual(['grab', 'tap'])
   })
 
   it('un appui long sur une source n’émet rien : taper une source change déjà son rythme', () => {

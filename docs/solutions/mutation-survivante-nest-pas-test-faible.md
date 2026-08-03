@@ -56,6 +56,27 @@ dérivée de la hauteur de **scène**, comme si tout impact avait lieu au ras du
 **au-dessus du point d'impact**. Et le test qui l'a attrapé comparait lui aussi à la mauvaise borne —
 donc une assertion plus faible que son nom.
 
+## Le même réflexe, réponse inverse (US16)
+
+La méthode ne conclut pas toujours « le code a une redondance ». Sur la roue de sélection, retirer le
+centrage `- step / 2` de `sectorStartAngle` — donc faire commencer le premier secteur au **haut** au lieu
+de l'y centrer — laissait vert le test nommé « centre le premier secteur sur le haut ».
+
+Condition de divergence, cherchée avant de toucher au test : elle **existe**, et elle est étroite. Le
+point posé pile sur la verticale tombe dans le premier secteur dans les deux versions — dans un cas parce
+qu'il en est le milieu, dans l'autre parce qu'il en est la frontière de début. Les deux codes ne cessent
+d'être le même code qu'**à côté** de la verticale : d'un degré à gauche, la version non centrée bascule
+dans le dernier secteur.
+
+Cette fois, c'est donc bien le test qui était faux — il visait l'unique point où les deux versions
+coïncident. Et la propriété produit est celle du voisinage, pas du point : si le haut est une frontière,
+« je vise en haut » est un tirage au sort entre deux options, ce qu'une roue doit précisément éviter. Le
+test asserte maintenant un voisinage angulaire, et la mutation meurt.
+
+À retenir : la question « sous quelle condition ces deux codes diffèrent-ils » est la bonne dans les deux
+cas ; ce qui change est la réponse. Et un test qui vise un point **singulier** — une frontière, un zéro,
+un extremum — a de bonnes chances d'être exactement le point où la mutation ne se voit pas.
+
 ## Ce que ça change dans la méthode
 
 - Devant une mutation survivante, chercher **la condition de divergence** avant de toucher au test.
@@ -70,3 +91,5 @@ donc une assertion plus faible que son nom.
 
 - `tester-la-propriete-pas-son-proxy.md` — l'étiquette d'une assertion n'est pas son contrat
 - `effet-present-dans-letat-invisible-a-lecran.md` — une métrique peut récompenser le défaut
+- `un-recadrage-deplace-le-repere-dinteraction.md` — le défaut de l'US16 que douze assertions vertes ne
+  voyaient pas, et que la capture a montré

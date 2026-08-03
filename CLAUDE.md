@@ -77,6 +77,48 @@ Pièges déjà connus (issus des règles cortex, à ne pas réapprendre) :
   vérifier que l'assertion rougit, restaurer. Déjà payé — une comparaison de captures plein cadre
   passait au vert grâce à l'état `:hover` du bouton cliqué
   (`docs/solutions/tester-la-propriete-pas-son-proxy.md`).
+- **Une assertion écrite pour un correctif doit exercer le chemin que le correctif a ajouté.** Déjà
+  payé (US16) : le garde « la zone morte se mesure depuis l'origine du geste » vivait dans `aimWheel`,
+  et l'assertion censée le prouver ne bougeait jamais le pointeur — donc n'appelait jamais `aimWheel`.
+  Remettre le bug laissait les **douze** assertions vertes. Aucune relecture du test ne montre ce trou ;
+  une mutation le montre en une exécution. Corollaire : après avoir corrigé un défaut, **muter le
+  correctif** et pas seulement vérifier que le scénario passe.
+- **Un signal qui ne passe que le test n'est pas un signal.** Même US : le liseré d'annulation était
+  mesurable (251 pixels rouges contre 0) et parfaitement invisible en regardant la capture. Un effet
+  destiné à l'œil se dimensionne en le regardant, puis se mesure — dans cet ordre. Et sa mesure exige un
+  **contrôle propre** : les premiers pixels « rouges » comptés venaient d'une barre grave à l'écran, pas
+  du liseré.
+- **Une sonde à un seul point mesure une position, pas une grandeur.** Trois fois le même piège dans la
+  même US, chaque fois trouvé par la review : compter l'encre à **un** rayon laissait passer un trait
+  deux fois plus fin qu'il suffisait de déplacer ; pousser le pointeur de 8 px en dur épinglait
+  l'*existence* d'un seuil dont la valeur pouvait tomber de 26 à 10 ; mesurer les libellés dans **une**
+  police laissait l'autre déborder. Quand la propriété porte sur une épaisseur, un seuil ou une plage,
+  la sonde doit **encadrer** — deux côtés de la frontière, plusieurs rayons, toutes les polices — et le
+  paramètre doit être **lu dans l'app**, jamais recopié dans le test.
+- **Un signal a un sens, pas seulement une présence.** Vérifier que l'alarme d'annulation s'affiche ne
+  dit pas qu'elle veut dire « annuler » : sans un contrôle exigeant son **absence** quand on vise un
+  secteur, elle pouvait signifier « une visée existe » et l'assertion restait verte.
+- **Le seuil d'une mesure se dérive du tracé, et l'assertion doit exclure la version rejetée.** Suite du
+  point précédent, et c'est la review qui l'a trouvé : après avoir jugé une version invisible « à
+  refaire », l'assertion écrite ensuite portait un seuil rond (`> 100`) que cette version passait
+  largement (251). Un seuil rond est un nombre déguisé. Le bon réflexe : poser la sonde là où **seule**
+  la version acceptée arrive (rayon atteint par un trait de 5 px et pas par un de 2 px) et déduire
+  l'attendu de la géométrie du tracé (épaisseur, motif de tirets). Corollaire : mesurer **chaque**
+  composante de l'effet — le voile n'était compté par rien, donc le retirer passait.
+- **Une liste de cas qui s'allonge à chaque support est un aveu.** Une roue épinglée captait d'abord les
+  gestes « décisifs », puis le survol pour viser à la souris, puis le tracé pour viser au doigt, puis le
+  glisser — parce qu'un glisser commencé sur une barre émet `drag` et déplaçait la barre **sous** la
+  roue. Le troisième ajout aurait dû être le signal : la bonne règle n'était pas une liste mais une
+  propriété (le sélecteur est **modal**, il consomme tout jusqu'à décision). Quand un troisième cas
+  particulier arrive, chercher l'invariant qui les remplace tous.
+- **Une mutation se restaure depuis une copie, jamais par `git checkout`, et jamais avant d'avoir
+  commité.** Les deux moitiés de la règle ont été payées dans le même tour (US16) : sur un fichier
+  **neuf**, `git checkout -- <fichier>` échoue (« pathspec did not match ») et les mutations
+  s'**accumulent** en silence — les trois suivantes ne prouvent alors plus rien, et le fichier reste
+  corrompu ; sur un fichier **suivi**, il réussit trop bien et **efface le travail non commité** — une
+  US entière de `main.ts` perdue, à reconstituer. Donc : commiter d'abord, `cp` vers le scratchpad,
+  restaurer par `cp`, et vérifier qu'une mutation non appliquée (motif qui ne matche pas) est signalée
+  comme telle plutôt que comptée comme tuée.
 - **Après un test de mutation, `git diff` sur le fichier touché doit être vide**, et les preuves
   doivent être **postérieures** au code (comparer les horodatages avant de clôturer). Déjà payé : un
   résidu `void dx` a survécu à `pnpm check`, parce que c'est justement la forme qui fait taire
