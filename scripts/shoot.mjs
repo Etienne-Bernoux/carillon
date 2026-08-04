@@ -24,7 +24,7 @@ const ROOT = path.resolve(__dirname, '..')
 const PROOFS_DIR = path.join(ROOT, 'docs', 'proofs')
 const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
-const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis', 'rythme', 'timbres', 'natures', 'air', 'partage', 'lacher', 'roue', 'sources']
+const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis', 'rythme', 'timbres', 'natures', 'air', 'partage', 'lacher', 'roue', 'sources', 'tempo']
 
 const rawArgs = process.argv.slice(2)
 const flags = new Set(rawArgs.filter((a) => a.startsWith('--')))
@@ -1870,13 +1870,30 @@ async function runTimbres(browser, url, rec) {
     )
     const state = [...document.querySelectorAll('[data-control="tuning"], [data-control="instrument"]')]
       .map((b) => Math.round(b.getBoundingClientRect().top))
-    return { rows: new Set(tops).size, stateRows: new Set(state).size, count: tops.length }
+    return {
+      rows: new Set(tops).size,
+      stateRows: new Set(state).size,
+      count: tops.length,
+      // Déclarés dans le document : le compte attendu ne se recopie pas, il se lit.
+      declared: document.querySelectorAll('.toolbar button[data-control]').length,
+      scrollWidth: document.documentElement.scrollWidth,
+      width: window.innerWidth,
+    }
   })
   console.log(`  [timbres] petit écran : ${rows.count} contrôles sur ${rows.rows} rangées`)
+  /*
+   * La propriété est « **tous** les contrôles tiennent sur deux rangées », pas « il y en a sept ». Le
+   * nombre codé en dur a fait rougir ce scénario dès qu'un huitième bouton est arrivé (le tempo, US13),
+   * alors que la mise en page tenait toujours.
+   *
+   * Deuxième version : `count >= 7 && rows <= 2` gardait le 7 en dur — en **borne basse**, donc masquer
+   * ou supprimer un bouton passait —, et `rows <= 2` est une métrique « moins c'est mieux » qu'un HUD
+   * vidé optimiserait. Le compte vient maintenant du DOM et les deux valeurs sont exactes.
+   */
   rec.assert(
-    'les sept contrôles tiennent sur deux rangées',
-    rows.count === 7 && rows.rows === 2,
-    `${rows.count} contrôles, ${rows.rows} rangées`
+    'tous les contrôles du HUD tiennent sur exactement deux rangées, sans débordement',
+    rows.count === rows.declared && rows.rows === 2 && rows.scrollWidth <= rows.width,
+    `${rows.count}/${rows.declared} contrôles placés, ${rows.rows} rangées, scrollWidth ${rows.scrollWidth}/${rows.width}`
   )
   rec.assert(
     'les deux boutons porteurs d’état partagent la même rangée',
@@ -3252,8 +3269,13 @@ async function runSources(browser, url, rec) {
     afterPick.divisionIndex === 3 &&
       afterPick.wheel === null &&
       afterPick.undoDepth > 0 &&
-      afterPick.aheadOfNow > 0 &&
-      afterPick.aheadOfNow <= afterPick.period + 1e-9 &&
+      /*
+       * Borne **symétrique** : au plus une période d'écart, dans un sens comme dans l'autre. Exiger
+       * « strictement devant nous » était une course — le temps avance entre le calcul de l'échéance et
+       * la lecture, donc elle peut venir d'échoir, et `runEmitters` la réarmera au pas suivant. Sans
+       * ré-armement du tout, l'échéance périmée reste à plusieurs périodes neuves : toujours attrapé.
+       */
+      Math.abs(afterPick.aheadOfNow) <= afterPick.period + 1e-9 &&
       gridOffset < 1e-6,
     `division=${afterPick.divisionIndex} échéance dans ${afterPick.aheadOfNow.toFixed(4)}s (période ${afterPick.period.toFixed(4)}s, écart à la grille ${gridOffset.toExponential(1)}) undo=${afterPick.undoDepth}`
   )
@@ -3415,6 +3437,332 @@ async function runSources(browser, url, rec) {
   await page.close()
 }
 
+/**
+ * Le tempo (US13). La grille existe depuis l'US7 et rien ne l'exposait : le tempo était figé à 96 BPM.
+ *
+ * Le bouton reste un bouton — un clic annonce — mais un glissement horizontal règle la valeur en continu.
+ * Ce qui se vérifie ici et pas en Vitest : que le geste réel change la **cadence entendue**, et qu'il ne
+ * produise ni rafale ni silence, ce que l'horloge de l'US7 promet sans qu'aucune interface l'ait jamais
+ * exercé.
+ */
+async function runTempo(browser, url, rec) {
+  const page = await browser.newPage()
+  rec.attachConsoleListeners(page)
+  await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await page.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(page)
+  await page.mouse.click(640, 740)
+
+  const button = '[data-control="tempo"]'
+  // Bornes et sensibilité **lues dans l'app**, pas recopiées : un changement d'étendue doit faire bouger
+  // l'attendu du test, pas le rendre faux en silence.
+  const { TEMPO_DRAG_SPAN, MIN, MAX } = await page.evaluate(() => window.__carillon.tempoRange())
+  const readTempo = async () =>
+    page.evaluate((sel) => ({
+      bpm: window.__carillon.stats().bpm,
+      label: (document.querySelector(sel)?.querySelector('.label')?.textContent ?? '').trim(),
+      undoDepth: window.__carillon.stats().undoDepth,
+    }), button)
+
+  /*
+   * Un clic n'y touche pas — **même avec un tremblement**. Deux cas, parce que le premier seul ne prouve
+   * rien : `page.click` n'émet aucun mouvement entre l'appui et le relâchement, donc il ne traverse jamais
+   * le seuil de tap. Vérifié par mutation : sans le second cas, retirer le seuil passait au vert, alors
+   * qu'un doigt qui bouge de 5 px changerait la pulsation de toute la scène.
+   */
+  const before = await readTempo()
+  await page.click(button)
+  await wait(150)
+  const afterClick = await readTempo()
+  const tremorBox = await page.evaluate((sel) => {
+    const r = document.querySelector(sel).getBoundingClientRect()
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+  }, button)
+  await page.mouse.move(tremorBox.x, tremorBox.y)
+  await page.mouse.down()
+  await page.mouse.move(tremorBox.x + 5, tremorBox.y)
+  await page.mouse.move(tremorBox.x + 3, tremorBox.y + 2)
+  await page.mouse.up()
+  await wait(150)
+  const afterTremor = await readTempo()
+  rec.assert(
+    'cliquer le bouton de tempo ne change pas le tempo, tremblement compris',
+    afterClick.bpm === before.bpm &&
+      afterClick.undoDepth === before.undoDepth &&
+      afterTremor.bpm === before.bpm &&
+      afterTremor.undoDepth === before.undoDepth,
+    `clic ${before.bpm} -> ${afterClick.bpm} BPM | tremblement -> ${afterTremor.bpm} BPM, undo ${before.undoDepth} -> ${afterTremor.undoDepth}`
+  )
+
+  /** Glisse horizontalement depuis le centre du bouton, en vrais événements de pointeur. */
+  const scrub = async (dx, steps = 8) => {
+    const box = await page.evaluate((sel) => {
+      const r = document.querySelector(sel).getBoundingClientRect()
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+    }, button)
+    await page.mouse.move(box.x, box.y)
+    await page.mouse.down()
+    for (let i = 1; i <= steps; i += 1) await page.mouse.move(box.x + (dx * i) / steps, box.y)
+    await page.mouse.up()
+    await wait(150)
+  }
+
+  await scrub(120)
+  const faster = await readTempo()
+  await rec.shot(page, 'tempo-accelere')
+  rec.assert(
+    'glisser à droite accélère, et le libellé visible suit',
+    faster.bpm > before.bpm && faster.label === `${faster.bpm} BPM`,
+    `${before.bpm} -> ${faster.bpm} BPM, libellé « ${faster.label} »`
+  )
+
+  /*
+   * La cadence **entendue**, pas le libellé : on compte les émissions d'une source sur une fenêtre
+   * simulée identique, à deux tempos. Doubler le tempo doit doubler le nombre de billes — c'est la seule
+   * mesure qui dise que la grille a vraiment changé et pas seulement l'affichage.
+   */
+  const emissionsAt = async (bpm) =>
+    page.evaluate((target) => {
+      const c = window.__carillon
+      c.reset()
+      c.addEmitter(640, 200, 1)
+      // Billes **créées**, pas vivantes : une bille tombe hors champ en moins de deux secondes et le
+      // plafond de billes écrête, donc compter les vivantes après 10 s simulées rendait 1 quel que soit le
+      // tempo. `ballsSpawned` est le compteur d'identifiants, qui ne redescend jamais.
+      const before = c.stats().ballsSpawned
+      // Le tempo est posé par l'API de debug ici : ce qu'on mesure est l'effet du tempo sur la cadence,
+      // pas le geste — le geste est asserté juste au-dessus.
+      c.setTempo(target)
+      c.advance(10)
+      return c.stats().ballsSpawned - before
+    }, bpm)
+
+  const slow = await emissionsAt(60)
+  const fast = await emissionsAt(120)
+  console.log(`  [tempo] 60 BPM -> ${slow} billes | 120 BPM -> ${fast} billes sur 10 s simulées`)
+  rec.assert(
+    'doubler le tempo double **exactement** la cadence réellement émise',
+    // Égalité, pas un quota : la mesure est déterministe et entière. Un ±1 laissait passer une erreur
+    // de cadence de 12,5 % (4 -> 9 au lieu de 4 -> 8), soit une mutation qui réarme une période trop tard.
+    fast === slow * 2 && slow > 3,
+    `${slow} -> ${fast} billes (attendu exactement ${slow * 2})`
+  )
+
+  /*
+   * Ni rafale ni silence **pendant** le glissement : à chaque étape, l'échéance de la source reste
+   * devant nous et à moins d'une période. C'est la propriété que l'US7 a payée et qu'aucune interface
+   * n'avait encore exercée, faute de pouvoir changer le tempo.
+   */
+  await page.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    c.setTempo(96)
+    c.addEmitter(400, 200, 1)
+    c.addEmitter(900, 200, 3)
+  })
+  await tick(page)
+  const breaches = []
+  for (const dx of [-90, -40, 20, 80, 140]) {
+    await scrub(dx, 4)
+    const state = await page.evaluate(() => ({
+      time: window.__carillon.stats().time,
+      emitters: window.__carillon.emitters(),
+    }))
+    for (const emitter of state.emitters) {
+      const ahead = emitter.nextAt - state.time
+      // Borne **symétrique** et dérivée, comme dans `sources` : au plus une période d'écart, dans un sens
+      // comme dans l'autre. Le `+ 0,05` était un nombre déguisé, et `ahead <= 0` était la course que ce
+      // même travail a corrigée trois cents lignes plus haut.
+      if (Math.abs(ahead) > emitter.period + 1e-9) {
+        breaches.push(`${emitter.id}@${ahead.toFixed(3)}s/${emitter.period.toFixed(3)}s`)
+      }
+    }
+  }
+  rec.assert(
+    'régler le tempo ne produit ni rafale ni silence, à chaque étape du glissement',
+    breaches.length === 0,
+    breaches.length === 0 ? '5 réglages, aucune échéance hors grille' : `hors bornes : ${breaches}`
+  )
+
+  /*
+   * Aller-retour : revenir à l'origine doit rendre le tempo de départ **et** ne consommer aucune place
+   * d'annulation. Les deux moitiés sont des défauts distincts, et aucune n'était gardée : une mutation
+   * qui recale l'origine à chaque mouvement — donc qui accumule au lieu de suivre le déplacement total —
+   * passait les sept assertions, alors qu'un aller-retour de 200 px faisait 152 -> 78 BPM.
+   */
+  // Depuis le milieu de l'étendue : partir d'une borne saturerait le geste et l'aller-retour serait vrai
+  // sans rien prouver — ce que le garde `atFarEnd !== beforeRound.bpm` a effectivement attrapé.
+  await page.evaluate(() => window.__carillon.setTempo(96))
+  await tick(page)
+  const beforeRound = await readTempo()
+  const roundBox = await page.evaluate((sel) => {
+    const r = document.querySelector(sel).getBoundingClientRect()
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+  }, button)
+  await page.mouse.move(roundBox.x, roundBox.y)
+  await page.mouse.down()
+  for (let i = 1; i <= 8; i += 1) await page.mouse.move(roundBox.x + (200 * i) / 8, roundBox.y)
+  const atFarEnd = await page.evaluate(() => window.__carillon.stats().bpm)
+  for (let i = 7; i >= 0; i -= 1) await page.mouse.move(roundBox.x + (200 * i) / 8, roundBox.y)
+  await page.mouse.up()
+  await wait(150)
+  const afterRound = await readTempo()
+  rec.assert(
+    'un aller-retour rend le tempo de départ, sans consommer d’annulation',
+    afterRound.bpm === beforeRound.bpm &&
+      afterRound.undoDepth === beforeRound.undoDepth &&
+      // Le geste a bien porté loin : sinon l'assertion serait vraie parce qu'il ne s'est rien passé.
+      atFarEnd !== beforeRound.bpm,
+    `${beforeRound.bpm} -> ${atFarEnd} -> ${afterRound.bpm} BPM, undo ${beforeRound.undoDepth} -> ${afterRound.undoDepth}`
+  )
+
+  /*
+   * Ni rafale ni silence **pendant** le geste, pointeur encore enfoncé. La version précédente mesurait
+   * 150 ms après le relâchement : la source avait déjà ré-émis et raccroché la grille toute seule, donc
+   * l'assertion ne pouvait pas voir l'absence de réarmement — vérifié, elle restait verte sans lui.
+   */
+  await page.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    c.setTempo(96)
+    c.addEmitter(400, 200, 1)
+    c.addEmitter(900, 200, 3)
+  })
+  await tick(page)
+  const midDragBreaches = []
+  await page.mouse.move(roundBox.x, roundBox.y)
+  await page.mouse.down()
+  for (const step of [30, 70, 110, 150, 190]) {
+    await page.mouse.move(roundBox.x + step, roundBox.y)
+    await tick(page)
+    const state = await page.evaluate(() => ({
+      bpm: window.__carillon.stats().bpm,
+      time: window.__carillon.stats().time,
+      emitters: window.__carillon.emitters(),
+    }))
+    for (const emitter of state.emitters) {
+      const ahead = emitter.nextAt - state.time
+      if (Math.abs(ahead) > emitter.period + 1e-9) {
+        midDragBreaches.push(`${state.bpm}BPM:${emitter.id}@${ahead.toFixed(3)}/${emitter.period.toFixed(3)}`)
+      }
+    }
+  }
+  await page.mouse.up()
+  await wait(150)
+  rec.assert(
+    'pendant le glissement, pointeur enfoncé, aucune source ne sort de sa grille',
+    midDragBreaches.length === 0,
+    midDragBreaches.length === 0
+      ? '5 relevés en cours de geste, aucune échéance hors bornes'
+      : `hors bornes : ${midDragBreaches}`
+  )
+
+  /*
+   * Régler le tempo ne **revendique pas** la scène : la géométrie n'y est pour rien, donc une scène
+   * générée doit rester régénérée au redimensionnement. Mesuré avant correctif : 8 barres sur 9 hors
+   * champ après un passage à 375 px, ce que `barsOutOfBounds` existe précisément pour interdire.
+   */
+  await page.setViewport({ width: 900, height: 700, deviceScaleFactor: 2 })
+  await page.reload({ waitUntil: 'load' })
+  await waitForCarillon(page)
+  await tick(page)
+  const generated = await page.evaluate(() => window.__carillon.stats().bars)
+  await scrub(60)
+  await page.setViewport({ width: 375, height: 700, deviceScaleFactor: 2 })
+  await tick(page)
+  await wait(200)
+  const afterResize = await page.evaluate(() => window.__carillon.stats())
+  rec.assert(
+    'régler le tempo ne fige pas la scène : elle se replace toujours au redimensionnement',
+    generated > 3 &&
+      afterResize.barsOutOfBounds === 0 &&
+      afterResize.barsUnderHud === 0 &&
+      afterResize.bpm !== 96,
+    `${generated} barres | hors champ=${afterResize.barsOutOfBounds} sous HUD=${afterResize.barsUnderHud} | tempo conservé=${afterResize.bpm}`
+  )
+  await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await tick(page)
+
+  // Annulable, comme la gamme : c'est un réglage qui change ce qu'on entend de la scène entière.
+  const expectedAfterUndo = await page.evaluate(() => window.__carillon.stats().bpm)
+  await scrub(80)
+  const beforeUndo = await readTempo()
+  await page.keyboard.down('Meta')
+  await page.keyboard.press('KeyZ')
+  await page.keyboard.up('Meta')
+  await wait(200)
+  const undone = await readTempo()
+  rec.assert(
+    'annuler restaure **la** valeur d’avant le dernier réglage, libellé compris',
+    // « Ça a changé » ne dit pas « c'est la bonne valeur » : une mutation qui restaurait 96 BPM au lieu
+    // du tempo d'avant passait. Le scénario connaît la valeur attendue, il doit l'exiger.
+    undone.bpm === expectedAfterUndo && undone.label === `${undone.bpm} BPM`,
+    `attendu ${expectedAfterUndo}, obtenu ${undone.bpm} BPM (avant annulation ${beforeUndo.bpm}), libellé « ${undone.label} »`
+  )
+
+  // Le tempo voyage dans le lien : c'est déjà le cas depuis le format v2, mais rien ne pouvait le régler.
+  await page.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    c.setTempo(144)
+    c.addBar(300, 400, 700, 420)
+  })
+  await page.click('[data-control="share"]')
+  await wait(200)
+  const link = await page.evaluate(() => location.href)
+  const guest = await browser.newPage()
+  rec.attachConsoleListeners(guest)
+  await guest.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await guest.goto(link, { waitUntil: 'load' })
+  await waitForCarillon(guest)
+  const received = await guest.evaluate(() => ({
+    bpm: window.__carillon.stats().bpm,
+    label: (document.querySelector('#tempo-label')?.textContent ?? '').trim(),
+  }))
+  await guest.close()
+  rec.assert(
+    'un tempo réglé traverse le lien de partage',
+    received.bpm === 144 && received.label === '144 BPM',
+    `144 -> ${received.bpm} BPM, libellé « ${received.label} »`
+  )
+
+  // --- 375 px : le bouton reste atteignable et le glissement fonctionne au doigt ---
+  await page.setViewport({ width: 375, height: 780, deviceScaleFactor: 2 })
+  await tick(page)
+  const phoneBefore = await readTempo()
+  const box = await page.evaluate((sel) => {
+    const r = document.querySelector(sel).getBoundingClientRect()
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, width: r.width, right: r.right }
+  }, button)
+  await page.touchscreen.touchStart(box.x, box.y)
+  for (let i = 1; i <= 6; i += 1) await page.touchscreen.touchMove(box.x - (70 * i) / 6, box.y)
+  await page.touchscreen.touchEnd()
+  await wait(150)
+  const phoneAfter = await readTempo()
+  await rec.shot(page, 'tempo-mobile')
+  const overflow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    width: window.innerWidth,
+  }))
+  /*
+   * La valeur attendue est **dérivée** du geste, pas un « ça a baissé » : 70 px de glissement valent
+   * 70/240 de l'étendue. Le quota laissait passer un tiers du geste — c'est exactement ce qui arrivait
+   * avant `touch-action: none`, où le navigateur reprenait la main après une vingtaine de pixels et où
+   * 96 BPM devenaient 86 au lieu de 65.
+   */
+  const expectedPhone = Math.round(phoneBefore.bpm - (70 / TEMPO_DRAG_SPAN) * (MAX - MIN))
+  rec.assert(
+    'à 375 px, le glissement au doigt règle le tempo de la valeur exacte du geste',
+    box.right <= overflow.width &&
+      box.width > 24 &&
+      phoneAfter.bpm === expectedPhone &&
+      overflow.scrollWidth <= overflow.width,
+    `bouton ${Math.round(box.width)}px | ${phoneBefore.bpm} -> ${phoneAfter.bpm} BPM (attendu ${expectedPhone})`
+  )
+
+  await page.close()
+}
+
 const SCENARIOS = {
   sandbox: runSandbox,
   stress: runStress,
@@ -3434,6 +3782,7 @@ const SCENARIOS = {
   touch: runTouch,
   roue: runRoue,
   sources: runSources,
+  tempo: runTempo,
 }
 
 // --- Mode --smoke : auto-vérification du harnais sur une fixture ----------

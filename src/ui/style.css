@@ -90,6 +90,17 @@ body {
   min-width: 0;
 }
 
+/*
+ * Le bouton de tempo est une **glissière** : sans ça, le navigateur reprend le geste horizontal au bout
+ * d'une vingtaine de pixels — il y voit un défilement — et envoie `pointercancel`. Mesuré au doigt à
+ * 375 px : un geste de 70 px ne déplaçait le tempo que de 96 à 86 BPM au lieu de 65, parce que quatre
+ * des six mouvements étaient perdus. Ciblé sur ce seul bouton : les sept autres n'ont pas de geste à
+ * protéger, et `touch-action: none` leur retirerait le comportement natif pour rien.
+ */
+.toolbar button[data-control='tempo'] {
+  touch-action: none;
+}
+
 .toolbar button {
   pointer-events: auto;
   appearance: none;

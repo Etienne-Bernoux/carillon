@@ -49,6 +49,32 @@ export function clampBpm(bpm: number): number {
   return Math.min(Math.max(bpm, MIN_BPM), MAX_BPM)
 }
 
+/**
+ * Distance horizontale, en pixels, pour traverser **toute** l'étendue de tempo.
+ *
+ * 240 px : assez court pour que l'étendue soit atteignable au pouce sur un téléphone de 375 px, assez
+ * long pour que 1 px vaille moins d'un demi-BPM — donc pour qu'on puisse viser une valeur et pas
+ * seulement une zone.
+ */
+export const TEMPO_DRAG_SPAN_PX = 240
+
+/**
+ * Tempo obtenu en glissant de `dx` pixels depuis un tempo de départ.
+ *
+ * La valeur suit le **déplacement**, jamais la position absolue du pointeur : le geste part d'un bouton
+ * du HUD, qui n'est pas au milieu de l'écran, donc mapper une position téléporterait la pulsation au
+ * premier pixel — à une valeur qui dépendrait de l'endroit où le bouton se trouve. C'est la leçon de la
+ * zone morte de l'US16, où mesurer depuis le centre du dessin au lieu de l'origine du geste appliquait
+ * une option que personne n'avait visée.
+ *
+ * Réversible par construction : le tempo de départ n'est pas modifié pendant le geste, donc revenir à
+ * l'origine rend exactement la valeur d'avant.
+ */
+export function bpmForDrag(startBpm: number, dx: number): number {
+  const span = MAX_BPM - MIN_BPM
+  return clampBpm(clampBpm(startBpm) + (dx / TEMPO_DRAG_SPAN_PX) * span)
+}
+
 export function divisionAt(index: number): number {
   return DIVISIONS[index] ?? DIVISIONS[DEFAULT_DIVISION_INDEX] ?? 1
 }

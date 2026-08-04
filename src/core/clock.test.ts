@@ -6,8 +6,10 @@ import {
   DIVISIONS,
   MAX_BPM,
   MIN_BPM,
+  TEMPO_DRAG_SPAN_PX,
   barPosition,
   barSeconds,
+  bpmForDrag,
   clampBpm,
   divisionAt,
   divisionLabel,
@@ -179,5 +181,71 @@ describe('noms courts des divisions', () => {
     DIVISIONS.forEach((_, index) => {
       expect(divisionShortLabel(index).length * WIDEST_CHAR_PX).toBeLessThan(budget)
     })
+  })
+})
+
+describe('glissière de tempo', () => {
+  it('un déplacement nul ne change rien', () => {
+    // Sinon toucher le bouton déplacerait la pulsation de toute la scène.
+    for (const bpm of [MIN_BPM, DEFAULT_BPM, 120, MAX_BPM]) {
+      expect(bpmForDrag(bpm, 0)).toBe(bpm)
+    }
+  })
+
+  it('à droite ça accélère, à gauche ça ralentit', () => {
+    // Vrai pour tout tempo de départ **strictement** dans l'étendue : aux bornes, un des deux sens est
+    // saturé, ce que le test suivant couvre.
+    for (const bpm of [70, DEFAULT_BPM, 150]) {
+      expect(bpmForDrag(bpm, 30)).toBeGreaterThan(bpm)
+      expect(bpmForDrag(bpm, -30)).toBeLessThan(bpm)
+    }
+  })
+
+  it('reste dans l’étendue, et l’atteint aux deux bouts', () => {
+    for (const dx of [-10_000, -TEMPO_DRAG_SPAN_PX, 0, TEMPO_DRAG_SPAN_PX, 10_000]) {
+      const bpm = bpmForDrag(DEFAULT_BPM, dx)
+      expect(bpm).toBeGreaterThanOrEqual(MIN_BPM)
+      expect(bpm).toBeLessThanOrEqual(MAX_BPM)
+    }
+    // Atteindre les bornes n'est pas un détail : une étendue dont les extrêmes sont inaccessibles est
+    // plus étroite que ce qu'elle annonce.
+    expect(bpmForDrag(DEFAULT_BPM, 10_000)).toBe(MAX_BPM)
+    expect(bpmForDrag(DEFAULT_BPM, -10_000)).toBe(MIN_BPM)
+  })
+
+  it('ne dépend que du couple (départ, déplacement), donc ne peut pas dériver', () => {
+    /*
+     * Version précédente de ce test : `bpmForDrag(bpm, dx - dx)` et `bpmForDrag(f(bpm, dx), 0)`, soit
+     * deux fois `f(x, 0) === x` — le test 1, recopié. Il n'appelait jamais la fonction avec un
+     * déplacement non nul et ne contraignait rien : une mutation qui rendait `signe(dx)` le laissait
+     * vert.
+     *
+     * Ce qui se démontre ici est la **pureté** : deux appels de même couple rendent la même chose, et
+     * un chemin en deux temps rend la même chose qu'un saut direct. C'est ce qui interdit à la valeur
+     * de dépendre de l'ordre des mouvements. Que l'appelant conserve bien une origine fixe, en
+     * revanche, ne se prouve pas ici — c'est le scénario navigateur qui l'exerce, par un aller-retour.
+     */
+    for (const bpm of [70, DEFAULT_BPM, 150]) {
+      for (const dx of [-137, -12, 40, 260]) {
+        expect(bpmForDrag(bpm, dx)).toBe(bpmForDrag(bpm, dx))
+        // Deux moitiés de geste valent le geste entier : la fonction ne garde aucune mémoire.
+        expect(bpmForDrag(bpm, dx)).toBeCloseTo(
+          bpmForDrag(clampBpm(bpm + (dx / 2 / TEMPO_DRAG_SPAN_PX) * (MAX_BPM - MIN_BPM)), dx / 2),
+          9,
+        )
+      }
+    }
+  })
+
+  it('la sensibilité est dérivée de l’étendue, pas choisie', () => {
+    /*
+     * Traverser `TEMPO_DRAG_SPAN_PX` doit couvrir **exactement** l'étendue : c'est ce qui relie la
+     * constante de geste aux bornes musicales. Recopier « 108 BPM » ici laisserait passer un changement
+     * de bornes sans que rien ne rougisse.
+     */
+    expect(bpmForDrag(MIN_BPM, TEMPO_DRAG_SPAN_PX)).toBe(MAX_BPM)
+    expect(bpmForDrag(MAX_BPM, -TEMPO_DRAG_SPAN_PX)).toBe(MIN_BPM)
+    // Et la moitié du geste couvre la moitié de l'étendue.
+    expect(bpmForDrag(MIN_BPM, TEMPO_DRAG_SPAN_PX / 2)).toBeCloseTo((MIN_BPM + MAX_BPM) / 2, 9)
   })
 })
