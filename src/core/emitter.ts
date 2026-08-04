@@ -72,7 +72,16 @@ export function clampDivisionIndex(index: number): number {
  * une fonction exportée que rien n'appelle affirmerait un comportement que le produit n'a plus.
  */
 export function setDivision(world: World, emitter: Emitter, index: number): number {
-  // Le même bornage que la création d'une source, pas un second : `clampDivisionIndex` existe pour ça.
+  /*
+   * Bornage conservé, alors que le même tour a retiré un garde inatteignable côté interface — la review
+   * a eu raison de relever l'apparente contradiction, et voici où passe la ligne.
+   *
+   * Ce qui est retiré, c'est du code défensif dans un **adaptateur**, sur un chemin qu'aucun geste
+   * n'atteint : là, le garde ne décrit rien. Ce qui est gardé, c'est la **totalité d'une fonction pure
+   * exportée** : `setDivision(w, e, 42)` doit avoir un sens pour n'importe quel entier, comme
+   * `divisionAt` et `addEmitter` en ont un, sinon chaque appelant futur doit redécouvrir le contrat. La
+   * règle est celle du fichier (`clampDivisionIndex`, repli sur le défaut) et pas une seconde à côté.
+   */
   const clamped = clampDivisionIndex(index)
   emitter.divisionIndex = clamped
   emitter.nextAt = gridTimeAfter(world.time, divisionAt(clamped), world.bpm)

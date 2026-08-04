@@ -182,6 +182,17 @@ export interface WheelView {
   wheel: Wheel<string>
   aim: WheelAim | null
   /**
+   * Position de l'objet qu'on règle, ou `null` quand le réglage n'a pas de sujet dans la scène
+   * (l'instrument).
+   *
+   * Le disque est presque opaque et couvre la zone morte : une source de 13 px passait sous lui à 11 %
+   * de son contraste — mesuré 3 à 7 valeurs sur 255 contre 33 à 55 à découvert. Et près d'un bord, le
+   * recadrage la laisse jusqu'à 96 px du centre, sans rien qui la relie. Sur une scène à plusieurs
+   * sources, **rien ne disait laquelle on règle**. Le sujet est donc redessiné par-dessus la roue, et
+   * relié à elle quand il n'est pas sous son centre.
+   */
+  subject: Vec2 | null
+  /**
    * Roue épinglée : elle survit au relâchement, donc le pointeur hors de l'anneau est le **trajet
    * normal** vers ses secteurs, pas une intention d'annuler. Sans cette distinction, la roue des timbres
    * s'affichait estompée et cerclée de rouge pendant tout le temps où on la lisait — le signal était

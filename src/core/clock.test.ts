@@ -165,11 +165,16 @@ describe('noms courts des divisions', () => {
   it('tiennent dans le budget d’une roue à cinq secteurs', () => {
     /*
      * C'est la raison d'être de ces noms : les phrases ne tenaient pas et la roue affichait cinq fois le
-     * même repli. La largeur par caractère est **majorante** (9 px pour une police de 14 px en graisse
-     * 700, mesurée dans la page à 8,2 px pour « 1× ») : une borne trop généreuse rendrait l'assertion
-     * muette sur le produit.
+     * même repli.
+     *
+     * La borne par caractère est **10 px**, et c'en est vraiment une : mesurés dans la page en
+     * `700 14px` — la police du secteur visé, la plus large — les caractères que `divisionShortLabel`
+     * peut produire valent au pire 9,56 px (`8`), puis 9,47 (`4`), 9,43 (`0`), 9,42 (`9`), 9,25 (`×`).
+     * J'avais écrit 9 en le présentant comme majorant : c'était la **moyenne** par caractère du libellé
+     * le plus étroit (« 1× », 16,26 px pour deux signes), donc une borne dérivée du meilleur cas. À dix
+     * divisions, « 48× » aurait passé le test à 27 px pour 28,28 px réels, dans un budget de 28,17.
      */
-    const WIDEST_CHAR_PX = 9
+    const WIDEST_CHAR_PX = 10
     const budget = labelWidthBudget(DIVISIONS.length)
     DIVISIONS.forEach((_, index) => {
       expect(divisionShortLabel(index).length * WIDEST_CHAR_PX).toBeLessThan(budget)

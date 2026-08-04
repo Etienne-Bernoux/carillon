@@ -1464,10 +1464,16 @@ async function runRythme(browser, url, rec) {
    * la source ouvre sa roue et c'est le choix d'un secteur qui applique. Ce qui est vérifié ici est la
    * conséquence rythmique ; l'ouverture de la roue et la disparition du cyclage sont dans `sources`.
    */
+  /*
+   * On part de la division **2** (un tiers de mesure) vers la **3** (un quart), et pas de 0 vers 3.
+   * Depuis la mesure entière, tout instant de grille est déjà un multiple du quart : l'écart à la grille
+   * valait donc 0 **même sans aucun ré-armement**, et l'assertion suivante était creuse — démontré par
+   * mutation. Un tiers n'est pas un sous-multiple d'un quart, donc la grille change vraiment.
+   */
   const cycled = await page.evaluate(() => {
     const c = window.__carillon
     c.reset()
-    c.addEmitter(500, 300, 0)
+    c.addEmitter(500, 300, 2)
     return c.emitters()[0]
   })
   await tick(page)
@@ -1484,15 +1490,31 @@ async function runRythme(browser, url, rec) {
     afterTap.divisionIndex === 3 && afterTap.period < cycled.period,
     `${cycled.divisionIndex} -> ${afterTap.divisionIndex}, période ${cycled.period.toFixed(3)} -> ${afterTap.period.toFixed(3)}`
   )
-  // Propriété **vérifiable** : l'échéance est un multiple de la nouvelle période, donc sur la grille.
-  // Première version de cette assertion : `nextAt - période <= nextAt`, vraie par construction.
+  /*
+   * Ce que cette assertion prouve : après un changement de division **par le vrai geste**, la source est
+   * sur la grille de sa nouvelle division et son échéance est devant nous, à moins d'une période.
+   *
+   * Ce qu'elle ne prouve **pas**, et il faut le dire ici : que `setDivision` remette la source en phase.
+   * Cette propriété n'est pas observable depuis le navigateur, parce que `runEmitters` recalcule
+   * l'échéance depuis la grille de la division **courante** à chaque émission — une source privée de
+   * ré-armement se raccroche donc d'elle-même dès sa première émission, en moins d'une période. Neutraliser
+   * la remise en phase laisse ce scénario vert, et j'ai d'abord cru le contraire.
+   *
+   * C'est le test pur `emitter.test.ts` › « changer de division ré-arme sur la grille » qui porte cette
+   * propriété, et il tue la mutation. Le partage est le bon : la conséquence rythmique se vérifie dans la
+   * page, le ré-armement dans le cœur.
+   *
+   * Troisième version de cette assertion. La première était `nextAt - période <= nextAt`, vraie par
+   * construction ; la deuxième mesurait la grille depuis une division qui la contenait déjà.
+   */
   const gridOffset = Math.abs(
     afterTap.nextAt / afterTap.period - Math.round(afterTap.nextAt / afterTap.period)
   )
+  const ahead = afterTap.nextAt - (await page.evaluate(() => window.__carillon.stats().time))
   rec.assert(
-    'la nouvelle échéance retombe sur la grille de la nouvelle division',
-    gridOffset < 1e-6,
-    `écart à la grille = ${gridOffset.toExponential(2)}`
+    'la nouvelle échéance retombe sur la grille de la nouvelle division, et devant nous',
+    gridOffset < 1e-6 && ahead > 0 && ahead <= afterTap.period + 1e-9,
+    `écart à la grille = ${gridOffset.toExponential(2)}, échéance dans ${ahead.toFixed(4)}s (période ${afterTap.period.toFixed(4)}s)`
   )
   // Et c'est annulable : un changement de rythme est une modification de la scène comme une autre.
   await page.keyboard.down('Meta')
@@ -1696,6 +1718,14 @@ async function runTimbres(browser, url, rec) {
     await wait(1500)
     const after = await page.evaluate(() => {
       const c = window.__carillon
+      /*
+       * Créneaux de polyphonie libérés avant la salve. La pause de 1,5 s ci-dessus visait le même but
+       * mais dépendait de la charge : sous charge, les quatre premiers timbres consommaient les 24
+       * créneaux et le cinquième sortait à **0 note** — le scénario accusait alors le produit d'un
+       * silence qui venait du pilotage. Mesuré : 7+6+6+5 puis 0 sous charge, contre 7 à 12 par timbre
+       * au repos. Une preuve qui dépend de la charge n'est pas une preuve.
+       */
+      c.releaseVoices()
       c.reset()
       for (let b = 0; b < 5; b += 1) c.addBar(160 + b * 190, 400, 300 + b * 190, 440)
       // Barres courtes ET longues : la bascule grave/aigu doit être exercée, pas seulement une voix.
@@ -3164,18 +3194,33 @@ async function runSources(browser, url, rec) {
     `roue=${divisionWheel?.options.map((o) => o.label).join(', ')} | courante=${divisionWheel?.current} | division ${afterTapOnly}`
   )
 
-  const divisionBoxes = boxesAreReadable(divisionWheel.labels, divisionWheel)
+  /*
+   * Mesuré au repos **et** dans la police de chaque secteur visé, l'un après l'autre. Le libellé visé est
+   * écrit 8 % plus gros, et c'est la seule police qui puisse déborder : ne lire la roue qu'une fois, à
+   * `aim === null`, laissait ce cas hors de portée — la même faute qu'à l'US16, refaite en réutilisant
+   * son helper sans sa boucle. Démontré par mutation : grossir la police du secteur visé passait 7/7.
+   */
+  const divisionChecks = [boxesAreReadable(divisionWheel.labels, divisionWheel)]
+  for (const option of divisionWheel.options) {
+    await page.mouse.move(option.x, option.y, { steps: 3 })
+    await tick(page)
+    const aimed = await page.evaluate(() => window.__carillon.stats().wheel)
+    divisionChecks.push(boxesAreReadable(aimed.labels, aimed))
+  }
+  const tooWide = divisionChecks.flatMap((c) => c.tooWide)
+  const overlaps = divisionChecks.flatMap((c) => c.overlaps)
+  const outsideDisc = divisionChecks.flatMap((c) => c.outsideDisc)
   console.log(
     `  [sources] divisions dessinées : ${divisionWheel.labels.map((l) => `${l.text}(${Math.round(l.width)}/${Math.round(l.budget)}px)`).join(' ')}`
   )
   rec.assert(
-    'les cinq divisions sont lisibles : les phrases ne tenaient pas, les comptes tiennent',
-    divisionBoxes.tooWide.length === 0 &&
-      divisionBoxes.overlaps.length === 0 &&
-      divisionBoxes.outsideDisc.length === 0 &&
+    'les cinq divisions sont lisibles, au repos et dans la police de chaque secteur visé',
+    tooWide.length === 0 &&
+      overlaps.length === 0 &&
+      outsideDisc.length === 0 &&
       // Comptes et non phrases : « 1× » plutôt que « une par mesure ».
       divisionWheel.labels.every((l) => /^\d+×$/.test(l.text)),
-    `dessinés=[${divisionWheel.labels.map((l) => l.text)}] trop larges=[${divisionBoxes.tooWide.map((l) => l.text)}] recouvrements=[${divisionBoxes.overlaps}]`
+    `dessinés=[${divisionWheel.labels.map((l) => l.text)}] trop larges=[${tooWide.map((l) => l.text)}] recouvrements=[${overlaps}]`
   )
 
   // Choisir applique, remet la source en phase sur la grille, et ferme la roue.
@@ -3276,8 +3321,82 @@ async function runSources(browser, url, rec) {
     `sources=${afterEdgeDrag.emitters} x=${Math.round(doomed.x)}->${Math.round(afterEdgeDrag.x)} roue=${afterEdgeDrag.wheel}`
   )
 
+  /*
+   * --- 375 px : c'est là que le sujet s'éloigne de sa roue ---
+   *
+   * Une source au bord gauche d'un téléphone : `fitWheel` recadre la roue jusqu'à ~96 px d'elle, et le
+   * disque est presque opaque. Sans repère, rien à l'écran ne dit **quelle** source on règle — sur une
+   * scène qui en compte plusieurs, c'est le sujet du réglage qu'on perd de vue. On exige donc que le
+   * sujet soit dessiné, à sa place, et relié au disque quand il en est loin.
+   */
+  await page.setViewport({ width: 375, height: 780, deviceScaleFactor: 2 })
+  await tick(page)
+  const phoneSource = await page.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    const id = c.addEmitter(30, 420, 0)
+    return c.emitters().find((emitter) => emitter.id === id) ?? null
+  })
+  await page.mouse.click(phoneSource.x, phoneSource.y)
+  await wait(150)
+  await rec.shot(page, 'roue-divisions-mobile')
+  const phoneWheel = await readWheel(page)
+  /*
+   * Mesuré en pixels autour de la source, avec un **contrôle** : la même position sans roue ouverte. Un
+   * repère « présent dans l'état » ne prouve rien — la review a montré que la source tombait à 11 % de
+   * son contraste sous le disque tout en étant « dans la zone morte ».
+   */
+  const inkAround = async () =>
+    page.evaluate(
+      ([sx, sy]) => {
+        const canvas = document.querySelector('#stage')
+        const ctx = canvas.getContext('2d')
+        const dpr = canvas.width / canvas.clientWidth
+        let bright = 0
+        // Couronne au rayon du repère : c'est là que l'anneau est tracé.
+        for (let step = 0; step < 360; step += 1) {
+          const angle = (step / 360) * Math.PI * 2
+          const px = Math.round((sx + Math.cos(angle) * 13) * dpr)
+          const py = Math.round((sy + Math.sin(angle) * 13) * dpr)
+          const [r, g, b] = ctx.getImageData(px, py, 1, 1).data
+          if (0.2126 * r + 0.7152 * g + 0.0722 * b > 120) bright += 1
+        }
+        return bright
+      },
+      [phoneSource.x, phoneSource.y]
+    )
+  const markedInk = await inkAround()
+  const offCentre = Math.hypot(phoneWheel.centerX - phoneSource.x, phoneWheel.centerY - phoneSource.y)
+  // Contrôle : roue fermée, au même endroit, il ne doit rester presque aucun pixel clair.
+  await page.mouse.click(phoneWheel.centerX + phoneWheel.outerRadius + 40, phoneWheel.centerY)
+  await wait(150)
+  const bareInk = await inkAround()
+  console.log(
+    `  [sources] 375 px : roue recadrée à ${Math.round(offCentre)} px de la source | repère ${markedInk} px clairs, sans roue ${bareInk}`
+  )
+  rec.assert(
+    'à 375 px, la source réglée reste désignée à l’écran malgré le recadrage',
+    offCentre > phoneWheel.innerRadius &&
+      markedInk > 100 &&
+      bareInk < markedInk * 0.25 &&
+      phoneWheel.centerX - phoneWheel.outerRadius >= 0,
+    `écart=${Math.round(offCentre)}px (zone morte ${phoneWheel.innerRadius}) | repère=${markedInk} px, contrôle=${bareInk} px`
+  )
+
+  await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await tick(page)
+  await page.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    c.addEmitter(640, 300, 0)
+  })
+  await tick(page)
+
   // Et le glisser d'une source la déplace toujours : la roue n'a volé aucun geste.
   const moved = await page.evaluate(() => window.__carillon.emitters()[0])
+  // Message explicite plutôt qu'un `TypeError` sur `undefined` : sous mutation, une étape précédente peut
+  // supprimer la source, et le scénario doit dire pourquoi il s'arrête au lieu de planter en aveugle.
+  if (!moved) throw new Error('aucune source à glisser : la scène est vide à cette étape')
   await dragBar(page, [moved.x, moved.y], [moved.x + 180, moved.y + 90])
   await wait(150)
   const afterDrag = await page.evaluate(() => ({

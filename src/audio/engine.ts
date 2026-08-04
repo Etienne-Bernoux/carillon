@@ -30,6 +30,16 @@ export interface AudioEngine {
   setMuted(muted: boolean): void
   muted(): boolean
   playedCount(): number
+  /**
+   * Libère les créneaux de polyphonie retenus. Sert à **mesurer** : le budget compte les voix depuis
+   * l'horloge audio, que `advance()` ne fait pas avancer, donc une salve simulée laisse ses créneaux
+   * réservés et la salve suivante peut être refusée en bloc. Sans ce point d'entrée, « ce timbre produit
+   * des notes » dépend de ce que les timbres précédents ont joué — une preuve qui dépend de la charge de
+   * la machine, ce que la méthode de ce dépôt interdit.
+   *
+   * N'existe pas pour le produit : rien dans l'interface ne l'appelle.
+   */
+  releaseVoices(): void
 }
 
 /** graine de l'impulsion de réverbe : le timbre doit être identique d'une session à l'autre */
@@ -135,7 +145,15 @@ export function createAudioEngine(budget: VoiceBudget = new VoiceBudget()): Audi
     played += 1
   }
 
-  return { unlock, ready, play, setMuted, muted, playedCount }
+  return {
+    unlock,
+    ready,
+    play,
+    setMuted,
+    muted,
+    playedCount,
+    releaseVoices: () => budget.reset(),
+  }
 }
 
 /**

@@ -512,8 +512,13 @@ function playBar(bar: Bar, gain: number): void {
 function removeBar(id: number): void {
   const index = world.bars.findIndex((bar) => bar.id === id)
   if (index >= 0) world.bars.splice(index, 1)
-  // La roue qui visait cette barre se ferme au prochain rendu — cf. `closeWheelIfTargetGone`, qui tient
-  // l'invariant pour **toutes** les cibles et depuis tous les chemins de suppression.
+  /*
+   * Rien à faire pour une roue qui viserait cette barre, et ce n'est pas un oubli : aucun chemin ne
+   * supprime la cible d'une roue **ouverte**. La modalité consomme le glisser, donc on ne peut pas jeter
+   * la cible par le bord, et les autres chemins (Effacer, annulation, redimensionnement, boutons du HUD)
+   * ferment déjà la roue. Si un jour un chemin de suppression échappe à ces deux familles, c'est ici
+   * qu'il faudra fermer la roue — la propriété est assertée dans le scénario `sources`.
+   */
 }
 
 /** Valide l'instantané de préhension au moment où le geste devient réellement modifiant. */
@@ -584,14 +589,6 @@ function interactionFor(hit: Grab | null): Interaction {
 }
 
 /**
- * Roue de sélection ouverte, ou `null`. Deux réglages y passent — la nature d'une barre et
- * l'instrument — et le seul état partagé est celui-ci : la géométrie ne connaît ni l'un ni l'autre.
- *
- * `pinned` distingue les deux temps du geste. À ressort, la roue vit le temps d'un appui et le
- * relâchement décide. Épinglée, elle survit au relâchement et c'est un tap qui décide — le cas de
- * quelqu'un qui appuie long et relâche sans avoir bougé, c'est-à-dire de quelqu'un qui découvre.
- */
-/**
  * Ce que la roue ouverte est en train de régler. Un discriminant plutôt que des identifiants nullables :
  * avec deux cibles on s'en sortait par `barId === null`, avec trois ce serait une liste de cas — et
  * l'US16 a assez montré où mènent les listes de cas qui s'allongent.
@@ -601,6 +598,14 @@ type WheelTarget =
   | { kind: 'division'; emitterId: number }
   | { kind: 'instrument' }
 
+/**
+ * Roue de sélection ouverte, ou `null` quand il n'y en a pas. **Trois** réglages y passent (cf.
+ * `WheelTarget`) et le seul état partagé est celui-ci : la géométrie ne connaît aucun des trois.
+ *
+ * `pinned` distingue les deux temps du geste. À ressort, la roue vit le temps d'un appui et le
+ * relâchement décide. Épinglée, elle survit au relâchement, c'est un tap qui décide, et elle devient
+ * **modale** — elle consomme tous les gestes jusqu'à décision.
+ */
 interface OpenWheel {
   wheel: Wheel<string>
   target: WheelTarget
@@ -660,7 +665,8 @@ function openDivisionWheel(emitter: Emitter): void {
     target: { kind: 'division', emitterId: emitter.id },
     aim: null,
     pinned: true,
-    origin: emitter.pos,
+    // Copiée, pas aliasée : partout ailleurs les Vec2 le sont, et une source se déplace.
+    origin: { ...emitter.pos },
     committed: true,
   }
 }
@@ -693,24 +699,27 @@ function openInstrumentWheel(): void {
 }
 
 /**
+ * Position de l'objet réglé, **relue à chaque frame** plutôt que copiée à l'ouverture : une barre reste
+ * déplaçable, et un sujet figé désignerait alors un endroit vide. `null` pour l'instrument, qui n'a pas
+ * de sujet dans la scène — et c'est pour ça que le champ est nullable plutôt qu'obligatoire.
+ */
+function wheelSubject(target: WheelTarget): Vec2 | null {
+  if (target.kind === 'nature') {
+    const bar = world.bars.find((candidate) => candidate.id === target.barId)
+    return bar ? { x: (bar.a.x + bar.b.x) / 2, y: (bar.a.y + bar.b.y) / 2 } : null
+  }
+  if (target.kind === 'division') {
+    const emitter = world.emitters.find((candidate) => candidate.id === target.emitterId)
+    return emitter ? { ...emitter.pos } : null
+  }
+  return null
+}
+
+/**
  * Vue de la roue pour le harnais. Une fonction plutôt qu'un objet littéral dans `stats()` : le
  * paramètre non-nullable est ce qui évite un cast pour convaincre le compilateur qu'une fermeture ne
  * s'est pas glissée entre le test d'ouverture et la lecture.
  */
-/*
- * Pas de garde « la cible de la roue a disparu » ici, et c'est **volontaire**.
- *
- * Un tel garde a existé (fermeture dans `removeBar`, puis un invariant vérifié à chaque frame), écrit
- * pour un défaut réel : jeter par le bord la barre qu'une roue épinglée visait laissait un widget mort à
- * l'écran. La **modalité** de l'US16 l'a rendu inatteignable — une roue épinglée consomme le glisser,
- * donc on ne peut plus jeter sa cible pendant qu'elle est ouverte. Et tous les autres chemins de
- * suppression (Effacer, annulation, redimensionnement, boutons du HUD) ferment déjà la roue eux-mêmes.
- *
- * Le garde est donc retiré plutôt que gardé « au cas où » : du code défensif qu'aucun chemin n'atteint
- * affirme un risque que le produit n'a plus. La propriété qui le remplace est assertée — « glisser vers
- * le bord, roue épinglée, ne jette pas la cible : le glisser vise ».
- */
-
 function wheelStats(open: OpenWheel) {
   return {
     options: open.wheel.options.map((option, index) => {
@@ -722,7 +731,12 @@ function wheelStats(open: OpenWheel) {
     /** ce que le relâchement ferait : choisir un secteur, épingler, annuler, ou rien de lu encore */
     aimKind: open.aim?.kind ?? null,
     pinned: open.pinned,
-    labels: renderer.wheelLabels({ wheel: open.wheel, aim: open.aim, pinned: open.pinned }),
+    labels: renderer.wheelLabels({
+      wheel: open.wheel,
+      aim: open.aim,
+      pinned: open.pinned,
+      subject: wheelSubject(open.target),
+    }),
     centerX: open.wheel.center.x,
     centerY: open.wheel.center.y,
     outerRadius: OUTER_RADIUS,
@@ -1350,7 +1364,12 @@ function frame(now: number): void {
     // Injecté ici et pas dans `interaction` : cet objet est reconstruit à chaque survol depuis
     // `NO_INTERACTION`, ce qui fermerait la roue au premier mouvement de souris.
     wheel: openWheel
-      ? { wheel: openWheel.wheel, aim: openWheel.aim, pinned: openWheel.pinned }
+      ? {
+          wheel: openWheel.wheel,
+          aim: openWheel.aim,
+          pinned: openWheel.pinned,
+          subject: wheelSubject(openWheel.target),
+        }
       : null,
   })
   requestAnimationFrame(frame)
@@ -1385,6 +1404,13 @@ interface CarillonDebug {
   advance(seconds: number): void
   reset(): void
   setMuted(muted: boolean): void
+  /**
+   * Libère les créneaux de polyphonie. Le harnais mesure « ce timbre produit des notes » salve après
+   * salve ; sans remise à zéro, le budget garde les créneaux des salves précédentes — l'horloge audio
+   * n'avance pas avec `advance` — et la mesure dépend alors de ce qui a été joué avant, donc de la charge
+   * de la machine. Sous charge, le cinquième timbre sortait à 0 note et le scénario accusait le produit.
+   */
+  releaseVoices(): void
   setTuning(id: string): void
   undo(): void
   /** Géométrie des barres : sans elle, toute assertion sur un déplacement passerait par des pixels. */
@@ -1503,6 +1529,7 @@ window.__carillon = {
     clearAll()
   },
   setMuted: (muted) => audio.setMuted(muted),
+  releaseVoices: () => audio.releaseVoices(),
   setTuning: (id) => applyTuning(tuningById(id)),
   undo,
   balls: () =>

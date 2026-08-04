@@ -1,7 +1,8 @@
 # US17 — La roue sur les sources
 
-> Statut : **livrée** · Branche `feat/us17-roue-sources` · 322 tests unitaires, 18 scénarios navigateur
-> (235 assertions), 6 mutations tuées sur 6
+> Statut : **livrée** · Branche `feat/us17-roue-sources` · PR #15 · 323 tests unitaires, 18 scénarios
+> navigateur (238 assertions), 9 mutations tuées sur 9 · une passe de review adverse déléguée, qui a
+> trouvé trois assertions creuses ou fausses et un défaut produit
 
 ## Intent
 
@@ -84,7 +85,8 @@ Chacun avec sa preuve, chacun validé par mutation.
 
 ### Non-régression
 
-10. `pnpm check` vert, les 17 scénarios verts, la roue des natures et celle des timbres inchangées.
+10. `pnpm check` vert, les **18** scénarios verts — les 17 d'avant plus `sources` —, la roue des natures
+    et celle des timbres inchangées.
 
 ## Risques
 
@@ -115,9 +117,56 @@ franchement — c'est elle qui a signalé le couple. Les deux sont réécrites a
 diagnostic est le même que celui de la review sur `runRoue` — un scénario long transporte son état — et
 la réponse est un scénario dédié, comme `natures` ou `timbres`.
 
-### Les six mutations
+### Ce que la review adverse a trouvé, et ce que j'ai conclu trop vite
+
+**Un défaut produit que j'avais déclaré absent sur une observation fausse.** Ce plan affirmait, preuve à
+l'appui, que « la source tombe dans la zone morte, donc elle reste visible au milieu de son propre
+sélecteur ». Mesuré au pixel : sous le disque à 0,94 d'opacité, elle garde **3 à 7 valeurs sur 255**
+d'écart contre 33 à 55 à découvert — 11 % de son contraste. Et à 375 px, `fitWheel` la laisse à ~97 px du
+centre sans rien qui les relie. Sur une scène à plusieurs sources, rien ne disait laquelle on règle.
+Corrigé : le **sujet du réglage** est redessiné par-dessus la roue, cerclé, et relié au disque par un
+trait quand il en est loin. Mesuré avec contrôle : 360 pixels clairs autour de la source contre 0 sans
+roue. Et le scénario a désormais sa passe 375 px, que la DoD §3.4 rend bloquante et qui manquait.
+
+**Une borne que je présentais comme majorante ne l'était pas.** `WIDEST_CHAR_PX = 9` était en réalité la
+**moyenne** par caractère du libellé le plus étroit. Six des huit caractères possibles dépassent 9 px
+(jusqu'à 9,56 pour `8`). À dix divisions, « 48× » aurait passé le test à 27 px pour 28,28 px réels.
+
+**Une assertion que je croyais avoir réparée l'était toujours à moitié.** Elle mesurait « l'échéance est
+sur la grille de la nouvelle division » en partant de la mesure entière vers le quart : tout multiple de
+la mesure est déjà un multiple du quart, donc l'écart valait zéro **sans aucun ré-armement**. Corrigé en
+partant du tiers. Mais la suite est plus intéressante : même ainsi, la propriété **n'est pas observable
+depuis le navigateur**, parce que `runEmitters` recalcule l'échéance depuis la grille courante à chaque
+émission — une source privée de ré-armement se raccroche donc d'elle-même en moins d'une période. C'est
+le test pur qui porte cette propriété, et le commentaire du scénario le dit maintenant.
+
+**Une mutation survivante qui ne condamnait pas le test.** La review a montré que grossir la police du
+secteur visé à 40 px passait le scénario `sources`. Vrai — et sans conséquence : « 1× » à 40 px fait 46 px
+et tient encore dans les 64 px du budget. Il n'y a pas de condition de divergence à cette longueur de
+libellé. Vérifié en poussant à 100 px : l'assertion rougit. La boucle de visée ajoutée est donc porteuse,
+c'est la mutation qui était équivalente.
+
+### Une preuve qui dépendait de la charge, et ma propre conclusion trop rapide
+
+En vérifiant l'US17, le scénario `timbres` est sorti rouge sur « Percussions produit réellement des
+notes : 0 notes ». Reproduit trois fois, y compris sur `origin/main` — j'en ai conclu, et annoncé, un
+défaut systématique. **C'était faux** : les trois runs tournaient pendant que des agents de review
+pilotaient Chrome en parallèle. Machine au repos, percussions donne 11 notes, trois fois sur trois.
+
+Ce qui restait vrai est la faiblesse de la mesure : le budget de polyphonie compte les voix depuis
+l'horloge audio, que `advance()` ne fait pas avancer, donc chaque salve simulée laisse ses créneaux
+réservés. Sous charge, les quatre premiers timbres consommaient les 24 créneaux et le cinquième était
+refusé en bloc. La pause de 1,5 s visait ce problème sans le résoudre. Le moteur expose désormais
+`releaseVoices()`, appelé avant chaque salve : la mesure ne dépend plus de ce qui a été joué avant.
+
+### Les mutations
 
 Cœur pur : nom court remplacé par la phrase longue · nom court qui mentirait sur le débit · remise en
 phase retirée de `setDivision` · bornage d'index retiré.
 Produit : cyclage ressuscité **en plus** de la roue (c'est l'assertion « taper ne change plus rien » qui
-le tue) · garde de confirmation retiré.
+le tue) · garde de confirmation retiré · `release` qui échappe à la modalité · `drag` qui y échappe ·
+police du secteur visé poussée jusqu'au débordement réel.
+
+Neuf mutations, neuf tuées. Deux étaient signalées survivantes par la review : l'une l'était vraiment
+(l'assertion de `rythme`, corrigée puis reconnue non observable dans la page), l'autre était
+**équivalente** à cette longueur de libellé.

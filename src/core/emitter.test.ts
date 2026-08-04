@@ -6,6 +6,7 @@ import {
   barSeconds,
   divisionAt,
   divisionSeconds,
+  divisionShortLabel,
 } from './clock'
 import {
   MAX_BALLS,
@@ -294,6 +295,41 @@ describe('suppression et teintes', () => {
     for (const hue of hues) {
       expect(hue).toBeGreaterThanOrEqual(190)
       expect(hue).toBeLessThan(280)
+    }
+  })
+})
+
+describe('les noms courts de division disent le vrai débit', () => {
+  it('une source en division i émet exactement N billes par mesure, où N est son nom court', () => {
+    /*
+     * La propriété que le test pur de `clock.test.ts` **ne** vérifie pas : il compare le libellé à la
+     * formule qui le produit, donc il attrape un libellé qui mente mais pas une formule fausse et
+     * auto-cohérente. Ici on compte les émissions réelles sur une mesure et on les confronte au nom
+     * court — le libellé est relié à un comportement observable, pas à lui-même.
+     */
+    /*
+     * On mesure l'**intervalle observé** entre deux émissions, pas un compte sur une fenêtre d'une
+     * mesure : additionner des pas de 1/120 donne 2,4999… au lieu de 2,5, donc la fenêtre rate la
+     * dernière échéance et une source « 1× » compterait zéro. Le fichier documente déjà ce piège.
+     */
+    for (let index = 0; index < DIVISIONS.length; index += 1) {
+      const w = world()
+      addEmitter(w, { x: 640, y: 100 }, { divisionIndex: index })
+      const times = simulate(w, barSeconds(w.bpm) * 4)
+      const announced = Number.parseInt(divisionShortLabel(index), 10)
+      expect(times.length, `division ${index} n'émet pas`).toBeGreaterThanOrEqual(2)
+      const interval = (times.at(-1) ?? 0) - (times[0] ?? 0)
+      const observed = (barSeconds(w.bpm) * (times.length - 1)) / interval
+      /*
+       * Tolérance **dérivée**, pas choisie : une émission est détectée au pas qui franchit son échéance,
+       * donc chaque horodatage est en retard de moins d'un `DT`. L'erreur relative sur l'intervalle vaut
+       * au pire `2·DT / intervalle`, soit 0,3 % sur la division la plus lente ici. On prend 1 %.
+       */
+      const tolerance = announced * 0.01
+      expect(
+        Math.abs(observed - announced),
+        `division ${index} annoncée ${announced}× mais mesurée ${observed.toFixed(4)}×`,
+      ).toBeLessThan(tolerance)
     }
   })
 })
