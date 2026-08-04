@@ -3187,45 +3187,54 @@ async function runSources(browser, url, rec) {
     return {
       divisionIndex: emitter.divisionIndex,
       aheadOfNow: emitter.nextAt - c.stats().time,
+      nextAt: emitter.nextAt,
       period: emitter.period,
       wheel: c.stats().wheel,
       undoDepth: c.stats().undoDepth,
     }
   })
+  /*
+   * La borne est **exactement** la période : l'échéance est le prochain instant de grille, donc au plus
+   * une période devant. Le `0.02` que j'avais posé était un nombre déguisé — il laissait passer une
+   * échéance 3 % trop loin. Seule l'erreur de flottant est tolérée, et on exige en plus que l'échéance
+   * soit **sur la grille**, ce qu'un simple « devant nous » ne dit pas.
+   */
+  const gridOffset = Math.abs(
+    afterPick.nextAt / afterPick.period - Math.round(afterPick.nextAt / afterPick.period)
+  )
   rec.assert(
-    'choisir une division l’applique, remet la source en phase, et ferme la roue',
+    'choisir une division l’applique, remet la source sur la grille, et ferme la roue',
     afterPick.divisionIndex === 3 &&
       afterPick.wheel === null &&
       afterPick.undoDepth > 0 &&
-      // Devant nous et pas plus loin qu'une période : ni rafale à rattraper, ni silence.
       afterPick.aheadOfNow > 0 &&
-      afterPick.aheadOfNow <= afterPick.period + 0.02,
-    `division=${afterPick.divisionIndex} échéance dans ${afterPick.aheadOfNow.toFixed(3)}s (période ${afterPick.period.toFixed(3)}s) undo=${afterPick.undoDepth}`
+      afterPick.aheadOfNow <= afterPick.period + 1e-9 &&
+      gridOffset < 1e-6,
+    `division=${afterPick.divisionIndex} échéance dans ${afterPick.aheadOfNow.toFixed(4)}s (période ${afterPick.period.toFixed(4)}s, écart à la grille ${gridOffset.toExponential(1)}) undo=${afterPick.undoDepth}`
   )
 
   /*
-   * Confirmer la division **déjà en place** ne doit rien coûter : ni une place d'annulation, ni une
-   * remise en phase. Resynchroniser une source qu'on n'a pas changée serait un saut de rythme audible
-   * déguisé en non-action, et c'est exactement ce qu'un « choix » qui confirme ne doit pas faire.
+   * Confirmer la division **déjà en place** ne doit pas consommer de place d'annulation.
+   *
+   * Ce qui est mesuré est `undoDepth`, et **pas** l'échéance, pour deux raisons apprises en la mesurant.
+   * D'abord elle ne discrimine pas : resynchroniser pour la *même* division recalcule le prochain instant
+   * de la *même* grille, donc les deux codes sont identiques — aucune condition de divergence, exactement
+   * le cas de `docs/solutions/mutation-survivante-nest-pas-test-faible.md`. Ensuite la comparer à travers
+   * le temps est faux : la source **émet** entre les deux lectures, ce qui avance l'échéance pour une
+   * raison qui n'a rien à voir. L'assertion passait seule et rougissait dans la suite complète.
    */
   await page.mouse.click(afterPickPos.x, afterPickPos.y)
   await wait(150)
-  const beforeConfirm = await page.evaluate(() => ({
-    nextAt: window.__carillon.emitters()[0].nextAt,
-    undoDepth: window.__carillon.stats().undoDepth,
-  }))
+  const beforeConfirm = await page.evaluate(() => window.__carillon.stats().undoDepth)
   await pickInPinnedWheel(page, '3')
   const afterConfirm = await page.evaluate(() => ({
-    nextAt: window.__carillon.emitters()[0].nextAt,
     undoDepth: window.__carillon.stats().undoDepth,
     divisionIndex: window.__carillon.emitters()[0].divisionIndex,
   }))
   rec.assert(
-    'confirmer la division en place ne consomme ni annulation ni remise en phase',
-    afterConfirm.divisionIndex === 3 &&
-      afterConfirm.undoDepth === beforeConfirm.undoDepth &&
-      afterConfirm.nextAt === beforeConfirm.nextAt,
-    `undo ${beforeConfirm.undoDepth}->${afterConfirm.undoDepth}, échéance ${beforeConfirm.nextAt.toFixed(3)}->${afterConfirm.nextAt.toFixed(3)}`
+    'confirmer la division en place ne consomme pas de place d’annulation',
+    afterConfirm.divisionIndex === 3 && afterConfirm.undoDepth === beforeConfirm,
+    `undo ${beforeConfirm} -> ${afterConfirm.undoDepth}, division ${afterConfirm.divisionIndex}`
   )
 
   // Annulable, comme toute modification de scène.
@@ -3238,6 +3247,33 @@ async function runSources(browser, url, rec) {
     'annuler restaure la division précédente',
     undone === 0,
     `3 -> ${undone}`
+  )
+
+  /*
+   * Roue épinglée, un glisser vers le bord **ne jette pas** la source : le disque est modal, il consomme
+   * le geste et le lit comme une visée. C'est cette propriété qui rend inatteignable le défaut que la
+   * review avait trouvé sur les barres — un widget qui survit à la disparition de sa cible — et c'est
+   * pour ça qu'aucun garde « la cible a disparu » ne subsiste dans le code.
+   */
+  const doomed = await page.evaluate(() => window.__carillon.emitters()[0])
+  await page.mouse.click(doomed.x, doomed.y)
+  await wait(150)
+  const wheelBeforeDrag = await readWheel(page)
+  await dragBar(page, [doomed.x, doomed.y], [4, doomed.y], 8)
+  await wait(200)
+  const afterEdgeDrag = await page.evaluate(() => ({
+    emitters: window.__carillon.stats().emitters,
+    x: window.__carillon.emitters()[0]?.x,
+    wheel: window.__carillon.stats().wheel,
+  }))
+  rec.assert(
+    'roue épinglée : glisser vers le bord ne jette pas la source et ne la déplace pas',
+    wheelBeforeDrag !== null &&
+      afterEdgeDrag.emitters === 1 &&
+      Math.round(afterEdgeDrag.x) === Math.round(doomed.x) &&
+      // La roue s'est résolue à l'arrivée du glisser, hors de l'anneau : donc fermée sans rien appliquer.
+      afterEdgeDrag.wheel === null,
+    `sources=${afterEdgeDrag.emitters} x=${Math.round(doomed.x)}->${Math.round(afterEdgeDrag.x)} roue=${afterEdgeDrag.wheel}`
   )
 
   // Et le glisser d'une source la déplace toujours : la roue n'a volé aucun geste.

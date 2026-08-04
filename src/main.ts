@@ -512,12 +512,8 @@ function playBar(bar: Bar, gain: number): void {
 function removeBar(id: number): void {
   const index = world.bars.findIndex((bar) => bar.id === id)
   if (index >= 0) world.bars.splice(index, 1)
-  /*
-   * La roue qui visait cette barre est fermée. Sans ça, on pouvait jeter la barre par le bord pendant
-   * que sa roue épinglée restait à l'écran, avec ses trois options et son point de marquage : taper un
-   * secteur ne faisait alors **rien du tout**, sans un mot. Un widget mort qui ne dit pas qu'il l'est.
-   */
-  if (openWheel?.target.kind === 'nature' && openWheel.target.barId === id) openWheel = null
+  // La roue qui visait cette barre se ferme au prochain rendu — cf. `closeWheelIfTargetGone`, qui tient
+  // l'invariant pour **toutes** les cibles et depuis tous les chemins de suppression.
 }
 
 /** Valide l'instantané de préhension au moment où le geste devient réellement modifiant. */
@@ -701,6 +697,20 @@ function openInstrumentWheel(): void {
  * paramètre non-nullable est ce qui évite un cast pour convaincre le compilateur qu'une fermeture ne
  * s'est pas glissée entre le test d'ouverture et la lecture.
  */
+/*
+ * Pas de garde « la cible de la roue a disparu » ici, et c'est **volontaire**.
+ *
+ * Un tel garde a existé (fermeture dans `removeBar`, puis un invariant vérifié à chaque frame), écrit
+ * pour un défaut réel : jeter par le bord la barre qu'une roue épinglée visait laissait un widget mort à
+ * l'écran. La **modalité** de l'US16 l'a rendu inatteignable — une roue épinglée consomme le glisser,
+ * donc on ne peut plus jeter sa cible pendant qu'elle est ouverte. Et tous les autres chemins de
+ * suppression (Effacer, annulation, redimensionnement, boutons du HUD) ferment déjà la roue eux-mêmes.
+ *
+ * Le garde est donc retiré plutôt que gardé « au cas où » : du code défensif qu'aucun chemin n'atteint
+ * affirme un risque que le produit n'a plus. La propriété qui le remplace est assertée — « glisser vers
+ * le bord, roue épinglée, ne jette pas la cible : le glisser vise ».
+ */
+
 function wheelStats(open: OpenWheel) {
   return {
     options: open.wheel.options.map((option, index) => {
