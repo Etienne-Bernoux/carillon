@@ -749,7 +749,46 @@ export function createRenderer(stage: HTMLCanvasElement): Renderer {
       base.stroke()
       base.setLineDash([])
     }
+    drawWheelSubject(view)
     base.restore()
+  }
+
+  /**
+   * Le sujet du réglage, redessiné **par-dessus** la roue.
+   *
+   * Un anneau clair à sa position, et un trait qui le relie au disque dès qu'il n'est pas sous le
+   * centre — cas du recadrage près d'un bord, où la source se retrouvait jusqu'à 96 px de la roue sans
+   * rien qui les associe. Ce n'est pas de l'ornement : sans lui, sur une scène à plusieurs sources, on
+   * ne sait pas laquelle on est en train de régler.
+   */
+  function drawWheelSubject(view: WheelView): void {
+    const subject = view.subject
+    if (!subject) return
+    const { x, y } = view.wheel.center
+    const distance = Math.hypot(subject.x - x, subject.y - y)
+
+    if (distance > INNER_RADIUS) {
+      // Le trait s'arrête au bord du disque : le traverser barrerait les secteurs qu'on est en train de lire.
+      const ratio = OUTER_RADIUS / distance
+      base.strokeStyle = 'rgba(214, 232, 255, 0.55)'
+      base.lineWidth = 1.5
+      base.setLineDash([5, 4])
+      base.beginPath()
+      base.moveTo(x + (subject.x - x) * ratio, y + (subject.y - y) * ratio)
+      base.lineTo(subject.x, subject.y)
+      base.stroke()
+      base.setLineDash([])
+    }
+
+    base.strokeStyle = 'rgba(232, 240, 255, 0.95)'
+    base.lineWidth = 2
+    base.beginPath()
+    base.arc(subject.x, subject.y, 13, 0, Math.PI * 2)
+    base.stroke()
+    base.fillStyle = 'rgba(232, 240, 255, 0.9)'
+    base.beginPath()
+    base.arc(subject.x, subject.y, 2.5, 0, Math.PI * 2)
+    base.fill()
   }
 
   function recordTrails(world: World): void {

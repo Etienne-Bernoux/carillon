@@ -6,12 +6,13 @@ import {
   barSeconds,
   divisionAt,
   divisionSeconds,
+  divisionShortLabel,
 } from './clock'
 import {
   MAX_BALLS,
   addEmitter,
   clampDivisionIndex,
-  cycleDivision,
+  setDivision,
   emitterPeriod,
   removeEmitter,
   runEmitters,
@@ -232,19 +233,31 @@ describe('divisions', () => {
     expect(runEmitters(w, () => {})).toBe(4)
   })
 
-  it('le cycle parcourt tout le catalogue et boucle', () => {
+  it('chaque division du catalogue est atteignable directement', () => {
+    // La roue de l'US17 remplace le cyclage : on ne passe plus par les autres pour arriver à la bonne.
     const w = world()
     const emitter = addEmitter(w, { x: 0, y: 0 }, { divisionIndex: 0 })
-    const seen = [emitter.divisionIndex]
-    for (let i = 0; i < DIVISIONS.length; i += 1) seen.push(cycleDivision(w, emitter))
-    expect(seen).toEqual([0, 1, 2, 3, 4, 0])
+    for (let index = 0; index < DIVISIONS.length; index += 1) {
+      expect(setDivision(w, emitter, index)).toBe(index)
+      expect(emitter.divisionIndex).toBe(index)
+    }
+  })
+
+  it('un index hors catalogue retombe sur le défaut, comme à la création', () => {
+    // Une seule règle de bornage dans le fichier (`clampDivisionIndex`), pas deux qui divergeraient :
+    // hors catalogue, la source prend la division par défaut plutôt qu'une extrémité arbitraire.
+    const w = world()
+    const emitter = addEmitter(w, { x: 0, y: 0 }, { divisionIndex: 2 })
+    expect(setDivision(w, emitter, -3)).toBe(DEFAULT_DIVISION_INDEX)
+    expect(setDivision(w, emitter, 99)).toBe(DEFAULT_DIVISION_INDEX)
+    expect(setDivision(w, emitter, 1.5)).toBe(DEFAULT_DIVISION_INDEX)
   })
 
   it('changer de division ré-arme sur la grille, sans rafale ni trou', () => {
     const w = world()
     const emitter = addEmitter(w, { x: 0, y: 0 }, { divisionIndex: 0 })
     w.time += 3.7
-    cycleDivision(w, emitter)
+    setDivision(w, emitter, 3)
 
     // Devant nous (pas de rafale à rattraper), et sur la grille de la **nouvelle** division.
     expect(emitter.nextAt).toBeGreaterThan(w.time)
@@ -282,6 +295,41 @@ describe('suppression et teintes', () => {
     for (const hue of hues) {
       expect(hue).toBeGreaterThanOrEqual(190)
       expect(hue).toBeLessThan(280)
+    }
+  })
+})
+
+describe('les noms courts de division disent le vrai débit', () => {
+  it('une source en division i émet exactement N billes par mesure, où N est son nom court', () => {
+    /*
+     * La propriété que le test pur de `clock.test.ts` **ne** vérifie pas : il compare le libellé à la
+     * formule qui le produit, donc il attrape un libellé qui mente mais pas une formule fausse et
+     * auto-cohérente. Ici on compte les émissions réelles sur une mesure et on les confronte au nom
+     * court — le libellé est relié à un comportement observable, pas à lui-même.
+     */
+    /*
+     * On mesure l'**intervalle observé** entre deux émissions, pas un compte sur une fenêtre d'une
+     * mesure : additionner des pas de 1/120 donne 2,4999… au lieu de 2,5, donc la fenêtre rate la
+     * dernière échéance et une source « 1× » compterait zéro. Le fichier documente déjà ce piège.
+     */
+    for (let index = 0; index < DIVISIONS.length; index += 1) {
+      const w = world()
+      addEmitter(w, { x: 640, y: 100 }, { divisionIndex: index })
+      const times = simulate(w, barSeconds(w.bpm) * 4)
+      const announced = Number.parseInt(divisionShortLabel(index), 10)
+      expect(times.length, `division ${index} n'émet pas`).toBeGreaterThanOrEqual(2)
+      const interval = (times.at(-1) ?? 0) - (times[0] ?? 0)
+      const observed = (barSeconds(w.bpm) * (times.length - 1)) / interval
+      /*
+       * Tolérance **dérivée**, pas choisie : une émission est détectée au pas qui franchit son échéance,
+       * donc chaque horodatage est en retard de moins d'un `DT`. L'erreur relative sur l'intervalle vaut
+       * au pire `2·DT / intervalle`, soit 0,3 % sur la division la plus lente ici. On prend 1 %.
+       */
+      const tolerance = announced * 0.01
+      expect(
+        Math.abs(observed - announced),
+        `division ${index} annoncée ${announced}× mais mesurée ${observed.toFixed(4)}×`,
+      ).toBeLessThan(tolerance)
     }
   })
 })

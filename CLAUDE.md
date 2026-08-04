@@ -88,6 +88,17 @@ Pièges déjà connus (issus des règles cortex, à ne pas réapprendre) :
   destiné à l'œil se dimensionne en le regardant, puis se mesure — dans cet ordre. Et sa mesure exige un
   **contrôle propre** : les premiers pixels « rouges » comptés venaient d'une barre grave à l'écran, pas
   du liseré.
+- **Deux mesures qui se suivent doivent être indépendantes, sinon la preuve dépend de la charge.** Payé à
+  l'US17 : « ce timbre produit des notes » était mesuré cinq fois de suite sans libérer les créneaux de
+  polyphonie entre les salves — le budget compte les voix depuis l'horloge audio, que `advance()` ne fait
+  pas avancer. Sous charge, les quatre premiers timbres consommaient les 24 créneaux et le cinquième
+  sortait à **0 note**. J'en ai conclu un instrument muet, et je l'ai annoncé : c'était le pilotage. Avant
+  d'accuser le produit sur une mesure en série, vérifier que la n-ième ne paie pas les n−1 précédentes —
+  et exposer le point d'entrée qui remet le compteur à zéro plutôt que d'allonger une pause.
+- **Une mutation survivante peut être équivalente *à cette échelle de données*.** Grossir la police d'un
+  libellé de deux caractères ne le fait pas déborder d'un secteur de 64 px : la mutation passe, et le test
+  est pourtant porteur — poussée jusqu'au vrai débordement, elle meurt. Avant de durcir une assertion
+  qu'une mutation traverse, chercher si les deux codes diffèrent **sur les données réelles**.
 - **Une sonde à un seul point mesure une position, pas une grandeur.** Trois fois le même piège dans la
   même US, chaque fois trouvé par la review : compter l'encre à **un** rayon laissait passer un trait
   deux fois plus fin qu'il suffisait de déplacer ; pousser le pointeur de 8 px en dur épinglait

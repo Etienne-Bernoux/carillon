@@ -17,13 +17,20 @@ import type { Bar, Emitter, ImpactEvent, Vec2 } from './core/types'
 import {
   MAX_BALLS,
   addEmitter,
-  cycleDivision,
+  setDivision,
   emitterPeriod,
   removeEmitter,
   runEmitters,
   runRespawns,
 } from './core/emitter'
-import { clampBpm, divisionAt, divisionLabel, gridTimeAfter } from './core/clock'
+import {
+  DIVISIONS,
+  clampBpm,
+  divisionAt,
+  divisionLabel,
+  divisionShortLabel,
+  gridTimeAfter,
+} from './core/clock'
 import { createHistory } from './core/history'
 import { DEFAULT_NATURE, NATURES, natureLabel, rearm } from './core/nature'
 import type { BarNature } from './core/nature'
@@ -506,11 +513,12 @@ function removeBar(id: number): void {
   const index = world.bars.findIndex((bar) => bar.id === id)
   if (index >= 0) world.bars.splice(index, 1)
   /*
-   * La roue qui visait cette barre est fermée. Sans ça, on pouvait jeter la barre par le bord pendant
-   * que sa roue épinglée restait à l'écran, avec ses trois options et son point de marquage : taper un
-   * secteur ne faisait alors **rien du tout**, sans un mot. Un widget mort qui ne dit pas qu'il l'est.
+   * Rien à faire pour une roue qui viserait cette barre, et ce n'est pas un oubli : aucun chemin ne
+   * supprime la cible d'une roue **ouverte**. La modalité consomme le glisser, donc on ne peut pas jeter
+   * la cible par le bord, et les autres chemins (Effacer, annulation, redimensionnement, boutons du HUD)
+   * ferment déjà la roue. Si un jour un chemin de suppression échappe à ces deux familles, c'est ici
+   * qu'il faudra fermer la roue — la propriété est assertée dans le scénario `sources`.
    */
-  if (openWheel?.barId === id) openWheel = null
 }
 
 /** Valide l'instantané de préhension au moment où le geste devient réellement modifiant. */
@@ -581,17 +589,26 @@ function interactionFor(hit: Grab | null): Interaction {
 }
 
 /**
- * Roue de sélection ouverte, ou `null`. Deux réglages y passent — la nature d'une barre et
- * l'instrument — et le seul état partagé est celui-ci : la géométrie ne connaît ni l'un ni l'autre.
+ * Ce que la roue ouverte est en train de régler. Un discriminant plutôt que des identifiants nullables :
+ * avec deux cibles on s'en sortait par `barId === null`, avec trois ce serait une liste de cas — et
+ * l'US16 a assez montré où mènent les listes de cas qui s'allongent.
+ */
+type WheelTarget =
+  | { kind: 'nature'; barId: number }
+  | { kind: 'division'; emitterId: number }
+  | { kind: 'instrument' }
+
+/**
+ * Roue de sélection ouverte, ou `null` quand il n'y en a pas. **Trois** réglages y passent (cf.
+ * `WheelTarget`) et le seul état partagé est celui-ci : la géométrie ne connaît aucun des trois.
  *
  * `pinned` distingue les deux temps du geste. À ressort, la roue vit le temps d'un appui et le
- * relâchement décide. Épinglée, elle survit au relâchement et c'est un tap qui décide — le cas de
- * quelqu'un qui appuie long et relâche sans avoir bougé, c'est-à-dire de quelqu'un qui découvre.
+ * relâchement décide. Épinglée, elle survit au relâchement, c'est un tap qui décide, et elle devient
+ * **modale** — elle consomme tous les gestes jusqu'à décision.
  */
 interface OpenWheel {
   wheel: Wheel<string>
-  /** barre visée pour une roue de nature ; `null` pour l'instrument */
-  barId: number | null
+  target: WheelTarget
   /**
    * Intention lue sous le pointeur, pas seulement un index de secteur : « ça va épingler » et « ça va
    * annuler » sont deux issues opposées que le rendu doit montrer différemment.
@@ -619,11 +636,38 @@ function openNatureWheel(bar: Bar, point: Vec2): void {
       options: NATURES.map((nature) => ({ value: nature, label: natureLabel(nature) })),
       current: bar.nature,
     },
-    barId: bar.id,
+    target: { kind: 'nature', barId: bar.id },
     aim: null,
     pinned: false,
     origin: point,
     committed: false,
+  }
+}
+
+/**
+ * Roue des divisions d'une source. Épinglée d'entrée, comme celle des timbres : le geste qui l'ouvre est
+ * un tap, il n'y a pas d'appui à tenir.
+ *
+ * Les valeurs sont les **index** du catalogue, en chaîne : c'est ce qui voyage dans les liens de partage
+ * depuis l'US7, et la roue ne connaît que des chaînes opaques.
+ */
+function openDivisionWheel(emitter: Emitter): void {
+  openWheel = {
+    wheel: {
+      center: fitWheel(emitter.pos, measureSceneArea(world.bounds)),
+      options: DIVISIONS.map((_, index) => ({
+        value: String(index),
+        label: divisionLabel(index),
+        short: divisionShortLabel(index),
+      })),
+      current: String(emitter.divisionIndex),
+    },
+    target: { kind: 'division', emitterId: emitter.id },
+    aim: null,
+    pinned: true,
+    // Copiée, pas aliasée : partout ailleurs les Vec2 le sont, et une source se déplace.
+    origin: { ...emitter.pos },
+    committed: true,
   }
 }
 
@@ -644,7 +688,7 @@ function openInstrumentWheel(): void {
       })),
       current: instrument.id,
     },
-    barId: null,
+    target: { kind: 'instrument' },
     aim: null,
     // Épinglée d'entrée : le geste d'ouverture est un clic, il n'y a pas d'appui à tenir.
     pinned: true,
@@ -652,6 +696,23 @@ function openInstrumentWheel(): void {
     origin: center,
     committed: true,
   }
+}
+
+/**
+ * Position de l'objet réglé, **relue à chaque frame** plutôt que copiée à l'ouverture : une barre reste
+ * déplaçable, et un sujet figé désignerait alors un endroit vide. `null` pour l'instrument, qui n'a pas
+ * de sujet dans la scène — et c'est pour ça que le champ est nullable plutôt qu'obligatoire.
+ */
+function wheelSubject(target: WheelTarget): Vec2 | null {
+  if (target.kind === 'nature') {
+    const bar = world.bars.find((candidate) => candidate.id === target.barId)
+    return bar ? { x: (bar.a.x + bar.b.x) / 2, y: (bar.a.y + bar.b.y) / 2 } : null
+  }
+  if (target.kind === 'division') {
+    const emitter = world.emitters.find((candidate) => candidate.id === target.emitterId)
+    return emitter ? { ...emitter.pos } : null
+  }
+  return null
 }
 
 /**
@@ -670,7 +731,12 @@ function wheelStats(open: OpenWheel) {
     /** ce que le relâchement ferait : choisir un secteur, épingler, annuler, ou rien de lu encore */
     aimKind: open.aim?.kind ?? null,
     pinned: open.pinned,
-    labels: renderer.wheelLabels({ wheel: open.wheel, aim: open.aim, pinned: open.pinned }),
+    labels: renderer.wheelLabels({
+      wheel: open.wheel,
+      aim: open.aim,
+      pinned: open.pinned,
+      subject: wheelSubject(open.target),
+    }),
     centerX: open.wheel.center.x,
     centerY: open.wheel.center.y,
     outerRadius: OUTER_RADIUS,
@@ -708,10 +774,11 @@ function aimWheel(point: Vec2): void {
 }
 
 function applyWheelChoice(index: number): void {
-  const option = openWheel?.wheel.options[index]
-  if (!openWheel || !option) return
+  const open = openWheel
+  const option = open?.wheel.options[index]
+  if (!open || !option) return
 
-  if (openWheel.barId === null) {
+  if (open.target.kind === 'instrument') {
     const next = INSTRUMENTS.find((candidate) => candidate.id === option.value)
     if (next) {
       applyInstrument(next)
@@ -721,10 +788,32 @@ function applyWheelChoice(index: number): void {
     return
   }
 
-  const bar = world.bars.find((candidate) => candidate.id === openWheel?.barId)
+  if (open.target.kind === 'division') {
+    const { emitterId } = open.target
+    const emitter = world.emitters.find((candidate) => candidate.id === emitterId)
+    // Retrouvé dans le catalogue plutôt qu'affirmé : la roue ne porte que des chaînes opaques.
+    const chosen = DIVISIONS.findIndex((_, candidate) => String(candidate) === option.value)
+    if (!emitter || chosen < 0) return
+    if (emitter.divisionIndex === chosen) {
+      // Confirmer ce qui est déjà en place ne consomme pas une place d'annulation et ne resynchronise
+      // pas la source : ce serait un saut de rythme déguisé en non-action.
+      announce(`Source : ${divisionLabel(chosen)}`)
+      return
+    }
+    history.push(world.bars, world.emitters, tuning.id)
+    detachFromLink()
+    // `setDivision` porte la remise en phase : elle fait partie de l'opération, pas de l'appelant.
+    setDivision(world, emitter, chosen)
+    announce(`Source : ${divisionLabel(chosen)}`)
+    userOwnsScene = true
+    return
+  }
+
+  const { barId } = open.target
+  const bar = world.bars.find((candidate) => candidate.id === barId)
   if (!bar) return
   // Retrouvée dans le catalogue plutôt qu'affirmée par un cast : la roue porte des chaînes, et c'est
-  // `NATURES` qui décide lesquelles sont des natures. Même forme que la branche instrument juste au-dessus.
+  // `NATURES` qui décide lesquelles sont des natures. Même forme que les deux branches ci-dessus.
   const nature = NATURES.find((candidate) => candidate === option.value)
   if (!nature) return
   if (bar.nature === nature) {
@@ -1083,16 +1172,17 @@ function handleGesture(gesture: Gesture): void {
         break
       } else {
         /*
-         * Taper une source change son **rythme**. C'est le seul geste qui construise un motif — sans
-         * lui, toutes les sources partagent la même division et la scène n'a qu'une seule pulsation.
-         * Aucun mode ajouté : une source est déjà une cible de geste (on la déplace en la glissant),
-         * donc la toucher lui parle à elle. Et taper une source ne faisait **rien** jusqu'ici.
+         * Taper une source **ouvre le choix de son rythme**. Le geste ne change pas — c'est celui des
+         * sources depuis l'US4 — mais ce qu'il produit change : il montrait un cran de plus à l'aveugle,
+         * il montre maintenant les cinq divisions et celle en place.
+         *
+         * Pourquoi le tap et pas l'appui long : `input.ts` supprime délibérément l'appui long sur une
+         * source, au motif qu'un second idiome sur la même cible serait du bruit. Le motif tient — on
+         * remplace ce que fait le tap au lieu d'ajouter un geste à côté. Et un tap devenu sans effet
+         * serait un geste mort sur la cible la plus tapée du produit.
          */
-        history.push(world.bars, world.emitters, tuning.id)
-        detachFromLink()
-        const index = cycleDivision(world, gesture.hit.emitter)
-        announce(`Source : ${divisionLabel(index)}`)
-        userOwnsScene = true
+        openDivisionWheel(gesture.hit.emitter)
+        announceWheel(String(gesture.hit.emitter.divisionIndex))
       }
       fadeHint()
       break
@@ -1274,7 +1364,12 @@ function frame(now: number): void {
     // Injecté ici et pas dans `interaction` : cet objet est reconstruit à chaque survol depuis
     // `NO_INTERACTION`, ce qui fermerait la roue au premier mouvement de souris.
     wheel: openWheel
-      ? { wheel: openWheel.wheel, aim: openWheel.aim, pinned: openWheel.pinned }
+      ? {
+          wheel: openWheel.wheel,
+          aim: openWheel.aim,
+          pinned: openWheel.pinned,
+          subject: wheelSubject(openWheel.target),
+        }
       : null,
   })
   requestAnimationFrame(frame)
@@ -1309,6 +1404,13 @@ interface CarillonDebug {
   advance(seconds: number): void
   reset(): void
   setMuted(muted: boolean): void
+  /**
+   * Libère les créneaux de polyphonie. Le harnais mesure « ce timbre produit des notes » salve après
+   * salve ; sans remise à zéro, le budget garde les créneaux des salves précédentes — l'horloge audio
+   * n'avance pas avec `advance` — et la mesure dépend alors de ce qui a été joué avant, donc de la charge
+   * de la machine. Sous charge, le cinquième timbre sortait à 0 note et le scénario accusait le produit.
+   */
+  releaseVoices(): void
   setTuning(id: string): void
   undo(): void
   /** Géométrie des barres : sans elle, toute assertion sur un déplacement passerait par des pixels. */
@@ -1427,6 +1529,7 @@ window.__carillon = {
     clearAll()
   },
   setMuted: (muted) => audio.setMuted(muted),
+  releaseVoices: () => audio.releaseVoices(),
   setTuning: (id) => applyTuning(tuningById(id)),
   undo,
   balls: () =>

@@ -10,9 +10,12 @@ import {
   barSeconds,
   clampBpm,
   divisionAt,
+  divisionLabel,
   divisionSeconds,
+  divisionShortLabel,
   gridTimeAfter,
 } from './clock'
+import { labelWidthBudget } from './wheel'
 
 describe('horloge — grille', () => {
   it('rend toujours un instant strictement postérieur', () => {
@@ -138,5 +141,43 @@ describe('horloge — divisions et mesures', () => {
     const next = barPosition(length * 3, DEFAULT_BPM)
     expect(next.bar).toBe(3)
     expect(next.phase).toBeCloseTo(0, 9)
+  })
+})
+
+describe('noms courts des divisions', () => {
+  it('comptent les émissions par mesure, dérivées du catalogue', () => {
+    // Dérivé et non recopié : ajouter une division produit son nom court sans y penser, et une division
+    // dont le nom mentirait sur son débit fait rougir ce test.
+    DIVISIONS.forEach((division, index) => {
+      expect(divisionShortLabel(index)).toBe(`${Math.round(1 / division)}×`)
+    })
+  })
+
+  it('sont distincts, et tous plus courts que leur phrase', () => {
+    const shorts = DIVISIONS.map((_, index) => divisionShortLabel(index))
+    expect(new Set(shorts).size).toBe(DIVISIONS.length)
+    // Un nom court qui n'est pas plus court ne sert à rien.
+    shorts.forEach((short, index) => {
+      expect(short.length).toBeLessThan(divisionLabel(index).length)
+    })
+  })
+
+  it('tiennent dans le budget d’une roue à cinq secteurs', () => {
+    /*
+     * C'est la raison d'être de ces noms : les phrases ne tenaient pas et la roue affichait cinq fois le
+     * même repli.
+     *
+     * La borne par caractère est **10 px**, et c'en est vraiment une : mesurés dans la page en
+     * `700 14px` — la police du secteur visé, la plus large — les caractères que `divisionShortLabel`
+     * peut produire valent au pire 9,56 px (`8`), puis 9,47 (`4`), 9,43 (`0`), 9,42 (`9`), 9,25 (`×`).
+     * J'avais écrit 9 en le présentant comme majorant : c'était la **moyenne** par caractère du libellé
+     * le plus étroit (« 1× », 16,26 px pour deux signes), donc une borne dérivée du meilleur cas. À dix
+     * divisions, « 48× » aurait passé le test à 27 px pour 28,28 px réels, dans un budget de 28,17.
+     */
+    const WIDEST_CHAR_PX = 10
+    const budget = labelWidthBudget(DIVISIONS.length)
+    DIVISIONS.forEach((_, index) => {
+      expect(divisionShortLabel(index).length * WIDEST_CHAR_PX).toBeLessThan(budget)
+    })
   })
 })
