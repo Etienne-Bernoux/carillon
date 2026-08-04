@@ -11,7 +11,7 @@ import {
   MAX_BALLS,
   addEmitter,
   clampDivisionIndex,
-  cycleDivision,
+  setDivision,
   emitterPeriod,
   removeEmitter,
   runEmitters,
@@ -232,19 +232,31 @@ describe('divisions', () => {
     expect(runEmitters(w, () => {})).toBe(4)
   })
 
-  it('le cycle parcourt tout le catalogue et boucle', () => {
+  it('chaque division du catalogue est atteignable directement', () => {
+    // La roue de l'US17 remplace le cyclage : on ne passe plus par les autres pour arriver à la bonne.
     const w = world()
     const emitter = addEmitter(w, { x: 0, y: 0 }, { divisionIndex: 0 })
-    const seen = [emitter.divisionIndex]
-    for (let i = 0; i < DIVISIONS.length; i += 1) seen.push(cycleDivision(w, emitter))
-    expect(seen).toEqual([0, 1, 2, 3, 4, 0])
+    for (let index = 0; index < DIVISIONS.length; index += 1) {
+      expect(setDivision(w, emitter, index)).toBe(index)
+      expect(emitter.divisionIndex).toBe(index)
+    }
+  })
+
+  it('un index hors catalogue retombe sur le défaut, comme à la création', () => {
+    // Une seule règle de bornage dans le fichier (`clampDivisionIndex`), pas deux qui divergeraient :
+    // hors catalogue, la source prend la division par défaut plutôt qu'une extrémité arbitraire.
+    const w = world()
+    const emitter = addEmitter(w, { x: 0, y: 0 }, { divisionIndex: 2 })
+    expect(setDivision(w, emitter, -3)).toBe(DEFAULT_DIVISION_INDEX)
+    expect(setDivision(w, emitter, 99)).toBe(DEFAULT_DIVISION_INDEX)
+    expect(setDivision(w, emitter, 1.5)).toBe(DEFAULT_DIVISION_INDEX)
   })
 
   it('changer de division ré-arme sur la grille, sans rafale ni trou', () => {
     const w = world()
     const emitter = addEmitter(w, { x: 0, y: 0 }, { divisionIndex: 0 })
     w.time += 3.7
-    cycleDivision(w, emitter)
+    setDivision(w, emitter, 3)
 
     // Devant nous (pas de rafale à rattraper), et sur la grille de la **nouvelle** division.
     expect(emitter.nextAt).toBeGreaterThan(w.time)

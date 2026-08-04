@@ -24,7 +24,7 @@ const ROOT = path.resolve(__dirname, '..')
 const PROOFS_DIR = path.join(ROOT, 'docs', 'proofs')
 const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
-const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis', 'rythme', 'timbres', 'natures', 'air', 'partage', 'lacher', 'roue']
+const ALL_SCENARIOS = ['sandbox', 'stress', 'mobile', 'controls', 'resize', 'edit', 'touch', 'alive', 'share', 'vernis', 'rythme', 'timbres', 'natures', 'air', 'partage', 'lacher', 'roue', 'sources']
 
 const rawArgs = process.argv.slice(2)
 const flags = new Set(rawArgs.filter((a) => a.startsWith('--')))
@@ -1460,8 +1460,9 @@ async function runRythme(browser, url, rec) {
   )
 
   /*
-   * Taper une source change son rythme. Vrai clic souris, pas un appel d'API : c'est le seul geste qui
-   * construise un motif, et jusqu'à l'US7 taper une source ne faisait **rien**.
+   * Changer le rythme d'une source par le **vrai geste**, pas par un appel d'API : depuis l'US17, taper
+   * la source ouvre sa roue et c'est le choix d'un secteur qui applique. Ce qui est vérifié ici est la
+   * conséquence rythmique ; l'ouverture de la roue et la disparition du cyclage sont dans `sources`.
    */
   const cycled = await page.evaluate(() => {
     const c = window.__carillon
@@ -1471,15 +1472,17 @@ async function runRythme(browser, url, rec) {
   })
   await tick(page)
   await page.mouse.click(500, 300)
+  await wait(150)
+  await pickInPinnedWheel(page, '3')
   await tick(page)
   const afterTap = await page.evaluate(() => window.__carillon.emitters()[0])
   console.log(
-    `  [rythme] tap sur la source : division ${cycled.divisionIndex} -> ${afterTap.divisionIndex} (période ${cycled.period.toFixed(3)}s -> ${afterTap.period.toFixed(3)}s)`
+    `  [rythme] roue de la source : division ${cycled.divisionIndex} -> ${afterTap.divisionIndex} (période ${cycled.period.toFixed(3)}s -> ${afterTap.period.toFixed(3)}s)`
   )
   rec.assert(
-    'taper une source change sa division',
-    afterTap.divisionIndex === cycled.divisionIndex + 1 && afterTap.period < cycled.period,
-    `${cycled.divisionIndex} -> ${afterTap.divisionIndex}`
+    'choisir une division dans la roue raccourcit bien la période',
+    afterTap.divisionIndex === 3 && afterTap.period < cycled.period,
+    `${cycled.divisionIndex} -> ${afterTap.divisionIndex}, période ${cycled.period.toFixed(3)} -> ${afterTap.period.toFixed(3)}`
   )
   // Propriété **vérifiable** : l'échéance est un multiple de la nouvelle période, donc sur la grille.
   // Première version de cette assertion : `nextAt - période <= nextAt`, vraie par construction.
@@ -2470,6 +2473,29 @@ async function runTouch(browser, url, rec) {
   await page.close()
 }
 
+/*
+ * Une hauteur de ligne dérivée de la **police du secteur visé** (700 14px), pas d'un nombre choisi :
+ * c'est elle qui décide si deux ancres partagent une bande horizontale.
+ */
+const LINE_HEIGHT = 14
+const boxesAreReadable = (labels, wheel) => {
+  const tooWide = labels.filter((l) => l.width > l.budget)
+  const overlaps = []
+  for (let i = 0; i < labels.length; i += 1) {
+    for (let j = i + 1; j < labels.length; j += 1) {
+      const a = labels[i]
+      const b = labels[j]
+      if (Math.abs(a.y - b.y) < LINE_HEIGHT && Math.abs(a.x - b.x) < (a.width + b.width) / 2) {
+        overlaps.push(`${a.text}/${b.text}`)
+      }
+    }
+  }
+  const outsideDisc = labels.filter(
+    (l) => Math.hypot(l.x - wheel.centerX, l.y - wheel.centerY) + l.width / 2 > wheel.outerRadius
+  )
+  return { tooWide, overlaps, outsideDisc }
+}
+
 /**
  * La roue de sélection (US16). Ce qui se vérifie ici et pas en Vitest : que le geste réel ouvre la roue,
  * que le relâchement décide **ce qu'il annonce**, et que la roue reste entièrement dans la scène.
@@ -2835,29 +2861,6 @@ async function runRoue(browser, url, rec) {
    * (cloches) » sur la capture des cinq timbres. On asserte donc des **boîtes** — largeur réellement
    * mesurée par le rendu, budget géométrique du secteur, et absence de recouvrement deux à deux.
    */
-  /*
-   * Une hauteur de ligne dérivée de la **police du secteur visé** (700 14px), pas d'un nombre choisi :
-   * c'est elle qui décide si deux ancres partagent une bande horizontale.
-   */
-  const LINE_HEIGHT = 14
-  const boxesAreReadable = (labels, wheel) => {
-    const tooWide = labels.filter((l) => l.width > l.budget)
-    const overlaps = []
-    for (let i = 0; i < labels.length; i += 1) {
-      for (let j = i + 1; j < labels.length; j += 1) {
-        const a = labels[i]
-        const b = labels[j]
-        if (Math.abs(a.y - b.y) < LINE_HEIGHT && Math.abs(a.x - b.x) < (a.width + b.width) / 2) {
-          overlaps.push(`${a.text}/${b.text}`)
-        }
-      }
-    }
-    const outsideDisc = labels.filter(
-      (l) => Math.hypot(l.x - wheel.centerX, l.y - wheel.centerY) + l.width / 2 > wheel.outerRadius
-    )
-    return { tooWide, overlaps, outsideDisc }
-  }
-
   const atRest = boxesAreReadable(instrumentWheel.labels, instrumentWheel)
   // Luminance de référence : la roue au repos, avant tout mouvement de pointeur.
   const { luminance: restVeil } = await inkAndVeil()
@@ -3116,6 +3119,147 @@ async function runRoue(browser, url, rec) {
   await page.close()
 }
 
+/**
+ * Les sources (US17). Taper une source **ouvrait** un cran de division de plus, à l'aveugle ; elle ouvre
+ * maintenant le choix. C'était le dernier cyclage du produit.
+ *
+ * Deux assertions qui se contredisent si l'une des deux est fausse : choisir doit changer la division,
+ * et taper ne doit **plus** la changer par lui-même. La seconde prouve que le cycle est parti, pas
+ * seulement doublé.
+ */
+async function runSources(browser, url, rec) {
+  const page = await browser.newPage()
+  rec.attachConsoleListeners(page)
+  await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 })
+  await page.goto(url, { waitUntil: 'load' })
+  await waitForCarillon(page)
+  await page.mouse.click(640, 740)
+
+  /*
+   * --- La roue des sources : le dernier cyclage du produit (US17) ---
+   *
+   * Taper une source **ouvrait** un cran de plus à l'aveugle ; elle ouvre maintenant le choix. Deux
+   * assertions qui se contredisent si l'une des deux est fausse : choisir doit changer la division, et
+   * taper ne doit **plus** la changer par lui-même. La seconde est celle qui prouve que le cycle est
+   * parti, et pas seulement doublé.
+   */
+  const source = await page.evaluate(() => {
+    const c = window.__carillon
+    c.reset()
+    const id = c.addEmitter(640, 300, 0)
+    return c.emitters().find((emitter) => emitter.id === id) ?? null
+  })
+  await tick(page)
+  await page.mouse.click(source.x, source.y)
+  await wait(150)
+  const divisionWheel = await readWheel(page)
+  await rec.shot(page, 'roue-divisions')
+  const afterTapOnly = await page.evaluate(() => window.__carillon.emitters()[0].divisionIndex)
+  rec.assert(
+    'taper une source ouvre sa roue **sans** changer sa division',
+    divisionWheel !== null &&
+      divisionWheel.options.length === 5 &&
+      divisionWheel.current === '0' &&
+      afterTapOnly === 0,
+    `roue=${divisionWheel?.options.map((o) => o.label).join(', ')} | courante=${divisionWheel?.current} | division ${afterTapOnly}`
+  )
+
+  const divisionBoxes = boxesAreReadable(divisionWheel.labels, divisionWheel)
+  console.log(
+    `  [sources] divisions dessinées : ${divisionWheel.labels.map((l) => `${l.text}(${Math.round(l.width)}/${Math.round(l.budget)}px)`).join(' ')}`
+  )
+  rec.assert(
+    'les cinq divisions sont lisibles : les phrases ne tenaient pas, les comptes tiennent',
+    divisionBoxes.tooWide.length === 0 &&
+      divisionBoxes.overlaps.length === 0 &&
+      divisionBoxes.outsideDisc.length === 0 &&
+      // Comptes et non phrases : « 1× » plutôt que « une par mesure ».
+      divisionWheel.labels.every((l) => /^\d+×$/.test(l.text)),
+    `dessinés=[${divisionWheel.labels.map((l) => l.text)}] trop larges=[${divisionBoxes.tooWide.map((l) => l.text)}] recouvrements=[${divisionBoxes.overlaps}]`
+  )
+
+  // Choisir applique, remet la source en phase sur la grille, et ferme la roue.
+  const afterPickPos = { x: source.x, y: source.y }
+  await pickInPinnedWheel(page, '3')
+  const afterPick = await page.evaluate(() => {
+    const c = window.__carillon
+    const emitter = c.emitters()[0]
+    return {
+      divisionIndex: emitter.divisionIndex,
+      aheadOfNow: emitter.nextAt - c.stats().time,
+      period: emitter.period,
+      wheel: c.stats().wheel,
+      undoDepth: c.stats().undoDepth,
+    }
+  })
+  rec.assert(
+    'choisir une division l’applique, remet la source en phase, et ferme la roue',
+    afterPick.divisionIndex === 3 &&
+      afterPick.wheel === null &&
+      afterPick.undoDepth > 0 &&
+      // Devant nous et pas plus loin qu'une période : ni rafale à rattraper, ni silence.
+      afterPick.aheadOfNow > 0 &&
+      afterPick.aheadOfNow <= afterPick.period + 0.02,
+    `division=${afterPick.divisionIndex} échéance dans ${afterPick.aheadOfNow.toFixed(3)}s (période ${afterPick.period.toFixed(3)}s) undo=${afterPick.undoDepth}`
+  )
+
+  /*
+   * Confirmer la division **déjà en place** ne doit rien coûter : ni une place d'annulation, ni une
+   * remise en phase. Resynchroniser une source qu'on n'a pas changée serait un saut de rythme audible
+   * déguisé en non-action, et c'est exactement ce qu'un « choix » qui confirme ne doit pas faire.
+   */
+  await page.mouse.click(afterPickPos.x, afterPickPos.y)
+  await wait(150)
+  const beforeConfirm = await page.evaluate(() => ({
+    nextAt: window.__carillon.emitters()[0].nextAt,
+    undoDepth: window.__carillon.stats().undoDepth,
+  }))
+  await pickInPinnedWheel(page, '3')
+  const afterConfirm = await page.evaluate(() => ({
+    nextAt: window.__carillon.emitters()[0].nextAt,
+    undoDepth: window.__carillon.stats().undoDepth,
+    divisionIndex: window.__carillon.emitters()[0].divisionIndex,
+  }))
+  rec.assert(
+    'confirmer la division en place ne consomme ni annulation ni remise en phase',
+    afterConfirm.divisionIndex === 3 &&
+      afterConfirm.undoDepth === beforeConfirm.undoDepth &&
+      afterConfirm.nextAt === beforeConfirm.nextAt,
+    `undo ${beforeConfirm.undoDepth}->${afterConfirm.undoDepth}, échéance ${beforeConfirm.nextAt.toFixed(3)}->${afterConfirm.nextAt.toFixed(3)}`
+  )
+
+  // Annulable, comme toute modification de scène.
+  await page.keyboard.down('Meta')
+  await page.keyboard.press('KeyZ')
+  await page.keyboard.up('Meta')
+  await wait(200)
+  const undone = await page.evaluate(() => window.__carillon.emitters()[0]?.divisionIndex)
+  rec.assert(
+    'annuler restaure la division précédente',
+    undone === 0,
+    `3 -> ${undone}`
+  )
+
+  // Et le glisser d'une source la déplace toujours : la roue n'a volé aucun geste.
+  const moved = await page.evaluate(() => window.__carillon.emitters()[0])
+  await dragBar(page, [moved.x, moved.y], [moved.x + 180, moved.y + 90])
+  await wait(150)
+  const afterDrag = await page.evaluate(() => ({
+    emitter: window.__carillon.emitters()[0],
+    wheel: window.__carillon.stats().wheel,
+  }))
+  rec.assert(
+    'glisser une source la déplace toujours, sans ouvrir de roue',
+    afterDrag.wheel === null &&
+      Math.round(afterDrag.emitter.x) > Math.round(moved.x) + 100 &&
+      Math.round(afterDrag.emitter.y) > Math.round(moved.y) + 50,
+    `(${Math.round(moved.x)},${Math.round(moved.y)}) -> (${Math.round(afterDrag.emitter.x)},${Math.round(afterDrag.emitter.y)}) roue=${afterDrag.wheel}`
+  )
+
+
+  await page.close()
+}
+
 const SCENARIOS = {
   sandbox: runSandbox,
   stress: runStress,
@@ -3134,6 +3278,7 @@ const SCENARIOS = {
   edit: runEdit,
   touch: runTouch,
   roue: runRoue,
+  sources: runSources,
 }
 
 // --- Mode --smoke : auto-vérification du harnais sur une fixture ----------

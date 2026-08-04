@@ -103,3 +103,18 @@ export function divisionLabel(index: number): string {
   const labels = ['une par mesure', 'une par demi-mesure', 'trois par mesure', 'une par temps', 'deux par temps']
   return labels[index] ?? labels[DEFAULT_DIVISION_INDEX] ?? 'une par mesure'
 }
+
+/**
+ * Nom court d'une division : le **nombre d'émissions par mesure**, dérivé du catalogue.
+ *
+ * Les phrases ci-dessus ne tiennent pas dans un secteur de roue à cinq options (budget de 64 px), donc
+ * la roue afficherait cinq fois le même repli. Compter les billes plutôt que nommer la fraction donne
+ * trois choses qu'une phrase n'a pas : c'est **ordonné**, donc la roue se lit comme une échelle ; ça
+ * tient largement ; et ça dit la seule chose qu'on veut savoir en visant — combien de billes vont
+ * tomber. La phrase, elle, reste dans l'annonce accessible, qui n'a pas de budget de largeur.
+ *
+ * Dérivé et non recopié : ajouter une division au catalogue produit son nom court sans y penser.
+ */
+export function divisionShortLabel(index: number): string {
+  return `${Math.round(1 / divisionAt(index))}×`
+}

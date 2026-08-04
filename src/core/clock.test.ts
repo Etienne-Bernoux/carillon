@@ -10,9 +10,12 @@ import {
   barSeconds,
   clampBpm,
   divisionAt,
+  divisionLabel,
   divisionSeconds,
+  divisionShortLabel,
   gridTimeAfter,
 } from './clock'
+import { labelWidthBudget } from './wheel'
 
 describe('horloge — grille', () => {
   it('rend toujours un instant strictement postérieur', () => {
@@ -138,5 +141,38 @@ describe('horloge — divisions et mesures', () => {
     const next = barPosition(length * 3, DEFAULT_BPM)
     expect(next.bar).toBe(3)
     expect(next.phase).toBeCloseTo(0, 9)
+  })
+})
+
+describe('noms courts des divisions', () => {
+  it('comptent les émissions par mesure, dérivées du catalogue', () => {
+    // Dérivé et non recopié : ajouter une division produit son nom court sans y penser, et une division
+    // dont le nom mentirait sur son débit fait rougir ce test.
+    DIVISIONS.forEach((division, index) => {
+      expect(divisionShortLabel(index)).toBe(`${Math.round(1 / division)}×`)
+    })
+  })
+
+  it('sont distincts, et tous plus courts que leur phrase', () => {
+    const shorts = DIVISIONS.map((_, index) => divisionShortLabel(index))
+    expect(new Set(shorts).size).toBe(DIVISIONS.length)
+    // Un nom court qui n'est pas plus court ne sert à rien.
+    shorts.forEach((short, index) => {
+      expect(short.length).toBeLessThan(divisionLabel(index).length)
+    })
+  })
+
+  it('tiennent dans le budget d’une roue à cinq secteurs', () => {
+    /*
+     * C'est la raison d'être de ces noms : les phrases ne tenaient pas et la roue affichait cinq fois le
+     * même repli. La largeur par caractère est **majorante** (9 px pour une police de 14 px en graisse
+     * 700, mesurée dans la page à 8,2 px pour « 1× ») : une borne trop généreuse rendrait l'assertion
+     * muette sur le produit.
+     */
+    const WIDEST_CHAR_PX = 9
+    const budget = labelWidthBudget(DIVISIONS.length)
+    DIVISIONS.forEach((_, index) => {
+      expect(divisionShortLabel(index).length * WIDEST_CHAR_PX).toBeLessThan(budget)
+    })
   })
 })

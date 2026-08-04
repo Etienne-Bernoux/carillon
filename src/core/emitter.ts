@@ -62,14 +62,21 @@ export function clampDivisionIndex(index: number): number {
 }
 
 /**
- * Fait passer une source à la division suivante, en boucle. C'est le seul geste qui construit un
- * motif : sans lui, toutes les sources partagent la même division et la scène n'a qu'un seul rythme.
- * Ré-arme sur la grille pour que le changement prenne effet **en phase**, sans rafale ni trou.
+ * Pose la division d'une source, et la **ré-arme sur la grille**.
+ *
+ * Le ré-armement fait partie de l'opération, il n'est pas un détail d'appelant : sans lui la source
+ * garde l'échéance de son ancienne division, donc le changement ne s'entend qu'après un retard — ou en
+ * rafale si cette échéance est déjà passée. C'est ce qui rend le nouveau rythme audible **en phase**.
+ *
+ * A remplacé `cycleDivision` à l'US17 : la roue montre les cinq divisions au lieu d'en avancer d'une, et
+ * une fonction exportée que rien n'appelle affirmerait un comportement que le produit n'a plus.
  */
-export function cycleDivision(world: World, emitter: Emitter): number {
-  emitter.divisionIndex = (emitter.divisionIndex + 1) % DIVISIONS.length
-  emitter.nextAt = gridTimeAfter(world.time, divisionAt(emitter.divisionIndex), world.bpm)
-  return emitter.divisionIndex
+export function setDivision(world: World, emitter: Emitter, index: number): number {
+  // Le même bornage que la création d'une source, pas un second : `clampDivisionIndex` existe pour ça.
+  const clamped = clampDivisionIndex(index)
+  emitter.divisionIndex = clamped
+  emitter.nextAt = gridTimeAfter(world.time, divisionAt(clamped), world.bpm)
+  return clamped
 }
 
 /**
