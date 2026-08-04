@@ -26,6 +26,9 @@ import {
 import {
   DIVISIONS,
   DEFAULT_BPM,
+  MAX_BPM,
+  MIN_BPM,
+  TEMPO_DRAG_SPAN_PX,
   bpmForDrag,
   clampBpm,
   divisionAt,
@@ -171,9 +174,9 @@ function placeBar(a: Vec2, b: Vec2): Bar | null {
  * Pose le tempo et met le libellé à jour. Arrondi à l'entier **pour l'affichage et pour l'état** : un
  * tempo à 103,47 BPM ne veut rien dire à l'oreille, et le lien de partage ne le distinguerait pas de 103.
  *
- * Rien à resynchroniser ici : l'horloge de l'US7 recalcule chaque échéance depuis la grille, donc un
- * changement de tempo raccroche les sources à la nouvelle sans rafale ni silence. C'est la propriété que
- * cette US expose enfin depuis l'interface.
+ * Les sources sont **resynchronisées** ici — voir le bloc en fin de fonction, qui explique pourquoi
+ * l'horloge de l'US7 ne suffit pas à elle seule. Ce commentaire affirmait l'inverse pendant un tour :
+ * « rien à resynchroniser », treize lignes au-dessus du code qui resynchronise.
  */
 function applyBpm(next: number): void {
   world.bpm = Math.round(clampBpm(next))
@@ -1245,6 +1248,8 @@ attachInput(canvas, {
  * ne doit pas consommer une place d'annulation, et tout le glissement ne doit en consommer qu'une — sinon
  * un aller-retour de 200 px en empilerait des dizaines.
  */
+/** Vrai quand le `click` qui arrive clôt un glissement : il ne doit pas ré-annoncer par-dessus. */
+let swallowNextTempoClick = false
 const tempoButton = document.querySelector<HTMLButtonElement>('[data-control="tempo"]')
 if (tempoButton) {
   let originX: number | null = null
@@ -1264,18 +1269,40 @@ if (tempoButton) {
     if (!scrubbing) {
       if (Math.abs(dx) <= TAP_RADIUS) return
       scrubbing = true
-      history.push(world.bars, world.emitters, tuning.id, world.bpm)
-      detachFromLink()
-      userOwnsScene = true
     }
     applyBpm(bpmForDrag(bpmAtStart, dx))
+    /*
+     * Ni `userOwnsScene`, ni `detachFromLink` : le tempo ne touche **aucune géométrie**. Les revendiquer
+     * désactivait la régénération au redimensionnement — mesuré, 8 barres sur 9 hors champ après un
+     * passage de 900 à 375 px, exactement ce que `barsOutOfBounds` existe pour interdire. Le bouton de
+     * gamme, le réglage le plus proche, ne les revendique pas non plus.
+     *
+     * En revanche la scène liée est **tenue à jour** : sans ça, un redimensionnement la replacerait avec
+     * le tempo du lien et effacerait le réglage qu'on vient de faire.
+     */
+    if (linkedScene) linkedScene = { ...linkedScene, bpm: world.bpm }
   })
 
   const endScrub = (): void => {
     if (originX === null) return
     originX = null
-    // Annoncé au relâchement seulement : annoncer à chaque pixel noierait un lecteur d'écran.
-    if (scrubbing) announce(`Tempo : ${world.bpm} BPM`)
+    if (scrubbing) {
+      /*
+       * L'instantané est empilé **à la fin**, et seulement si la valeur a changé. Empilé au premier
+       * pixel, un aller-retour qui revient au tempo de départ consommait une place d'annulation morte —
+       * la régression exacte trouvée en revue de l'US3 (« taper une barre pour l'écouter consommait une
+       * annulation »). Franchir le seuil de tap ne dit rien sur la valeur d'arrivée.
+       *
+       * Empiler après coup est correct ici parce que le glissement ne change **que** le tempo : les
+       * barres et les sources de l'instantané sont les mêmes qu'au départ, et c'est `bpmAtStart` qu'on
+       * enregistre, pas la valeur courante.
+       */
+      if (world.bpm !== bpmAtStart) history.push(world.bars, world.emitters, tuning.id, bpmAtStart)
+      // Annoncé au relâchement seulement : annoncer à chaque pixel noierait un lecteur d'écran.
+      announce(`Tempo : ${world.bpm} BPM`)
+      // Le clic qui suit un glissement ne doit pas ré-annoncer par-dessus : il n'est pas un clic.
+      swallowNextTempoClick = true
+    }
     scrubbing = false
   }
   tempoButton.addEventListener('pointerup', endScrub)
@@ -1362,6 +1389,10 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-control
         break
       }
       case 'tempo':
+        if (swallowNextTempoClick) {
+          swallowNextTempoClick = false
+          break
+        }
         /*
          * Un clic sans glissement **annonce** au lieu de régler. Changer la pulsation de toute la scène
          * sur un simple clic serait un effet trop lourd pour un geste aussi bref — et un clic qui ne fait
@@ -1511,6 +1542,8 @@ interface CarillonDebug {
    * l'**effet** du tempo sur la cadence sans dépendre d'un pilotage de pointeur.
    */
   setTempo(bpm: number): void
+  /** étendue et sensibilité de la glissière, pour que le harnais ne recopie pas ces nombres */
+  tempoRange(): { TEMPO_DRAG_SPAN: number; MIN: number; MAX: number }
   undo(): void
   /** Géométrie des barres : sans elle, toute assertion sur un déplacement passerait par des pixels. */
   droppers(): Array<{ id: number; x: number; y: number }>
@@ -1633,6 +1666,7 @@ window.__carillon = {
   releaseVoices: () => audio.releaseVoices(),
   setTuning: (id) => applyTuning(tuningById(id)),
   setTempo: (bpm) => applyBpm(bpm),
+  tempoRange: () => ({ TEMPO_DRAG_SPAN: TEMPO_DRAG_SPAN_PX, MIN: MIN_BPM, MAX: MAX_BPM }),
   undo,
   balls: () =>
     world.balls.map((ball) => ({

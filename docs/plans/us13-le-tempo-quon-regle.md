@@ -1,7 +1,8 @@
 # US13 — Le tempo qu'on règle
 
 > Statut : **livrée** · Branche `feat/us13-tempo` · 328 tests unitaires, 19 scénarios navigateur
-> (245 assertions), 5 mutations tuées sur 5
+> (248 assertions), 10 mutations tuées sur 10 · une passe de review adverse déléguée, qui a trouvé
+> **deux bloquants** et six assertions creuses
 
 ## Intent
 
@@ -143,3 +144,52 @@ comme un échec sans rien prouver. Une mutation « tuée » par un plantage de c
 Cœur pur : la valeur suit la position absolue au lieu du déplacement.
 Produit : `applyBpm` ne réarme plus les sources · le libellé ne suit plus la valeur · un lien reçu écrit
 le tempo sans passer par le libellé · le seuil de tap retiré.
+
+## Ce que la review adverse a trouvé, et que la vérification n'avait pas vu
+
+**Deux bloquants, tous deux invisibles à mes dix assertions.**
+
+*Régler le tempo figeait la scène.* Le glissement posait `userOwnsScene = true`, ce qui désactive la
+régénération au redimensionnement — alors que le tempo ne touche **aucune géométrie**. Mesuré : après un
+glissement puis un passage de 900 à 375 px, **8 barres sur 9 hors champ** et une sous le HUD, exactement
+ce que `barsOutOfBounds` existe pour interdire. Le bouton de gamme, le réglage le plus proche, ne
+revendique rien. Correctif : ne rien revendiquer, et tenir la scène liée à jour pour qu'un
+redimensionnement ne réapplique pas le tempo du lien par-dessus le réglage.
+
+*La glissière ne marchait pas au doigt.* `touch-action: none` n'existait que sur le canvas, donc le
+navigateur reprenait le geste horizontal après une vingtaine de pixels et envoyait `pointercancel` : un
+geste de 70 px déplaçait le tempo de 96 à 86 au lieu de 65 — quatre mouvements sur six perdus. Le critère
+G12 était donc faux, et l'assertion qui le couvrait (`phoneAfter < phoneBefore`) était un **quota** qui se
+contentait d'un tiers du geste. Elle exige maintenant la valeur dérivée de `TEMPO_DRAG_SPAN_PX`.
+
+**Et six assertions qui ne prouvaient pas ce qu'elles annonçaient.**
+
+- « Le geste est réversible » était `f(x, 0) === x` écrit deux fois — le test 1, recopié. Il n'appelait
+  jamais la fonction avec un déplacement non nul. Remplacé par la **pureté** (deux moitiés de geste valent
+  le geste entier), et la vraie réversibilité — l'origine fixe, qui vit dans `main.ts` — est passée au
+  scénario, par un aller-retour.
+- Rien ne gardait cette non-dérive : recaler l'origine à chaque mouvement passait **328 tests et 7
+  assertions**, alors qu'un aller-retour de 200 px faisait 152 → 78 BPM.
+- « Ni rafale ni silence » mesurait 150 ms **après** le relâchement, quand la source a déjà ré-émis et
+  raccroché la grille toute seule : retirer le réarmement la laissait verte. Un relevé se fait maintenant
+  pointeur **encore enfoncé**, à cinq étapes du geste.
+- `period + 0.05` était un nombre déguisé côté large, et `ahead <= 0` était la course que ce même travail
+  venait de corriger dans `sources` — deux assertions voisines, traitements opposés. Borne symétrique.
+- `slow*2 ± 1` laissait passer une erreur de cadence de 12,5 %. La mesure est déterministe et entière :
+  égalité exacte.
+- « Annuler restaure le tempo précédent » ne vérifiait que « ça a changé » : restaurer 96 au lieu de la
+  bonne valeur passait.
+
+**Un aller-retour consommait une place d'annulation morte** — la régression trouvée en revue de l'US3.
+L'instantané est désormais empilé **à la fin**, et seulement si la valeur a changé.
+
+**Et deux commentaires qui affirmaient le contraire du code** : le docblock d'`applyBpm` disait « rien à
+resynchroniser » treize lignes au-dessus du code qui resynchronise, et celui de l'assertion du HUD
+prétendait que le compte « ne conditionne plus rien » alors que le 7 y était resté en borne basse.
+
+### Les dix mutations
+
+Cœur pur : position absolue au lieu du déplacement.
+Produit : `applyBpm` ne réarme plus · le libellé ne suit plus · un lien reçu contourne le libellé · seuil
+de tap retiré · scène revendiquée au glissement · origine recalée à chaque mouvement · instantané empilé
+sans changement · annulation qui restaure le défaut · `touch-action` retiré du bouton.

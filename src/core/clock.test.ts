@@ -213,13 +213,26 @@ describe('glissière de tempo', () => {
     expect(bpmForDrag(DEFAULT_BPM, -10_000)).toBe(MIN_BPM)
   })
 
-  it('le geste est réversible : revenir à l’origine rend le tempo de départ', () => {
-    // Une glissière qui dérive au va-et-vient est inutilisable. C'est vrai par construction ici — la
-    // valeur suit le déplacement total, pas une accumulation d'incréments — et ce test l'épingle.
+  it('ne dépend que du couple (départ, déplacement), donc ne peut pas dériver', () => {
+    /*
+     * Version précédente de ce test : `bpmForDrag(bpm, dx - dx)` et `bpmForDrag(f(bpm, dx), 0)`, soit
+     * deux fois `f(x, 0) === x` — le test 1, recopié. Il n'appelait jamais la fonction avec un
+     * déplacement non nul et ne contraignait rien : une mutation qui rendait `signe(dx)` le laissait
+     * vert.
+     *
+     * Ce qui se démontre ici est la **pureté** : deux appels de même couple rendent la même chose, et
+     * un chemin en deux temps rend la même chose qu'un saut direct. C'est ce qui interdit à la valeur
+     * de dépendre de l'ordre des mouvements. Que l'appelant conserve bien une origine fixe, en
+     * revanche, ne se prouve pas ici — c'est le scénario navigateur qui l'exerce, par un aller-retour.
+     */
     for (const bpm of [70, DEFAULT_BPM, 150]) {
-      for (const dx of [12, -40, 137]) {
-        expect(bpmForDrag(bpm, dx - dx)).toBe(bpm)
-        expect(bpmForDrag(bpmForDrag(bpm, dx), 0)).toBe(bpmForDrag(bpm, dx))
+      for (const dx of [-137, -12, 40, 260]) {
+        expect(bpmForDrag(bpm, dx)).toBe(bpmForDrag(bpm, dx))
+        // Deux moitiés de geste valent le geste entier : la fonction ne garde aucune mémoire.
+        expect(bpmForDrag(bpm, dx)).toBeCloseTo(
+          bpmForDrag(clampBpm(bpm + (dx / 2 / TEMPO_DRAG_SPAN_PX) * (MAX_BPM - MIN_BPM)), dx / 2),
+          9,
+        )
       }
     }
   })
