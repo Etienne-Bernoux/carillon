@@ -25,6 +25,8 @@ import {
 } from './core/emitter'
 import {
   DIVISIONS,
+  DEFAULT_BPM,
+  bpmForDrag,
   clampBpm,
   divisionAt,
   divisionLabel,
@@ -56,7 +58,7 @@ import {
 } from './core/share-layout'
 import { hitTestWorld } from './core/hit-test'
 import type { Grab } from './core/hit-test'
-import { attachInput } from './ui/input'
+import { TAP_RADIUS, attachInput } from './ui/input'
 import type { Gesture } from './ui/input'
 import { noteName } from './ui/notation'
 import { NO_INTERACTION, createEffects, createRenderer } from './ui/renderer'
@@ -95,6 +97,8 @@ const canvas = requireElement<HTMLCanvasElement>('#stage')
 const hint = document.querySelector<HTMLParagraphElement>('#hint')
 const tuningLabel = document.querySelector<HTMLSpanElement>('#tuning-label')
 const tuningLabelShort = document.querySelector<HTMLSpanElement>('#tuning-label-short')
+const tempoLabel = document.querySelector<HTMLSpanElement>('#tempo-label')
+const tempoLabelShort = document.querySelector<HTMLSpanElement>('#tempo-label-short')
 const instrumentLabel = document.querySelector<HTMLSpanElement>('#instrument-label')
 const instrumentLabelShort = document.querySelector<HTMLSpanElement>('#instrument-label-short')
 const muteLabel = document.querySelector<HTMLSpanElement>('#mute-label')
@@ -161,6 +165,30 @@ function placeBar(a: Vec2, b: Vec2): Bar | null {
   // l'erreur flottante les faisait repasser sous un seuil strict — une barre perdue par lien reçu.
   if (length < MIN_BAR_LENGTH - 1e-6) return null
   return addBar(world, a, b, midiForLength(length, tuning, world.bounds.w))
+}
+
+/**
+ * Pose le tempo et met le libellé à jour. Arrondi à l'entier **pour l'affichage et pour l'état** : un
+ * tempo à 103,47 BPM ne veut rien dire à l'oreille, et le lien de partage ne le distinguerait pas de 103.
+ *
+ * Rien à resynchroniser ici : l'horloge de l'US7 recalcule chaque échéance depuis la grille, donc un
+ * changement de tempo raccroche les sources à la nouvelle sans rafale ni silence. C'est la propriété que
+ * cette US expose enfin depuis l'interface.
+ */
+function applyBpm(next: number): void {
+  world.bpm = Math.round(clampBpm(next))
+  if (tempoLabel) tempoLabel.textContent = `${world.bpm} BPM`
+  if (tempoLabelShort) tempoLabelShort.textContent = String(world.bpm)
+  /*
+   * Réarmer les sources sur la **nouvelle** grille. L'US7 raccroche déjà chaque source à l'émission
+   * suivante, mais l'échéance en attente, elle, a été calculée sur l'ancienne grille : en accélérant, elle
+   * peut se retrouver **plus loin qu'une période neuve**, donc produire un silence — mesuré à 0,9 s
+   * d'attente pour une période de 0,714 s avant ce correctif. C'est précisément la rafale-ou-silence que
+   * cette US promet d'éviter, et la promesse ne tenait qu'après la première émission.
+   */
+  for (const emitter of world.emitters) {
+    emitter.nextAt = gridTimeAfter(world.time, divisionAt(emitter.divisionIndex), world.bpm)
+  }
 }
 
 function applyTuning(next: Tuning): void {
@@ -391,7 +419,9 @@ function applyShared(shared: SharedScene): void {
   clearAll()
   applyTuning(tuningById(shared.tuningId))
   applyInstrument(instrumentById(shared.instrumentId))
-  world.bpm = clampBpm(shared.bpm)
+  // Par `applyBpm` et non par une écriture directe : sinon l'état vaut 144 et le bouton annonce 96 —
+  // mesuré. C'est la faute de l'US2, où l'interface annonçait une gamme que l'instrument ne jouait plus.
+  applyBpm(shared.bpm)
 
   const area = measureSceneArea(world.bounds)
   const width = world.bounds.w
@@ -524,7 +554,7 @@ function removeBar(id: number): void {
 /** Valide l'instantané de préhension au moment où le geste devient réellement modifiant. */
 function commitPending(): void {
   if (!pendingSnapshot) return
-  history.push(pendingSnapshot.bars, pendingSnapshot.emitters, tuning.id)
+  history.push(pendingSnapshot.bars, pendingSnapshot.emitters, tuning.id, world.bpm)
   pendingSnapshot = null
 }
 
@@ -556,6 +586,12 @@ function undo(): void {
   world.bars.push(...restored.bars)
   world.emitters.length = 0
   world.emitters.push(...restored.emitters)
+  /*
+   * Le tempo **avant** de réarmer, pas après : le réarmement calcule les échéances sur la grille du
+   * tempo courant, donc le restaurer ensuite les laisserait sur l'ancienne grille — une rafale ou un
+   * silence, exactement ce que le réarmement existe pour éviter.
+   */
+  if (restored.bpm !== world.bpm) applyBpm(restored.bpm)
   // Réarmer les échéances : un instantané ne porte pas de temps (cf. history.cloneEmitter), sinon
   // annuler ferait cracher une rafale de billes pour rattraper un retard fictif.
   for (const emitter of world.emitters) {
@@ -800,7 +836,7 @@ function applyWheelChoice(index: number): void {
       announce(`Source : ${divisionLabel(chosen)}`)
       return
     }
-    history.push(world.bars, world.emitters, tuning.id)
+    history.push(world.bars, world.emitters, tuning.id, world.bpm)
     detachFromLink()
     // `setDivision` porte la remise en phase : elle fait partie de l'opération, pas de l'appelant.
     setDivision(world, emitter, chosen)
@@ -823,7 +859,7 @@ function applyWheelChoice(index: number): void {
     return
   }
   // Empilé ici plutôt qu'à la préhension : c'est le seul instant où l'on sait que l'état va changer.
-  history.push(world.bars, world.emitters, tuning.id)
+  history.push(world.bars, world.emitters, tuning.id, world.bpm)
   detachFromLink()
   bar.nature = nature
   rearm(bar)
@@ -971,7 +1007,7 @@ function handleGesture(gesture: Gesture): void {
     case 'create-bar':
       // L'instantané est pris avant la modification, jamais après : c'est ce qui rend l'annulation
       // capable de faire disparaître la barre qu'on vient de créer.
-      history.push(world.bars, world.emitters, tuning.id)
+      history.push(world.bars, world.emitters, tuning.id, world.bpm)
       detachFromLink()
       if (placeBar(gesture.a, gesture.b)) userOwnsScene = true
       fadeHint()
@@ -1004,7 +1040,7 @@ function handleGesture(gesture: Gesture): void {
 
       // Appui long dans le vide : pose une source. C'est le seul idiome qui n'introduit pas de mode
       // et ne vole aucun geste existant.
-      history.push(world.bars, world.emitters, tuning.id)
+      history.push(world.bars, world.emitters, tuning.id, world.bpm)
       detachFromLink()
       {
         // Bornée à la création comme au déplacement : le HUD ne capture pas le pointeur (l'overlay
@@ -1197,6 +1233,55 @@ attachInput(canvas, {
   onGesture: handleGesture,
 })
 
+/**
+ * La glissière de tempo. Le bouton reste un bouton — un tap annonce la valeur — mais un glissement
+ * horizontal la **règle**, continûment.
+ *
+ * Le seuil de tap est celui de la couche d'entrée (`TAP_RADIUS`), importé plutôt que redéfini : deux
+ * seuils finiraient par diverger, et le bouton cesserait d'être cliquable ou partirait en glissement au
+ * moindre tremblement.
+ *
+ * L'instantané n'est empilé qu'au **premier** pixel qui compte, pas à la préhension : toucher le bouton
+ * ne doit pas consommer une place d'annulation, et tout le glissement ne doit en consommer qu'une — sinon
+ * un aller-retour de 200 px en empilerait des dizaines.
+ */
+const tempoButton = document.querySelector<HTMLButtonElement>('[data-control="tempo"]')
+if (tempoButton) {
+  let originX: number | null = null
+  let bpmAtStart = DEFAULT_BPM
+  let scrubbing = false
+
+  tempoButton.addEventListener('pointerdown', (event) => {
+    originX = event.clientX
+    bpmAtStart = world.bpm
+    scrubbing = false
+    tempoButton.setPointerCapture(event.pointerId)
+  })
+
+  tempoButton.addEventListener('pointermove', (event) => {
+    if (originX === null) return
+    const dx = event.clientX - originX
+    if (!scrubbing) {
+      if (Math.abs(dx) <= TAP_RADIUS) return
+      scrubbing = true
+      history.push(world.bars, world.emitters, tuning.id, world.bpm)
+      detachFromLink()
+      userOwnsScene = true
+    }
+    applyBpm(bpmForDrag(bpmAtStart, dx))
+  })
+
+  const endScrub = (): void => {
+    if (originX === null) return
+    originX = null
+    // Annoncé au relâchement seulement : annoncer à chaque pixel noierait un lecteur d'écran.
+    if (scrubbing) announce(`Tempo : ${world.bpm} BPM`)
+    scrubbing = false
+  }
+  tempoButton.addEventListener('pointerup', endScrub)
+  tempoButton.addEventListener('pointercancel', endScrub)
+}
+
 window.addEventListener('keydown', (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
     event.preventDefault()
@@ -1220,7 +1305,7 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-control
         const next = TUNINGS[(index + 1) % TUNINGS.length]
         if (next) {
           // L'instantané porte la gamme d'**avant** le changement : c'est elle qu'il faut restaurer.
-          history.push(world.bars, world.emitters, tuning.id)
+          history.push(world.bars, world.emitters, tuning.id, world.bpm)
           applyTuning(next)
         }
         break
@@ -1266,7 +1351,7 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-control
         undo()
         break
       case 'surprise': {
-        history.push(world.bars, world.emitters, tuning.id)
+        history.push(world.bars, world.emitters, tuning.id, world.bpm)
         detachFromLink()
         sceneSeed += 1
         userOwnsScene = false
@@ -1276,8 +1361,17 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-control
         announce(air ? `Scène : ${air}` : 'Scène surprise')
         break
       }
+      case 'tempo':
+        /*
+         * Un clic sans glissement **annonce** au lieu de régler. Changer la pulsation de toute la scène
+         * sur un simple clic serait un effet trop lourd pour un geste aussi bref — et un clic qui ne fait
+         * rien du tout serait un geste mort. Le réglage, lui, passe par le glissement.
+         */
+        announce(`Tempo : ${world.bpm} BPM — glisser pour le régler`)
+        break
+
       case 'clear':
-        history.push(world.bars, world.emitters, tuning.id)
+        history.push(world.bars, world.emitters, tuning.id, world.bpm)
         detachFromLink()
         userOwnsScene = true
         clearAll()
@@ -1412,6 +1506,11 @@ interface CarillonDebug {
    */
   releaseVoices(): void
   setTuning(id: string): void
+  /**
+   * Pose le tempo. Le geste, lui, est asserté par le glissement réel : ce point d'entrée sert à mesurer
+   * l'**effet** du tempo sur la cadence sans dépendre d'un pilotage de pointeur.
+   */
+  setTempo(bpm: number): void
   undo(): void
   /** Géométrie des barres : sans elle, toute assertion sur un déplacement passerait par des pixels. */
   droppers(): Array<{ id: number; x: number; y: number }>
@@ -1471,6 +1570,8 @@ interface CarillonDebug {
     particles: number
     maxParticles: number
     bpm: number
+    /** billes **créées** depuis le début : compte les émissions, là où `balls` ne compte que les vivantes */
+    ballsSpawned: number
     time: number
     pendingRespawns: number
     droppers: number
@@ -1531,6 +1632,7 @@ window.__carillon = {
   setMuted: (muted) => audio.setMuted(muted),
   releaseVoices: () => audio.releaseVoices(),
   setTuning: (id) => applyTuning(tuningById(id)),
+  setTempo: (bpm) => applyBpm(bpm),
   undo,
   balls: () =>
     world.balls.map((ball) => ({
@@ -1621,6 +1723,7 @@ window.__carillon = {
     particles: effects.particles.length,
     maxParticles: MAX_PARTICLES,
     bpm: world.bpm,
+    ballsSpawned: world.nextBallId,
     time: world.time,
     pendingRespawns: world.respawns.length,
     droppers: world.droppers.length,

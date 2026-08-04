@@ -3,7 +3,9 @@ import type { Grab, HitRadii } from '../core/hit-test'
 import type { Vec2 } from '../core/types'
 
 /** En dessous de cette distance, le geste est lu comme un tap et non comme un glisser. */
-const TAP_RADIUS = 14
+/** Seuil partagé : au-delà, un geste est un glisser et non un tap. Exporté pour que la glissière de
+ * tempo n'en invente pas un second — deux seuils divergeraient. */
+export const TAP_RADIUS = 14
 /**
  * Durée d'un appui long, en ms. C'est le seul idiome qui pose une source sans introduire de mode et
  * sans voler un geste existant : le tap lâche une bille, le glisser dessine.

@@ -25,11 +25,17 @@ export interface Snapshot {
   bars: Bar[]
   emitters: Emitter[]
   tuningId: string
+  /**
+   * Tempo au moment de l'instantané. Fait partie de l'état pour la même raison que la gamme : c'est un
+   * réglage qui change ce qu'on **entend** de la scène entière, donc annuler doit le rendre. Ajouté à
+   * l'US13, quand un geste a enfin pu le modifier.
+   */
+  bpm: number
 }
 
 export interface History {
   /** Enregistre l'état courant AVANT une modification. */
-  push(bars: readonly Bar[], emitters: readonly Emitter[], tuningId: string): void
+  push(bars: readonly Bar[], emitters: readonly Emitter[], tuningId: string, bpm: number): void
   /** Retourne l'état à restaurer, ou null si rien à annuler. Retire l'entrée de la pile. */
   undo(): Snapshot | null
   /** Nombre d'états annulables disponibles. */
@@ -145,11 +151,12 @@ export function createHistory(options?: Partial<HistoryOptions>): History {
   const stack: Snapshot[] = []
 
   return {
-    push(bars: readonly Bar[], emitters: readonly Emitter[], tuningId: string): void {
+    push(bars: readonly Bar[], emitters: readonly Emitter[], tuningId: string, bpm: number): void {
       const snapshot: Snapshot = {
         bars: cloneBars(bars),
         emitters: emitters.map(cloneEmitter),
         tuningId,
+        bpm,
       }
       const top = stack[stack.length - 1]
       // Déduplication : un geste qui ne change rien (attraper puis relâcher au même endroit, ou
@@ -157,6 +164,7 @@ export function createHistory(options?: Partial<HistoryOptions>): History {
       if (
         top &&
         top.tuningId === snapshot.tuningId &&
+        top.bpm === snapshot.bpm &&
         barsEqual(top.bars, snapshot.bars) &&
         emittersEqual(top.emitters, snapshot.emitters)
       ) {

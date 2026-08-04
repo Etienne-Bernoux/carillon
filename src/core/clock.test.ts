@@ -6,8 +6,10 @@ import {
   DIVISIONS,
   MAX_BPM,
   MIN_BPM,
+  TEMPO_DRAG_SPAN_PX,
   barPosition,
   barSeconds,
+  bpmForDrag,
   clampBpm,
   divisionAt,
   divisionLabel,
@@ -179,5 +181,58 @@ describe('noms courts des divisions', () => {
     DIVISIONS.forEach((_, index) => {
       expect(divisionShortLabel(index).length * WIDEST_CHAR_PX).toBeLessThan(budget)
     })
+  })
+})
+
+describe('glissière de tempo', () => {
+  it('un déplacement nul ne change rien', () => {
+    // Sinon toucher le bouton déplacerait la pulsation de toute la scène.
+    for (const bpm of [MIN_BPM, DEFAULT_BPM, 120, MAX_BPM]) {
+      expect(bpmForDrag(bpm, 0)).toBe(bpm)
+    }
+  })
+
+  it('à droite ça accélère, à gauche ça ralentit', () => {
+    // Vrai pour tout tempo de départ **strictement** dans l'étendue : aux bornes, un des deux sens est
+    // saturé, ce que le test suivant couvre.
+    for (const bpm of [70, DEFAULT_BPM, 150]) {
+      expect(bpmForDrag(bpm, 30)).toBeGreaterThan(bpm)
+      expect(bpmForDrag(bpm, -30)).toBeLessThan(bpm)
+    }
+  })
+
+  it('reste dans l’étendue, et l’atteint aux deux bouts', () => {
+    for (const dx of [-10_000, -TEMPO_DRAG_SPAN_PX, 0, TEMPO_DRAG_SPAN_PX, 10_000]) {
+      const bpm = bpmForDrag(DEFAULT_BPM, dx)
+      expect(bpm).toBeGreaterThanOrEqual(MIN_BPM)
+      expect(bpm).toBeLessThanOrEqual(MAX_BPM)
+    }
+    // Atteindre les bornes n'est pas un détail : une étendue dont les extrêmes sont inaccessibles est
+    // plus étroite que ce qu'elle annonce.
+    expect(bpmForDrag(DEFAULT_BPM, 10_000)).toBe(MAX_BPM)
+    expect(bpmForDrag(DEFAULT_BPM, -10_000)).toBe(MIN_BPM)
+  })
+
+  it('le geste est réversible : revenir à l’origine rend le tempo de départ', () => {
+    // Une glissière qui dérive au va-et-vient est inutilisable. C'est vrai par construction ici — la
+    // valeur suit le déplacement total, pas une accumulation d'incréments — et ce test l'épingle.
+    for (const bpm of [70, DEFAULT_BPM, 150]) {
+      for (const dx of [12, -40, 137]) {
+        expect(bpmForDrag(bpm, dx - dx)).toBe(bpm)
+        expect(bpmForDrag(bpmForDrag(bpm, dx), 0)).toBe(bpmForDrag(bpm, dx))
+      }
+    }
+  })
+
+  it('la sensibilité est dérivée de l’étendue, pas choisie', () => {
+    /*
+     * Traverser `TEMPO_DRAG_SPAN_PX` doit couvrir **exactement** l'étendue : c'est ce qui relie la
+     * constante de geste aux bornes musicales. Recopier « 108 BPM » ici laisserait passer un changement
+     * de bornes sans que rien ne rougisse.
+     */
+    expect(bpmForDrag(MIN_BPM, TEMPO_DRAG_SPAN_PX)).toBe(MAX_BPM)
+    expect(bpmForDrag(MAX_BPM, -TEMPO_DRAG_SPAN_PX)).toBe(MIN_BPM)
+    // Et la moitié du geste couvre la moitié de l'étendue.
+    expect(bpmForDrag(MIN_BPM, TEMPO_DRAG_SPAN_PX / 2)).toBeCloseTo((MIN_BPM + MAX_BPM) / 2, 9)
   })
 })

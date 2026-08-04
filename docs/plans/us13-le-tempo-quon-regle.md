@@ -1,6 +1,7 @@
 # US13 — Le tempo qu'on règle
 
-> Statut : **en cours** · Branche `feat/us13-tempo`
+> Statut : **livrée** · Branche `feat/us13-tempo` · 328 tests unitaires, 19 scénarios navigateur
+> (245 assertions), 5 mutations tuées sur 5
 
 ## Intent
 
@@ -89,7 +90,8 @@ Chacun avec sa preuve, chacun validé par mutation.
 
 ### Non-régression
 
-13. `pnpm check` vert, les 18 scénarios verts, et le garde-fou de perf dans son budget.
+13. `pnpm check` vert, les **19** scénarios verts — les 18 d'avant plus `tempo` —, et le garde-fou
+    de perf dans son budget.
 
 ## Risques
 
@@ -100,3 +102,44 @@ Chacun avec sa preuve, chacun validé par mutation.
 - **Une scène qui crache une rafale.** Changer le tempo pendant que des sources tournent est exactement
   le cas que l'horloge de l'US7 a été écrite pour absorber — mais rien ne l'a encore exercé **depuis
   l'interface**. Critère 8.
+
+## Ce que la vérification a trouvé
+
+Deux **vrais défauts** de la première implémentation, tous deux trouvés par les critères 8 et 11 et
+invisibles autrement.
+
+**Une source gardait une échéance périmée après un changement de tempo.** Mesuré : 0,9 s d'attente pour
+une période de 0,714 s, soit un silence audible. L'US7 promet qu'un changement de tempo raccroche la
+source à la nouvelle grille — mais elle ne le fait qu'à l'**émission suivante**, et l'échéance en attente,
+calculée sur l'ancienne grille, peut se retrouver plus loin qu'une période neuve. La promesse ne tenait
+donc qu'après la première émission, et personne ne l'avait vu parce qu'aucune interface ne pouvait
+changer le tempo. `applyBpm` réarme désormais les sources, comme le fait l'annulation.
+
+**Un lien reçu affichait 96 BPM alors que l'état valait 144.** `applyShared` écrivait `world.bpm`
+directement, sans passer par le libellé. C'est mot pour mot la faute de l'US2 — « l'interface annonçait
+une gamme que l'instrument ne jouait plus » — et elle s'est reproduite dès qu'un second réglage a eu un
+libellé à tenir à jour. Le correctif est de n'avoir **qu'un** chemin d'écriture du tempo.
+
+**Et deux assertions à moi qui ne prouvaient pas ce qu'elles annonçaient.** La première comptait les
+billes **vivantes** pour mesurer une cadence : une bille tombe hors champ en moins de deux secondes et le
+plafond écrête, donc elle rendait 1 quel que soit le tempo. Elle lit maintenant le compteur de billes
+créées. La seconde exigeait « l'échéance est strictement devant nous » : c'était une course, le temps
+avançant entre le calcul et la lecture, et la borne juste est symétrique — au plus une période d'écart
+dans un sens comme dans l'autre.
+
+**Une assertion voisine cassée par ce travail, et qui avait raison de casser.** Le scénario `timbres`
+vérifiait que « les **sept** contrôles tiennent sur deux rangées » : le huitième bouton l'a fait rougir
+alors que la mise en page tenait toujours. Une assertion qui compte au lieu de vérifier ce qu'elle
+annonce. Le nombre vient maintenant du DOM.
+
+**Une mutation qui a survécu, et le trou qu'elle a révélé.** Retirer le seuil de tap laissait le scénario
+vert : `page.click` n'émet aucun mouvement entre l'appui et le relâchement, donc l'assertion ne traversait
+jamais le seuil. Le cas réel — un clic avec un tremblement de 5 px — est désormais joué, et la mutation
+meurt. (Premier verdict faussé au passage : le scénario plantait sur une erreur de syntaxe, ce qui compte
+comme un échec sans rien prouver. Une mutation « tuée » par un plantage de compilation n'est pas tuée.)
+
+### Les cinq mutations
+
+Cœur pur : la valeur suit la position absolue au lieu du déplacement.
+Produit : `applyBpm` ne réarme plus les sources · le libellé ne suit plus la valeur · un lien reçu écrit
+le tempo sans passer par le libellé · le seuil de tap retiré.
